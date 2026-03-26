@@ -1061,16 +1061,26 @@ fn fix_default_value_formatting(source: &str) -> String {
                     in_default_value = false;
                 }
             } else if chars[i] == ',' && default_brace_depth > 0 {
-                // Keep all commas (graphql-js keeps them between object fields)
-                result.push(',');
-                i += 1;
-            } else if chars[i] == ' ' && default_brace_depth > 0 {
-                // Check if this space separates two object fields without a comma
-                // apollo-compiler: `species: [...] size: SMALL` (space-separated, no comma)
-                // graphql-js:       `species: [...], size: SMALL` (comma-separated)
-                // We need to add a comma before the space if the next token is a field name
-                result.push(' ');
-                i += 1;
+                // Only remove commas between object fields at brace depth 1 (outermost default value object).
+                // Inner objects (depth >= 2) keep their commas, matching graphql-js behavior.
+                if default_brace_depth == 1 {
+                    // Check if followed by space + fieldName:
+                    let mut j = i + 1;
+                    while j < len && chars[j] == ' ' { j += 1; }
+                    let mut k = j;
+                    while k < len && (chars[k].is_alphanumeric() || chars[k] == '_') { k += 1; }
+                    if k < len && k > j && chars[k] == ':' {
+                        // Top-level object field comma - skip
+                        i += 1;
+                    } else {
+                        result.push(',');
+                        i += 1;
+                    }
+                } else {
+                    // Inner brace depth - keep comma
+                    result.push(',');
+                    i += 1;
+                }
             } else if chars[i] == ')' && default_brace_depth == 0 {
                 in_default_value = false;
                 result.push(chars[i]);
@@ -1154,12 +1164,20 @@ fn should_add_typename_before_brace(result_so_far: &str) -> bool {
         return false;
     }
 
-    // Check if this is the root operation brace (first `{` in the document).
-    // For operations (query/mutation/subscription), the first `{` is the root and
-    // should NOT get __typename. For fragments, the first `{` IS a selection set
-    // and SHOULD get __typename.
-    if !result_so_far.contains('{') {
-        // This is the first `{`. Check if the document starts with an operation keyword.
+    // Check if this is the root operation brace (first `{` at paren depth 0).
+    // Default values inside `(...)` can contain `{` but those don't count.
+    let mut paren_depth = 0;
+    let mut has_brace_at_depth_0 = false;
+    for c in result_so_far.chars() {
+        match c {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            '{' if paren_depth == 0 => { has_brace_at_depth_0 = true; break; }
+            _ => {}
+        }
+    }
+    if !has_brace_at_depth_0 {
+        // This is the first `{` at paren depth 0. Check if document starts with operation keyword.
         let start = trimmed.trim_start();
         if start.starts_with("query")
             || start.starts_with("mutation")

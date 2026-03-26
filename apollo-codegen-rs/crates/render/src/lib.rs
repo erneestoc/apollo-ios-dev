@@ -5,5 +5,6 @@
 
 pub mod ir_adapter;
 pub mod naming;
+pub mod schema_customization;
 pub mod template_string;
 pub mod templates;
