@@ -3,6 +3,9 @@
 # (AnimalKingdomAPI, StarWarsAPI, GitHubAPI, UploadAPI, SubscriptionAPI) and compares
 # the generated .swift files byte-for-byte.
 #
+# Generates configs with absolute input paths, then creates per-CLI copies with
+# output paths redirected to separate temp directories for clean comparison.
+#
 # Usage:
 #   ./scripts/test-codegen-apis.sh              # run all APIs
 #   ./scripts/test-codegen-apis.sh StarWarsAPI   # run a single API
@@ -30,7 +33,7 @@ build_rust_cli
 # ---- Create top-level temp dir (cleaned up on exit) ----
 WORK_DIR=$(create_temp_dir)
 
-# ---- Generate configs for all APIs ----
+# ---- Generate base configs for all APIs ----
 echo ""
 echo "Generating API configs..."
 python3 "$REPO_ROOT/scripts/lib/generate-api-configs.py" "$WORK_DIR/configs" "$REPO_ROOT"
@@ -48,34 +51,33 @@ for api_name in "${ALL_APIS[@]}"; do
   fi
 
   # Create separate output directories for Swift and Rust
-  swift_work="$WORK_DIR/$api_name/swift"
-  rust_work="$WORK_DIR/$api_name/rust"
-  mkdir -p "$swift_work" "$rust_work"
+  swift_out="$WORK_DIR/$api_name/swift-out"
+  rust_out="$WORK_DIR/$api_name/rust-out"
+  mkdir -p "$swift_out" "$rust_out"
 
-  # Copy the generated config into each work directory
-  cp "$config_file" "$swift_work/apollo-codegen-config.json"
-  cp "$config_file" "$rust_work/apollo-codegen-config.json"
+  # The generated configs have absolute input paths and relative output paths
+  # (e.g. ./AnimalKingdomAPI). Create per-CLI configs with output redirected to
+  # each CLI's temp directory using the rewrite script.
+  swift_config="$WORK_DIR/$api_name/swift-config.json"
+  rust_config="$WORK_DIR/$api_name/rust-config.json"
 
-  # The configs use absolute paths for schema/operations, so they work from
-  # any working directory. The output paths are relative (e.g. ./<APIName>),
-  # so they write into the work directory.
+  python3 "$REPO_ROOT/scripts/lib/rewrite-config-paths.py" "$config_file" "$swift_config" "$swift_out"
+  python3 "$REPO_ROOT/scripts/lib/rewrite-config-paths.py" "$config_file" "$rust_config" "$rust_out"
 
   # ---- Run Swift codegen ----
-  swift_config="$swift_work/apollo-codegen-config.json"
   echo -e "  ${CYAN}Running Swift codegen for $api_name...${NC}"
-  if ! (cd "$SWIFT_CLI_DIR" && swift run -c release apollo-ios-cli generate -p "$swift_config" 2>&1) > "$WORK_DIR/$api_name/swift.log" 2>&1; then
+  if ! (cd "$SWIFT_CLI_DIR" && swift run -c release apollo-ios-cli generate -p "$swift_config" --ignore-version-mismatch 2>&1) > "$WORK_DIR/$api_name/swift.log" 2>&1; then
     echo -e "  ${YELLOW}WARN${NC}: Swift codegen failed for $api_name (see $WORK_DIR/$api_name/swift.log)"
   fi
 
   # ---- Run Rust codegen ----
-  rust_config="$rust_work/apollo-codegen-config.json"
   echo -e "  ${CYAN}Running Rust codegen for $api_name...${NC}"
   if ! "$RUST_CLI" generate --path "$rust_config" > "$WORK_DIR/$api_name/rust.log" 2>&1; then
     echo -e "  ${YELLOW}WARN${NC}: Rust codegen failed for $api_name (see $WORK_DIR/$api_name/rust.log)"
   fi
 
   # ---- Compare generated .swift files ----
-  compare_generated "$rust_work" "$swift_work" "$api_name" || true
+  compare_generated "$rust_out" "$swift_out" "$api_name" || true
 done
 
 echo ""

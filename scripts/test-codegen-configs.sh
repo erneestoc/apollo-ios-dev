@@ -3,6 +3,10 @@
 # test configurations in Tests/TestCodeGenConfigurations/ and compares the generated
 # .swift files byte-for-byte.
 #
+# Instead of copying configs to temp dirs (which breaks relative paths), this script
+# creates modified configs with absolute input paths and redirected output paths
+# pointing to temp directories.
+#
 # Usage:
 #   ./scripts/test-codegen-configs.sh            # run all configs
 #   ./scripts/test-codegen-configs.sh ConfigName  # run a single config
@@ -11,6 +15,7 @@
 source "$(dirname "$0")/lib/codegen-test-utils.sh"
 
 CONFIGS_DIR="$REPO_ROOT/Tests/TestCodeGenConfigurations"
+REWRITE_SCRIPT="$REPO_ROOT/scripts/lib/rewrite-config-paths.py"
 ALL_CONFIGS=(
   SwiftPackageManager
   EmbeddedInTarget-InSchemaModule
@@ -46,70 +51,33 @@ for config_name in "${ALL_CONFIGS[@]}"; do
     continue
   fi
 
-  # Create isolated working copies so each CLI writes to its own output tree
-  swift_work="$WORK_DIR/$config_name/swift"
-  rust_work="$WORK_DIR/$config_name/rust"
-  mkdir -p "$swift_work" "$rust_work"
+  # Create separate output directories for Swift and Rust
+  swift_out="$WORK_DIR/$config_name/swift-out"
+  rust_out="$WORK_DIR/$config_name/rust-out"
+  mkdir -p "$swift_out" "$rust_out"
 
-  # Copy the full config directory into both work dirs so relative paths resolve
-  cp -a "$config_src/." "$swift_work/"
-  cp -a "$config_src/." "$rust_work/"
+  # Create rewritten configs with absolute input paths and output redirected to temp dirs
+  swift_config="$WORK_DIR/$config_name/swift-config.json"
+  rust_config="$WORK_DIR/$config_name/rust-config.json"
 
-  # The config files use relative paths for input (e.g. ../../../Sources/...).
-  # We need those relative paths to still resolve from the work dir.
-  # For configs that reference ../../../Sources, we create the equivalent symlink.
-  # We compute the relative offset from the config dir to the repo root.
-  # Since most configs are at Tests/TestCodeGenConfigurations/<name>/,
-  # the offset is ../../../ (3 levels up to REPO_ROOT).
-  #
-  # We handle this by symlinking the repo Sources directory so that
-  # ../../../Sources resolves correctly from the work dir.
-
-  # Determine how many parent refs the config uses
-  # Create a parent structure that makes relative paths work
-  for work in "$swift_work" "$rust_work"; do
-    # Create ../../.. relative to work dir, pointing to REPO_ROOT
-    # The work dir is at $WORK_DIR/$config_name/{swift,rust}/
-    # The config references paths relative to its own directory.
-    # Original config dir: $REPO_ROOT/Tests/TestCodeGenConfigurations/$config_name/
-    # So ../../../ from original = $REPO_ROOT
-    # We need the same relative path from work dir to also reach $REPO_ROOT resources.
-
-    # Create the parent chain: work/../../.. should point somewhere that has Sources/
-    # Instead of fighting with relative paths, just symlink the Sources dir
-    # at the relative location the config expects.
-    #
-    # Most configs use ../../../Sources/... so we need work/../../../Sources -> REPO_ROOT/Sources
-    parent3="$(cd "$work" && cd ../../.. 2>/dev/null && pwd)" || true
-
-    # Ensure the target of ../../../Sources exists by symlinking
-    mkdir -p "$work/../../../" 2>/dev/null || true
-    target_dir="$(cd "$work/../../.." && pwd)"
-
-    # Only symlink if the Sources dir doesn't already exist at that level
-    if [ ! -e "$target_dir/Sources" ]; then
-      ln -sf "$REPO_ROOT/Sources" "$target_dir/Sources"
-    fi
-  done
+  python3 "$REWRITE_SCRIPT" "$config_file" "$swift_config" "$swift_out"
+  python3 "$REWRITE_SCRIPT" "$config_file" "$rust_config" "$rust_out"
 
   # ---- Run Swift codegen ----
-  swift_config="$swift_work/apollo-codegen-config.json"
   echo -e "  ${CYAN}Running Swift codegen for $config_name...${NC}"
-  if ! (cd "$SWIFT_CLI_DIR" && swift run -c release apollo-ios-cli generate -p "$swift_config" 2>&1) > "$WORK_DIR/$config_name/swift.log" 2>&1; then
+  if ! (cd "$SWIFT_CLI_DIR" && swift run -c release apollo-ios-cli generate -p "$swift_config" --ignore-version-mismatch 2>&1) > "$WORK_DIR/$config_name/swift.log" 2>&1; then
     echo -e "  ${YELLOW}WARN${NC}: Swift codegen failed for $config_name (see $WORK_DIR/$config_name/swift.log)"
   fi
 
   # ---- Run Rust codegen ----
-  rust_config="$rust_work/apollo-codegen-config.json"
   echo -e "  ${CYAN}Running Rust codegen for $config_name...${NC}"
   if ! "$RUST_CLI" generate --path "$rust_config" > "$WORK_DIR/$config_name/rust.log" 2>&1; then
     echo -e "  ${YELLOW}WARN${NC}: Rust codegen failed for $config_name (see $WORK_DIR/$config_name/rust.log)"
   fi
 
   # ---- Compare generated .swift files ----
-  # Both CLIs write output relative to the config file's directory, so the
-  # generated files should appear somewhere under $swift_work and $rust_work.
-  compare_generated "$rust_work" "$swift_work" "$config_name" || true
+  # Both CLIs wrote output into their respective temp dirs ($rust_out and $swift_out).
+  compare_generated "$rust_out" "$swift_out" "$config_name" || true
 done
 
 echo ""
