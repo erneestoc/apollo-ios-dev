@@ -1,0 +1,15 @@
+[package]
+name = "apollo-codegen-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content-addressed caching for Apollo iOS code generation"
+
+[dependencies]
+sha2.workspace = true
+zstd.workspace = true
+tar.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

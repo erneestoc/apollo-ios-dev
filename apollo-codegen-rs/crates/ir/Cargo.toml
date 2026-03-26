@@ -1,0 +1,12 @@
+[package]
+name = "apollo-codegen-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intermediate representation for Apollo iOS code generation"
+
+[dependencies]
+apollo-codegen-frontend.workspace = true
+apollo-codegen-config.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
