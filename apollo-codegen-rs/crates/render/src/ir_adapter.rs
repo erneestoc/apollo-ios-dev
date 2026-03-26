@@ -97,6 +97,7 @@ pub fn render_operation(
         op.is_local_cache_mutation,
         customizer,
         None,  // entity_root_graphql_type (set per-entity below)
+        &[],   // no ancestor fragments for root
     );
 
     let config = OwnedOperationConfig {
@@ -147,6 +148,7 @@ pub fn render_fragment(
         frag.is_local_cache_mutation,
         customizer,
         None, // entity_root_graphql_type
+        &[],  // no ancestor fragments for fragment root
     );
 
     let config = OwnedFragmentConfig {
@@ -306,6 +308,7 @@ fn build_selection_set_config_owned(
     is_mutable: bool,
     customizer: &SchemaCustomizer,
     entity_root_graphql_type: Option<&str>,
+    ancestor_fragments: &[String],
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -620,6 +623,7 @@ fn build_selection_set_config_owned(
                 is_mutable,
                 customizer,
                 None, // entity_root_graphql_type: entity fields start a new entity
+                &[],  // entity fields start a new entity scope
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -873,6 +877,24 @@ fn build_selection_set_config_owned(
             // otherwise use the current parent type.
             let entity_root_for_inline = entity_root_graphql_type
                 .unwrap_or_else(|| ir_ss.scope.parent_type.name());
+            // Build ancestor fragment list for child scope: combine current ancestor
+            // fragments with the current scope's named fragment spreads AND fragment
+            // spreads from sibling inline fragments.
+            let mut child_ancestor_frags: Vec<String> = ancestor_fragments.to_vec();
+            for spread in &ds.named_fragments {
+                if !child_ancestor_frags.contains(&spread.fragment_name) {
+                    child_ancestor_frags.push(spread.fragment_name.clone());
+                }
+            }
+            // Also include fragment spreads from sibling inline fragments
+            for sibling in &ds.inline_fragments {
+                if absorbed_inline_indices.contains(&ds.inline_fragments.iter().position(|s| std::ptr::eq(s, sibling)).unwrap_or(usize::MAX)) { continue; }
+                for sib_spread in &sibling.selection_set.direct_selections.named_fragments {
+                    if !child_ancestor_frags.contains(&sib_spread.fragment_name) {
+                        child_ancestor_frags.push(sib_spread.fragment_name.clone());
+                    }
+                }
+            }
             let mut child_ss = build_selection_set_config_owned(
                 &type_name,
                 &inline.selection_set,
@@ -891,35 +913,13 @@ fn build_selection_set_config_owned(
                 is_mutable,
                 customizer,
                 Some(entity_root_for_inline),
+                &child_ancestor_frags,
             );
 
             // Propagate absorbed type names from parent to child
             for atn in &absorbed_type_names {
                 if !child_ss.absorbed_type_names.contains(atn) {
                     child_ss.absorbed_type_names.push(atn.clone());
-                }
-            }
-
-            // Add sibling supertype fulfilled fragments to the initializer.
-            // Exclude: self, and any type that would create a self-referencing path
-            // (e.g., don't add AsPet.AsPet when we're already inside AsPet).
-            if let Some(ref mut init) = child_ss.initializer {
-                let parent_scope_type = ir_ss.scope.parent_type.name();
-                for (other_name, _) in &sibling_inline_fields {
-                    // Skip self, skip if other_name matches the enclosing scope's type
-                    // (would create Type.AsType.AsType which doesn't exist)
-                    if *other_name != tc.name()
-                        && *other_name != parent_scope_type
-                        && is_supertype_of_current(tc, other_name)
-                    {
-                        let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(other_name));
-                        // Also check it doesn't create a self-reference via the qualified name
-                        if !init.fulfilled_fragments.contains(&sibling_qualified)
-                            && !sibling_qualified.contains(&format!("As{}.As{}", naming::first_uppercased(other_name), naming::first_uppercased(other_name)))
-                        {
-                            init.fulfilled_fragments.push(sibling_qualified);
-                        }
-                    }
                 }
             }
 
@@ -933,6 +933,7 @@ fn build_selection_set_config_owned(
                 &pre_promoted_fragment_names,
                 referenced_fragments,
                 &ir_ss.scope.parent_type,
+                ancestor_fragments,
             );
 
             // Add applicable fragment spreads that the inline fragment doesn't already have
@@ -996,6 +997,67 @@ fn build_selection_set_config_owned(
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Sync the initializer with the (now-complete) field_accessors.
+            // Fields added from applicable/sibling fragments above were NOT in the
+            // initializer that was built inside the recursive call.
+            if let Some(ref mut init) = child_ss.initializer {
+                // Helper closure to check if a field name refers to an entity field
+                for fa in &child_ss.field_accessors {
+                    if fa.name == "__typename" { continue; }
+                    let check_entity_for_field = || -> bool {
+                        ds.fields.get(&fa.name)
+                            .map(|f| matches!(f, FieldSelection::Entity(_)))
+                            .unwrap_or(false)
+                            || inline.selection_set.direct_selections.fields.get(&fa.name)
+                                .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                .unwrap_or(false)
+                            || applicable_frags.iter().any(|frag_name| {
+                                referenced_fragments.iter().find(|f| f.name == *frag_name)
+                                    .map(|frag_arc| {
+                                        frag_arc.root_field.selection_set.direct_selections.fields.get(&fa.name)
+                                            .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                            .unwrap_or(false)
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            || referenced_fragments.iter().any(|frag_arc| {
+                                frag_arc.root_field.selection_set.direct_selections.fields.get(&fa.name)
+                                    .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                    .unwrap_or(false)
+                            })
+                            // Fallback: check if the Swift type looks like an entity type
+                            || swift_type_is_entity(&fa.swift_type)
+                    };
+                    // Add to parameters if missing
+                    if !init.parameters.iter().any(|p| p.name == fa.name) {
+                        init.parameters.push(OwnedInitParam {
+                            name: fa.name.clone(),
+                            swift_type: fa.swift_type.clone(),
+                            default_value: if fa.swift_type.ends_with('?') { Some("nil".to_string()) } else { None },
+                        });
+                    }
+                    // Add to data_entries if missing
+                    if !init.data_entries.iter().any(|e| e.key == fa.name) {
+                        let is_entity = check_entity_for_field();
+                        let value = if is_entity {
+                            OwnedDataEntryValue::FieldData(fa.name.clone())
+                        } else {
+                            OwnedDataEntryValue::Variable(fa.name.clone())
+                        };
+                        init.data_entries.push(OwnedDataEntry {
+                            key: fa.name.clone(),
+                            value,
+                        });
+                    }
+                    // Fix existing data entry if it's Variable but should be FieldData
+                    if let Some(entry) = init.data_entries.iter_mut().find(|e| e.key == fa.name) {
+                        if matches!(entry.value, OwnedDataEntryValue::Variable(_)) && check_entity_for_field() {
+                            entry.value = OwnedDataEntryValue::FieldData(fa.name.clone());
                         }
                     }
                 }
@@ -1254,14 +1316,92 @@ fn build_selection_set_config_owned(
                 }
             }
 
-            // Add applicable fragment OIDs to fulfilled fragments in initializer.
-            // Only include fragments whose type condition is satisfied by the inline
-            // fragment's type. Some applicable fragments are used for field merging and
-            // fragment accessors but aren't actually fulfilled by this type.
+            // Add fulfilled fragment OIDs in the correct order.
+            // Order: promoted scope OIDs + their fragment OIDs first,
+            // then direct sibling inline fragment scope OIDs + their fragment OIDs,
+            // then remaining applicable fragments.
             if let Some(ref mut init) = child_ss.initializer {
+                let parent_scope_type = ir_ss.scope.parent_type.name();
+
+                // 1. Process promoted fragments first (e.g., AsWarmBlooded from WarmBloodedDetails)
+                for frag_name in &applicable_frags {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        if pre_promoted_fragment_names.contains(frag_name) {
+                            let ftc = &frag_arc.type_condition_name;
+                            // Add promoted scope OID
+                            let promoted_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(ftc));
+                            if !init.fulfilled_fragments.contains(&promoted_qualified) {
+                                init.fulfilled_fragments.push(promoted_qualified);
+                            }
+                            // Add the fragment itself
+                            if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
+                                if !init.fulfilled_fragments.contains(frag_name) {
+                                    init.fulfilled_fragments.push(frag_name.clone());
+                                }
+                            }
+                            // Add sub-fragments
+                            for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                                if !init.fulfilled_fragments.contains(&sub.fragment_name) {
+                                    if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                        if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
+                                            init.fulfilled_fragments.push(sub.fragment_name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Process each direct sibling inline fragment that is a supertype, in source order.
+                for sibling_inline in &ds.inline_fragments {
+                    if let Some(ref sibling_tc) = sibling_inline.type_condition {
+                        if sibling_tc.name() != tc.name()
+                            && sibling_tc.name() != parent_scope_type
+                            && is_supertype_of_current(tc, sibling_tc.name())
+                        {
+                            // Add scope OID
+                            let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()));
+                            if !init.fulfilled_fragments.contains(&sibling_qualified)
+                                && !sibling_qualified.contains(&format!("As{}.As{}", naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(sibling_tc.name())))
+                            {
+                                init.fulfilled_fragments.push(sibling_qualified.clone());
+                            }
+                            // Add nested promoted fragment OIDs from this sibling
+                            for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
+                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
+                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sib_frag.type_condition_name));
+                                        if !init.fulfilled_fragments.contains(&nested_promoted) {
+                                            init.fulfilled_fragments.push(nested_promoted);
+                                        }
+                                    }
+                                }
+                            }
+                            // Add fragment OIDs from this sibling's scope
+                            for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
+                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
+                                        if !init.fulfilled_fragments.contains(&sib_spread.fragment_name) {
+                                            init.fulfilled_fragments.push(sib_spread.fragment_name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Add remaining applicable fragment OIDs not yet added
+                let entity_root_type_name = entity_root_graphql_type
+                    .unwrap_or_else(|| ir_ss.scope.parent_type.name());
+                let parent_is_union = matches!(inline.selection_set.scope.parent_type, GraphQLCompositeType::Union(_));
                 for frag_name in &applicable_frags {
                     let should_fulfill = if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         type_satisfies_condition(tc, &frag_arc.type_condition_name)
+                            // For union parents, also include fragments whose type condition
+                            // matches the entity root (build_initializer_config skips unions)
+                            || (parent_is_union && frag_arc.type_condition_name == entity_root_type_name)
                     } else {
                         true
                     };
@@ -1269,36 +1409,76 @@ fn build_selection_set_config_owned(
                         init.fulfilled_fragments.push(frag_name.clone());
                     }
                 }
-                // Also add promoted inline fragment qualified names for applicable fragments
-                for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
-                        let ftc = &frag_arc.type_condition_name;
-                        // Check if this fragment was promoted to an inline fragment
-                        if pre_promoted_fragment_names.contains(frag_name) {
-                            let promoted_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(ftc));
-                            if !init.fulfilled_fragments.contains(&promoted_qualified) {
-                                init.fulfilled_fragments.push(promoted_qualified);
-                            }
+            }
+
+            // For types that inherit from ancestor scopes (e.g., AsBird inside AsClassroomPet),
+            // add fulfilled fragment OIDs for ancestor-level scope paths that the current
+            // type satisfies. Also add entity type aliases and nested types from applicable
+            // fragments that come from ancestor scopes.
+            if !ancestor_fragments.is_empty() {
+                if let Some(ref mut init) = child_ss.initializer {
+                    // Find the root-level qualified name (e.g., AllAnimalsQuery.Data.AllAnimal)
+                    // by looking at the root entity type
+                    if let Some(root) = root_entity_type {
+                        let root_str = root.to_string();
+                        // Add parent scope OID if applicable
+                        if !init.fulfilled_fragments.contains(&qualified_name.to_string())
+                            && init.fulfilled_fragments.contains(&root_str)
+                        {
+                            // Insert after root and self
+                            let insert_pos = init.fulfilled_fragments.iter()
+                                .position(|f| f == &child_qualified)
+                                .map(|p| p + 1)
+                                .unwrap_or(init.fulfilled_fragments.len());
+                            init.fulfilled_fragments.insert(insert_pos, qualified_name.to_string());
                         }
-                        // Add sibling inline fragment OIDs
-                        for sibling_inline in &ds.inline_fragments {
-                            if let Some(ref sibling_tc) = sibling_inline.type_condition {
-                                if is_supertype_of_current(tc, sibling_tc.name()) {
-                                    let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()));
-                                    if !init.fulfilled_fragments.contains(&sibling_qualified) {
-                                        init.fulfilled_fragments.push(sibling_qualified);
-                                    }
-                                    // If that sibling also has promoted fragments, add their OIDs
-                                    for sibling_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                                        if let Some(sibling_frag) = referenced_fragments.iter().find(|f| f.name == sibling_spread.fragment_name) {
-                                            if type_satisfies_condition(tc, &sibling_frag.type_condition_name) {
-                                                let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sibling_frag.type_condition_name));
-                                                if !init.fulfilled_fragments.contains(&nested_promoted) {
-                                                    init.fulfilled_fragments.push(nested_promoted);
-                                                }
+
+                        // For each applicable fragment, check if its type condition maps to
+                        // a known scope path at the root level.
+                        // Skip if the fragment's type condition is the same as the root entity's
+                        // type (e.g., skip "Animal" when root is AllAnimal on Animal interface).
+                        let root_entity_type_name = entity_root_graphql_type.unwrap_or("");
+                        for frag_name in &applicable_frags {
+                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                                let ftc = &frag_arc.type_condition_name;
+                                // Skip if this fragment's type is the root entity type itself
+                                if *ftc == root_entity_type_name { continue; }
+                                // Add root-level scope OID (e.g., AllAnimal.AsWarmBlooded)
+                                let root_scope = format!("{}.As{}", root_str, naming::first_uppercased(ftc));
+                                if !init.fulfilled_fragments.contains(&root_scope) && type_satisfies_condition(tc, ftc) {
+                                    init.fulfilled_fragments.push(root_scope.clone());
+                                }
+                                // Add nested promoted OIDs (e.g., AllAnimal.AsPet.AsWarmBlooded)
+                                for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                                    if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                        // Skip if sub-fragment type matches root entity type
+                                        if sub_frag.type_condition_name == root_entity_type_name { continue; }
+                                        if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
+                                            let nested_scope = format!("{}.As{}.As{}", root_str, naming::first_uppercased(ftc), naming::first_uppercased(&sub_frag.type_condition_name));
+                                            if !init.fulfilled_fragments.contains(&nested_scope) {
+                                                init.fulfilled_fragments.push(nested_scope);
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add entity type aliases from applicable ancestor fragments
+                for frag_name in &applicable_frags {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                            if matches!(field, FieldSelection::Entity(_)) {
+                                let entity_type = naming::first_uppercased(key);
+                                if !child_ss.nested_types.iter().any(|nt| nt.config.struct_name == entity_type)
+                                    && !child_ss.type_aliases.iter().any(|ta| ta.name == entity_type)
+                                {
+                                    child_ss.type_aliases.push(OwnedTypeAlias {
+                                        name: entity_type.clone(),
+                                        target: format!("{}.{}", frag_name, entity_type),
+                                    });
                                 }
                             }
                         }
@@ -1322,6 +1502,11 @@ fn build_selection_set_config_owned(
                                             .map(|f| matches!(f, FieldSelection::Entity(_)))
                                             .unwrap_or(false)
                                     })
+                                    .unwrap_or(false)
+                            })
+                            || referenced_fragments.iter().any(|frag_arc| {
+                                frag_arc.root_field.selection_set.direct_selections.fields.get(&name_clone)
+                                    .map(|f| matches!(f, FieldSelection::Entity(_)))
                                     .unwrap_or(false)
                             });
                         if is_entity_field {
@@ -1424,12 +1609,42 @@ fn build_selection_set_config_owned(
                     });
                 }
 
+                // Add parent scope's non-promoted fragments that are applicable to this promoted type.
+                // E.g., when AsPet.AsWarmBlooded is promoted from WarmBloodedDetails, PetDetails
+                // (non-promoted on AsPet) should also be included if Pet is satisfied by WarmBlooded's scope.
+                // Since we're inside AsPet (which guarantees Pet), PetDetails is always applicable.
+                for parent_spread in &ds.named_fragments {
+                    if parent_spread.fragment_name == spread.fragment_name { continue; }
+                    if promoted_fragment_names.contains(&parent_spread.fragment_name) { continue; }
+                    if pfs.iter().any(|fs| fs.fragment_type == parent_spread.fragment_name) { continue; }
+                    pfs.push(OwnedFragmentSpreadAccessor {
+                        property_name: naming::first_lowercased(&parent_spread.fragment_name),
+                        fragment_type: parent_spread.fragment_name.clone(),
+                    });
+                    // Also add fields from this parent fragment
+                    if let Some(parent_frag) = referenced_fragments.iter().find(|f| f.name == parent_spread.fragment_name) {
+                        for (key, field) in &parent_frag.root_field.selection_set.direct_selections.fields {
+                            if !pfa.iter().any(|f| f.name == *key) {
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            }
+                        }
+                    }
+                }
+
+                // Collect parent scope's non-promoted fragment names
+                let parent_nonpromoted: Vec<String> = ds.named_fragments.iter()
+                    .filter(|s| !promoted_fragment_names.contains(&s.fragment_name) && s.fragment_name != spread.fragment_name)
+                    .map(|s| s.fragment_name.clone())
+                    .collect();
                 let pinit = if generate_initializers {
                     Some(build_promoted_initializer(
                         &frag_arc.root_field.selection_set.scope.parent_type,
                         &pfa, schema_namespace, &child_qualified, &child_root_entity,
                         &spread.fragment_name, &frag_ds.named_fragments, referenced_fragments,
                         customizer, ds,
+                        qualified_name,
+                        &parent_nonpromoted,
                     ))
                 } else { None };
 
@@ -1486,6 +1701,7 @@ fn build_selection_set_config_owned(
                                 &promoted_fragment_names,
                                 referenced_fragments,
                                 &ir_ss.scope.parent_type,
+                                ancestor_fragments,
                             );
                             // Also include the source fragment's sub-fragments
                             let mut all_applicable = case1_applicable.clone();
@@ -1568,6 +1784,26 @@ fn build_selection_set_config_owned(
                         }
                     } else {
                         pta.push(OwnedTypeAlias { name: n.clone(), target: format!("{}.{}", source_frag, n) });
+                    }
+                }
+
+                // Add entity field type aliases from parent non-promoted fragments
+                // E.g., Owner = PetDetails.Owner when PetDetails is a parent scope fragment
+                for parent_frag_name in &parent_nonpromoted {
+                    if let Some(parent_frag) = referenced_fragments.iter().find(|f| f.name == *parent_frag_name) {
+                        for (key, field) in &parent_frag.root_field.selection_set.direct_selections.fields {
+                            if matches!(field, FieldSelection::Entity(_)) {
+                                let entity_type = naming::first_uppercased(key);
+                                if !pnt.iter().any(|nt| nt.config.struct_name == entity_type)
+                                    && !pta.iter().any(|ta| ta.name == entity_type)
+                                {
+                                    pta.push(OwnedTypeAlias {
+                                        name: entity_type,
+                                        target: format!("{}.{}", parent_frag_name, naming::first_uppercased(key)),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1701,6 +1937,7 @@ fn build_selection_set_config_owned(
                         &promoted_fragment_names,
                         referenced_fragments,
                         &ir_ss.scope.parent_type,
+                        ancestor_fragments,
                     );
 
                     // Add additional applicable fragment spreads
@@ -2045,6 +2282,26 @@ fn is_supertype_of_current(current_type: &GraphQLCompositeType, type_name: &str)
     }
 }
 
+/// Check if a Swift type string looks like a local entity type (uses _fieldData).
+/// Entity types are local struct names like `Height`, `[Predator]`, `Owner?`, `[Height]?`.
+/// Scalar types use qualified names like `AnimalKingdomAPI.SkinCovering` or built-in types.
+fn swift_type_is_entity(swift_type: &str) -> bool {
+    // Strip optional suffix and list brackets
+    let inner = swift_type
+        .trim_end_matches('?')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('?');
+    // Entity types are PascalCase local struct names (no dots, starts with uppercase)
+    // Built-in types (String, Int, Bool, Double) are NOT entities
+    !inner.is_empty()
+        && inner.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        && !inner.contains('.')
+        && !matches!(inner, "String" | "Int" | "Bool" | "Double" | "Float")
+        && !inner.starts_with("GraphQLEnum<")
+        && !inner.starts_with("GraphQLNullable<")
+}
+
 /// Check if a type condition satisfies a fragment's type condition.
 /// Returns true if the given type implements or equals the fragment's type.
 fn type_satisfies_condition(tc: &GraphQLCompositeType, fragment_type_condition: &str) -> bool {
@@ -2069,6 +2326,7 @@ fn collect_applicable_fragments(
     promoted_fragment_names: &[String],
     referenced_fragments: &[Arc<NamedFragment>],
     _parent_type: &GraphQLCompositeType,
+    ancestor_fragments: &[String],
 ) -> Vec<String> {
     let mut applicable = Vec::new();
 
@@ -2130,6 +2388,28 @@ fn collect_applicable_fragments(
                                 if !applicable.contains(&sub.fragment_name) {
                                     applicable.push(sub.fragment_name.clone());
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fragments from ancestor scopes whose type condition is satisfied by this type.
+    // These are fragments spread at grandparent or higher scopes that weren't directly
+    // visible in the current scope's ds.named_fragments.
+    for ancestor_frag_name in ancestor_fragments {
+        if applicable.contains(ancestor_frag_name) { continue; }
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *ancestor_frag_name) {
+            if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
+                applicable.push(ancestor_frag_name.clone());
+                // Sub-fragments too
+                for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                    if !applicable.contains(&sub.fragment_name) {
+                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                            if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
+                                applicable.push(sub.fragment_name.clone());
                             }
                         }
                     }
@@ -2707,6 +2987,10 @@ fn build_initializer_config(
                 }
             }
         }
+        if !is_entity {
+            // Fallback: check if the Swift type looks like an entity type
+            is_entity = swift_type_is_entity(&accessor.swift_type);
+        }
         let value = if is_entity {
             OwnedDataEntryValue::FieldData(accessor.name.clone())
         } else {
@@ -2784,6 +3068,8 @@ fn build_promoted_initializer(
     referenced_fragments: &[Arc<NamedFragment>],
     customizer: &SchemaCustomizer,
     parent_ds: &DirectSelections,
+    parent_qualified_name: &str,
+    parent_nonpromoted_fragments: &[String],
 ) -> OwnedInitializerConfig {
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
     let swift_name = customizer.custom_type_name(parent_type.name());
@@ -2801,11 +3087,24 @@ fn build_promoted_initializer(
     }];
     for a in all_field_accessors {
         let is_entity = parent_ds.fields.get(&a.name).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
-            || referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
+            || referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false))
+            || swift_type_is_entity(&a.swift_type);
         data_entries.push(OwnedDataEntry { key: a.name.clone(), value: if is_entity { OwnedDataEntryValue::FieldData(a.name.clone()) } else { OwnedDataEntryValue::Variable(a.name.clone()) } });
     }
-    let mut fulfilled_fragments = vec![root_entity_type.to_string(), qualified_name.to_string(), fragment_name.to_string()];
+    let mut fulfilled_fragments = vec![root_entity_type.to_string()];
+    // Add parent scope's qualified name if different from root entity
+    if parent_qualified_name != root_entity_type && !fulfilled_fragments.contains(&parent_qualified_name.to_string()) {
+        fulfilled_fragments.push(parent_qualified_name.to_string());
+    }
+    fulfilled_fragments.push(qualified_name.to_string());
+    fulfilled_fragments.push(fragment_name.to_string());
     for fs in frag_named_fragments { fulfilled_fragments.push(fs.fragment_name.clone()); }
+    // Add parent scope's non-promoted fragments to fulfilled
+    for parent_frag in parent_nonpromoted_fragments {
+        if !fulfilled_fragments.contains(parent_frag) {
+            fulfilled_fragments.push(parent_frag.clone());
+        }
+    }
     OwnedInitializerConfig { parameters, data_entries, fulfilled_fragments, typename_value }
 }
 
@@ -2834,7 +3133,8 @@ fn build_promoted_composite_initializer(
     }];
     for a in all_field_accessors {
         let is_entity = parent_ds.fields.get(&a.name).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
-            || referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
+            || referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false))
+            || swift_type_is_entity(&a.swift_type);
         data_entries.push(OwnedDataEntry { key: a.name.clone(), value: if is_entity { OwnedDataEntryValue::FieldData(a.name.clone()) } else { OwnedDataEntryValue::Variable(a.name.clone()) } });
     }
     let mut fulfilled_fragments = vec![root_entity_type.to_string(), qualified_name.to_string(), fragment_name.to_string()];
