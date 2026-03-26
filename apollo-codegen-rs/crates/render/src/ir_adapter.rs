@@ -38,11 +38,12 @@ pub fn render_operation(
         OperationType::Subscription => TemplateOpType::Subscription,
     };
 
-    let fragment_names: Vec<String> = op
+    let mut fragment_names: Vec<String> = op
         .referenced_fragments
         .iter()
         .map(|f| f.name.clone())
         .collect();
+    fragment_names.sort();
     let fragment_name_refs: Vec<&str> = fragment_names.iter().map(|s| s.as_str()).collect();
 
     let variables: Vec<OwnedVariableConfig> = op
@@ -95,6 +96,7 @@ pub fn render_operation(
         None,  // no parent fields for root
         op.is_local_cache_mutation,
         customizer,
+        None,  // entity_root_graphql_type (set per-entity below)
     );
 
     let config = OwnedOperationConfig {
@@ -144,6 +146,7 @@ pub fn render_fragment(
         None, // no parent fields for fragment root
         frag.is_local_cache_mutation,
         customizer,
+        None, // entity_root_graphql_type
     );
 
     let config = OwnedFragmentConfig {
@@ -207,6 +210,8 @@ struct OwnedSelectionSetConfig {
     indent: usize,
     access_modifier: String,
     is_mutable: bool,
+    /// Type names that were absorbed (e.g., "AsAnimal" absorbed into AsPet)
+    absorbed_type_names: Vec<String>,
 }
 
 enum OwnedParentTypeRef {
@@ -300,6 +305,7 @@ fn build_selection_set_config_owned(
     parent_fields: Option<&[OwnedFieldAccessor]>,
     is_mutable: bool,
     customizer: &SchemaCustomizer,
+    entity_root_graphql_type: Option<&str>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -308,6 +314,59 @@ fn build_selection_set_config_owned(
     };
 
     let ds = &ir_ss.direct_selections;
+
+    // Absorb inline fragments whose type condition is always satisfied by the entity root type.
+    // For example, `... on Animal` inside `... on Pet` when the entity root is `Animal` -
+    // since the entity IS Animal, the `... on Animal` condition is always true and its
+    // selections should be absorbed into the enclosing scope (field selections become direct,
+    // entity field selections become nested types).
+    let mut absorbed_inline_indices: Vec<usize> = Vec::new();
+    let mut absorbed_type_names: Vec<String> = Vec::new();
+    if let Some(entity_root_type) = entity_root_graphql_type {
+        for (idx, inline) in ds.inline_fragments.iter().enumerate() {
+            if let Some(ref tc) = inline.type_condition {
+                let tc_name = tc.name();
+                let should_absorb = tc_name == entity_root_type
+                    || is_supertype_of_current(&ir_ss.scope.parent_type, tc_name);
+                if should_absorb {
+                    absorbed_inline_indices.push(idx);
+                    absorbed_type_names.push(format!("As{}", naming::first_uppercased(tc_name)));
+                }
+            }
+        }
+    }
+
+    // Pre-compute which fragments will be promoted to inline fragments (type narrowing).
+    // We need this before building selections so promoted inline fragments can be inserted
+    // in the correct position (after fields, before direct inline fragments).
+    let current_parent_type_name_early = ir_ss.scope.parent_type.name().to_string();
+    let direct_inline_type_names_early: Vec<String> = ds
+        .inline_fragments
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !absorbed_inline_indices.contains(idx))
+        .filter_map(|(_, inline)| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
+        .collect();
+    let mut early_promoted_fragment_names: Vec<String> = Vec::new();
+    let mut early_promoted_types: Vec<String> = Vec::new();
+    {
+        let mut seen_promoted_types: Vec<String> = Vec::new();
+        for spread in &ds.named_fragments {
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                let ftc = &frag_arc.type_condition_name;
+                let needs_narrowing = *ftc != current_parent_type_name_early
+                    && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
+                if needs_narrowing
+                    && !direct_inline_type_names_early.contains(ftc)
+                    && !seen_promoted_types.contains(ftc)
+                {
+                    early_promoted_fragment_names.push(spread.fragment_name.clone());
+                    early_promoted_types.push(ftc.clone());
+                    seen_promoted_types.push(ftc.clone());
+                }
+            }
+        }
+    }
 
     // Determine whether __typename should appear in __selections.
     // It is added for all selection sets EXCEPT:
@@ -340,7 +399,40 @@ fn build_selection_set_config_owned(
             },
         });
     }
-    for inline in &ds.inline_fragments {
+    // Add absorbed field selections (from absorbed inline fragments)
+    for &idx in &absorbed_inline_indices {
+        let inline = &ds.inline_fragments[idx];
+        for (key, field) in &inline.selection_set.direct_selections.fields {
+            if key == "__typename" { continue; }
+            // Skip if already in direct selections
+            if ds.fields.contains_key(key) { continue; }
+            let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+            let arguments = render_field_arguments(field);
+            // Avoid duplicates
+            if !selections.iter().any(|s| matches!(&s.kind, OwnedSelectionKind::Field { name, .. } if name == key)) {
+                selections.push(OwnedSelectionItem {
+                    kind: OwnedSelectionKind::Field {
+                        name: key.clone(),
+                        swift_type,
+                        arguments,
+                    },
+                });
+            }
+        }
+    }
+    // Insert promoted inline fragments BEFORE direct inline fragments.
+    // These come from fragment spreads whose type condition differs from the parent type
+    // and requires a type narrowing inline fragment (e.g., ...WarmBloodedDetails on Animal
+    // creates AsWarmBlooded because WarmBlooded != Animal).
+    for promoted_type in &early_promoted_types {
+        let type_name = format!("As{}", naming::first_uppercased(promoted_type));
+        selections.push(OwnedSelectionItem {
+            kind: OwnedSelectionKind::InlineFragment(type_name),
+        });
+    }
+    for (idx, inline) in ds.inline_fragments.iter().enumerate() {
+        // Skip absorbed inline fragments
+        if absorbed_inline_indices.contains(&idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             let type_name = format!("As{}", naming::first_uppercased(tc.name()));
             selections.push(OwnedSelectionItem {
@@ -349,6 +441,8 @@ fn build_selection_set_config_owned(
         }
     }
     for frag_spread in &ds.named_fragments {
+        // Skip fragments that were promoted to inline fragments
+        if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
         selections.push(OwnedSelectionItem {
             kind: OwnedSelectionKind::Fragment(frag_spread.fragment_name.clone()),
         });
@@ -381,8 +475,10 @@ fn build_selection_set_config_owned(
 
     // For ALL selection sets with named fragment spreads, include the spread
     // fragment's fields as merged accessors (e.g., WarmBloodedDetails spreading
-    // HeightInMeters gets a `height` accessor from HeightInMeters)
+    // HeightInMeters gets a `height` accessor from HeightInMeters).
+    // Skip promoted fragments - their fields go inside the promoted inline fragment, not the parent.
     for spread in &ds.named_fragments {
+        if early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                 if !field_accessors.iter().any(|f| f.name == *key) {
@@ -396,25 +492,33 @@ fn build_selection_set_config_owned(
         }
     }
 
-    // Build inline fragment accessors (start with direct, add promoted later)
-    let mut inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = ds
-        .inline_fragments
-        .iter()
-        .filter_map(|inline| {
-            inline.type_condition.as_ref().map(|tc| {
-                let type_name = format!("As{}", naming::first_uppercased(tc.name()));
-                OwnedInlineFragmentAccessor {
-                    property_name: format!("as{}", naming::first_uppercased(tc.name())),
-                    type_name,
-                }
-            })
-        })
-        .collect();
+    // Build inline fragment accessors: promoted first, then direct (skip absorbed)
+    let mut inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = Vec::new();
+    // Add promoted inline fragment accessors first
+    for promoted_type in &early_promoted_types {
+        let type_name = format!("As{}", naming::first_uppercased(promoted_type));
+        inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+            property_name: format!("as{}", naming::first_uppercased(promoted_type)),
+            type_name,
+        });
+    }
+    // Then add direct inline fragment accessors (skip absorbed)
+    for (idx, inline) in ds.inline_fragments.iter().enumerate() {
+        if absorbed_inline_indices.contains(&idx) { continue; }
+        if let Some(ref tc) = inline.type_condition {
+            let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+            inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                property_name: format!("as{}", naming::first_uppercased(tc.name())),
+                type_name,
+            });
+        }
+    }
 
-    // Build fragment spread accessors
+    // Build fragment spread accessors (skip promoted fragments)
     let mut fragment_spreads: Vec<OwnedFragmentSpreadAccessor> = ds
         .named_fragments
         .iter()
+        .filter(|spread| !early_promoted_fragment_names.contains(&spread.fragment_name))
         .map(|spread| OwnedFragmentSpreadAccessor {
             property_name: naming::first_lowercased(&spread.fragment_name),
             fragment_type: spread.fragment_name.clone(),
@@ -453,6 +557,7 @@ fn build_selection_set_config_owned(
                 None, // entity fields don't inherit parent fields
                 is_mutable,
                 customizer,
+                None, // entity_root_graphql_type: entity fields start a new entity
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -535,7 +640,13 @@ fn build_selection_set_config_owned(
             let doc_comment = if is_root {
                 format!("/// {}", child_name)
             } else {
-                format!("/// {}.{}", struct_name, child_name)
+                // Use full entity-relative path for doc comment
+                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                    &qualified_name[pos + 6..]
+                } else {
+                    struct_name
+                };
+                format!("/// {}.{}", doc_prefix, child_name)
             };
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
@@ -548,6 +659,60 @@ fn build_selection_set_config_owned(
             });
         }
     }
+
+    // Build nested entity types from absorbed inline fragments.
+    // When an absorbed inline fragment has entity fields (e.g., `... on Animal { height { relativeSize centimeters } }`
+    // absorbed into AsPet), we need to create merged nested entity types that combine the absorbed
+    // fields as __selections with the parent entity's fields as merged accessors.
+    for &idx in &absorbed_inline_indices {
+        let absorbed_inline = &ds.inline_fragments[idx];
+        for (key, field) in &absorbed_inline.selection_set.direct_selections.fields {
+            if let FieldSelection::Entity(absorbed_ef) = field {
+                let singularized_key = naming::singularize(key);
+                let child_name = naming::first_uppercased(&singularized_key);
+                // Check if we already have this entity as a nested type (from direct selections)
+                let existing_idx = nested_types.iter().position(|nt: &OwnedNestedSelectionSet| nt.config.struct_name == child_name);
+                if let Some(existing_pos) = existing_idx {
+                    // Merge absorbed selections into the existing nested type
+                    let existing = &mut nested_types[existing_pos];
+                    // Add absorbed fields as selections (they become the __selections for AsPet.Height)
+                    for (abs_key, abs_field) in &absorbed_ef.selection_set.direct_selections.fields {
+                        if abs_key == "__typename" { continue; }
+                        let (swift_type, _) = render_field_swift_type(abs_field, schema_namespace, type_kinds, customizer);
+                        // Add to selections if not present
+                        if !existing.config.selections.iter().any(|s| matches!(&s.kind, OwnedSelectionKind::Field { name, .. } if name == abs_key)) {
+                            existing.config.selections.push(OwnedSelectionItem {
+                                kind: OwnedSelectionKind::Field { name: abs_key.clone(), swift_type: swift_type.clone(), arguments: None },
+                            });
+                        }
+                        // Add to field accessors - INSERT at beginning before parent fields
+                        if !existing.config.field_accessors.iter().any(|f| f.name == *abs_key) {
+                            // Insert at position 0 (before parent fields)
+                            existing.config.field_accessors.insert(0, OwnedFieldAccessor { name: abs_key.clone(), swift_type: swift_type.clone() });
+                            // Also update initializer
+                            if let Some(ref mut init) = existing.config.initializer {
+                                // Find the right position - after __typename if present, before existing params
+                                let insert_pos = if init.parameters.first().map(|p| p.name == "__typename").unwrap_or(false) { 1 } else { 0 };
+                                init.parameters.insert(insert_pos, OwnedInitParam {
+                                    name: abs_key.clone(), swift_type: swift_type.clone(),
+                                    default_value: if swift_type.ends_with('?') { Some("nil".to_string()) } else { None },
+                                });
+                                let data_insert_pos = if init.data_entries.first().map(|e| e.key == "__typename").unwrap_or(false) { 1 } else { 0 };
+                                init.data_entries.insert(data_insert_pos, OwnedDataEntry {
+                                    key: abs_key.clone(), value: OwnedDataEntryValue::Variable(abs_key.clone()),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Track the index where promoted inline fragment nested types should be inserted.
+    // They go after entity fields/absorbed entity types but before direct inline fragments.
+    let promoted_insert_index = nested_types.len();
+
     // Pre-compute which fragments will be promoted to inline fragments (type narrowing).
     // We need this before processing direct inline fragments so we can determine
     // which parent-scope fragments are applicable to each inline fragment.
@@ -555,7 +720,9 @@ fn build_selection_set_config_owned(
     let direct_inline_type_names_pre: Vec<String> = ds
         .inline_fragments
         .iter()
-        .filter_map(|inline| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
+        .enumerate()
+        .filter(|(idx, _)| !absorbed_inline_indices.contains(idx))
+        .filter_map(|(_, inline)| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
         .collect();
     let mut pre_promoted_fragment_names: Vec<String> = Vec::new();
     {
@@ -582,10 +749,13 @@ fn build_selection_set_config_owned(
     let sibling_inline_fields: Vec<(&str, Vec<OwnedFieldAccessor>)> = ds
         .inline_fragments
         .iter()
-        .filter_map(|inline| {
+        .enumerate()
+        .filter(|(idx, _)| !absorbed_inline_indices.contains(idx))
+        .filter_map(|(_, inline)| {
             inline.type_condition.as_ref().map(|tc| {
                 let mut merged = Vec::new();
-                for other in &ds.inline_fragments {
+                for (other_idx, other) in ds.inline_fragments.iter().enumerate() {
+                    if absorbed_inline_indices.contains(&other_idx) { continue; }
                     if let Some(ref other_tc) = other.type_condition {
                         if other_tc.name() != tc.name()
                             && is_supertype_of_current(tc, other_tc.name())
@@ -605,8 +775,9 @@ fn build_selection_set_config_owned(
         })
         .collect();
 
-    // Nested inline fragments
-    for inline in &ds.inline_fragments {
+    // Nested inline fragments (skip absorbed ones)
+    for (inline_idx, inline) in ds.inline_fragments.iter().enumerate() {
+        if absorbed_inline_indices.contains(&inline_idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             let type_name = format!("As{}", naming::first_uppercased(tc.name()));
             let child_qualified = format!("{}.{}", qualified_name, type_name);
@@ -629,6 +800,12 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
+            // Determine the entity root GraphQL type for inline fragments.
+            // This is the entity's actual type (e.g., "Animal" for AllAnimal).
+            // If we're already inside an inline fragment with an entity root, use it;
+            // otherwise use the current parent type.
+            let entity_root_for_inline = entity_root_graphql_type
+                .unwrap_or_else(|| ir_ss.scope.parent_type.name());
             let mut child_ss = build_selection_set_config_owned(
                 &type_name,
                 &inline.selection_set,
@@ -646,7 +823,15 @@ fn build_selection_set_config_owned(
                 Some(&merged_parent), // pass parent + sibling field accessors
                 is_mutable,
                 customizer,
+                Some(entity_root_for_inline),
             );
+
+            // Propagate absorbed type names from parent to child
+            for atn in &absorbed_type_names {
+                if !child_ss.absorbed_type_names.contains(atn) {
+                    child_ss.absorbed_type_names.push(atn.clone());
+                }
+            }
 
             // Add sibling supertype fulfilled fragments to the initializer.
             // Exclude: self, and any type that would create a self-referencing path
@@ -1042,10 +1227,18 @@ fn build_selection_set_config_owned(
                 }
             }
 
+            // Use the qualified_name to build a doc comment path.
+            // For root selection sets (Data in operations, fragment roots), use just the type name.
+            // For nested scopes, use the full entity-relative path.
             let doc_comment = if is_root {
                 format!("/// {}", type_name)
             } else {
-                format!("/// {}.{}", struct_name, type_name)
+                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                    &qualified_name[pos + 6..]
+                } else {
+                    struct_name
+                };
+                format!("/// {}.{}", doc_prefix, type_name)
             };
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
@@ -1064,7 +1257,9 @@ fn build_selection_set_config_owned(
     let direct_inline_type_names: Vec<String> = ds
         .inline_fragments
         .iter()
-        .filter_map(|inline| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
+        .enumerate()
+        .filter(|(idx, _)| !absorbed_inline_indices.contains(idx))
+        .filter_map(|(_, inline)| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
         .collect();
 
     // Track fragments that get promoted to inline fragments (type narrowing).
@@ -1084,18 +1279,16 @@ fn build_selection_set_config_owned(
                 && !is_supertype_of_current(&ir_ss.scope.parent_type, frag_type_condition);
             if needs_narrowing
                 && !direct_inline_type_names.contains(frag_type_condition)
-                && !inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(frag_type_condition)))
             {
+                // Skip if this was NOT pre-computed as a promoted fragment
+                // (e.g., already handled by a direct inline fragment for the same type)
+                if !early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
                 promoted_fragment_names.push(spread.fragment_name.clone());
                 let type_name = format!("As{}", naming::first_uppercased(frag_type_condition));
                 let child_qualified = format!("{}.{}", qualified_name, type_name);
                 let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
 
-                selections.push(OwnedSelectionItem { kind: OwnedSelectionKind::InlineFragment(type_name.clone()) });
-                inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
-                    property_name: format!("as{}", naming::first_uppercased(frag_type_condition)),
-                    type_name: type_name.clone(),
-                });
+                // Selection and accessor were already added early in the function (before direct inline fragments)
 
                 let mut pfa = Vec::new();
                 for fa in &field_accessors { pfa.push(fa.clone()); }
@@ -1286,10 +1479,21 @@ fn build_selection_set_config_owned(
                     field_accessors: pfa, inline_fragment_accessors: vec![],
                     fragment_spreads: pfs, initializer: pinit,
                     nested_types: pnt, type_aliases: pta,
-                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable,
+                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
                 };
-                let dc = if is_root { format!("/// {}", type_name) } else { format!("/// {}.{}", struct_name, type_name) };
-                nested_types.push(OwnedNestedSelectionSet {
+                let dc = if is_root {
+                    format!("/// {}", type_name)
+                } else {
+                    let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                        &qualified_name[pos + 6..]
+                    } else {
+                        struct_name
+                    };
+                    format!("/// {}.{}", doc_prefix, type_name)
+                };
+                // Insert promoted nested types at the correct position
+                // (after entity fields, before direct inline fragments)
+                nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
                     doc_comment: dc,
                     parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), frag_type_condition),
                     config: pss,
@@ -1591,10 +1795,20 @@ fn build_selection_set_config_owned(
                         field_accessors: pfa, inline_fragment_accessors: vec![],
                         fragment_spreads: pfs, initializer: pinit,
                         nested_types: case2_nested, type_aliases: case2_aliases,
-                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable,
+                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
                     };
-                    let dc = if is_root { format!("/// {}", type_name) } else { format!("/// {}.{}", struct_name, type_name) };
-                    nested_types.push(OwnedNestedSelectionSet {
+                    let dc = if is_root {
+                        format!("/// {}", type_name)
+                    } else {
+                        let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                            &qualified_name[pos + 6..]
+                        } else {
+                            struct_name
+                        };
+                        format!("/// {}.{}", doc_prefix, type_name)
+                    };
+                    // Insert Case 2 promoted nested types at the correct position
+                    nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
                         doc_comment: dc,
                         parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), tc.name()),
                         config: pss,
@@ -1656,6 +1870,8 @@ fn build_selection_set_config_owned(
     let initializer = if generate_initializers {
         let extra_fulfilled: Vec<String> = vec![];
 
+        let is_fragment_definition = matches!(conformance,
+            SelectionSetConformance::Fragment | SelectionSetConformance::MutableFragment);
         let mut init = build_initializer_config(
             &ir_ss.scope.parent_type,
             ds,
@@ -1668,6 +1884,7 @@ fn build_selection_set_config_owned(
             &field_accessors,
             &extra_fulfilled,
             customizer,
+            is_fragment_definition,
         );
         // Filter out promoted fragment names from fulfilled_fragments
         if !promoted_fragment_names.is_empty() {
@@ -1697,6 +1914,7 @@ fn build_selection_set_config_owned(
         indent,
         access_modifier: access_modifier.to_string(),
         is_mutable,
+        absorbed_type_names,
     }
 }
 
@@ -2009,11 +2227,17 @@ fn build_inline_fragment_entity_type(
         type_aliases: vec![],
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable,
+        is_mutable, absorbed_type_names: vec![],
     };
 
+    // Use full entity-relative path for doc comment (e.g., "AllAnimal.AsWarmBlooded.Height")
+    let doc_path = if let Some(pos) = qualified_name.find(".Data.") {
+        &qualified_name[pos + 6..]
+    } else {
+        struct_name
+    };
     OwnedNestedSelectionSet {
-        doc_comment: format!("/// {}", struct_name),
+        doc_comment: format!("/// {}", doc_path),
         parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent), parent_type_name),
         config,
     }
@@ -2180,11 +2404,16 @@ fn build_merged_entity_nested_type(
         type_aliases: vec![],
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable,
+        is_mutable, absorbed_type_names: vec![],
     };
 
+    let doc_path = if let Some(pos) = qualified_name.find(".Data.") {
+        &qualified_name[pos + 6..]
+    } else {
+        struct_name
+    };
     OwnedNestedSelectionSet {
-        doc_comment: format!("/// {}", struct_name),
+        doc_comment: format!("/// {}", doc_path),
         parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent), parent_type_name),
         config,
     }
@@ -2238,6 +2467,7 @@ fn build_initializer_config(
     all_field_accessors: &[OwnedFieldAccessor],
     extra_fulfilled: &[String],
     customizer: &SchemaCustomizer,
+    is_fragment_definition: bool,
 ) -> OwnedInitializerConfig {
     // Determine typename handling based on parent type
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
@@ -2345,12 +2575,19 @@ fn build_initializer_config(
     }
 
     // Add directly spread named fragments to fulfilled fragments,
-    // but only when the fragment's type condition matches the current scope.
-    // For unions, the fragment is fulfilled per-type-case, not at the union level.
-    let parent_is_union = matches!(parent_type, GraphQLCompositeType::Union(_));
-    if !parent_is_union {
-        for spread in &ds.named_fragments {
-            fulfilled_fragments.push(spread.fragment_name.clone());
+    // but ONLY for fragment definition roots (not for operation selection sets).
+    // In the Swift codegen, fragment definitions include their direct spreads in
+    // fulfilledFragments, but operation entity selection sets do not (fragments are
+    // fulfilled through merged sources at inline fragment scopes instead).
+    // For fragment definitions and inline fragments, include direct fragment spreads
+    // in fulfilled_fragments. For operation entity selection sets (non-inline, non-fragment),
+    // do NOT include them.
+    if is_fragment_definition || is_inline_fragment {
+        let parent_is_union = matches!(parent_type, GraphQLCompositeType::Union(_));
+        if !parent_is_union {
+            for spread in &ds.named_fragments {
+                fulfilled_fragments.push(spread.fragment_name.clone());
+            }
         }
     }
 
@@ -2619,7 +2856,28 @@ fn render_owned_fragment(config: &OwnedFragmentConfig) -> String {
     crate::templates::fragment::render(&template_config)
 }
 
+/// Collect ALL absorbed type names from the entire nested tree.
+fn collect_all_absorbed_types(config: &OwnedSelectionSetConfig) -> Vec<String> {
+    let mut all = config.absorbed_type_names.clone();
+    for nested in &config.nested_types {
+        all.extend(collect_all_absorbed_types(&nested.config));
+    }
+    all
+}
+
 fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetConfig<'_> {
+    owned_to_ref_selection_set_with_absorbed(owned, &[])
+}
+
+fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConfig, parent_absorbed: &[String]) -> SelectionSetConfig<'a> {
+    // Combine parent's absorbed types with our own
+    let mut combined_absorbed: Vec<String> = parent_absorbed.to_vec();
+    for atn in &owned.absorbed_type_names {
+        if !combined_absorbed.contains(atn) {
+            combined_absorbed.push(atn.clone());
+        }
+    }
+
     let parent_type = match &owned.parent_type {
         OwnedParentTypeRef::Object(n) => ParentTypeRef::Object(n.as_str()),
         OwnedParentTypeRef::Interface(n) => ParentTypeRef::Interface(n.as_str()),
@@ -2700,6 +2958,12 @@ fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetCo
                 for w in parts.windows(2) {
                     if w[0] == w[1] { return false; }
                 }
+                // Filter out paths containing absorbed type names (from parent chain + own)
+                for absorbed in &combined_absorbed {
+                    if parts.contains(&absorbed.as_str()) {
+                        return false;
+                    }
+                }
                 true
             })
             .map(|s| s.as_str())
@@ -2724,7 +2988,7 @@ fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetCo
         .map(|n| NestedSelectionSet {
             doc_comment: &n.doc_comment,
             parent_type_comment: &n.parent_type_comment,
-            config: owned_to_ref_selection_set(&n.config),
+            config: owned_to_ref_selection_set_with_absorbed(&n.config, &combined_absorbed),
         })
         .collect();
 
