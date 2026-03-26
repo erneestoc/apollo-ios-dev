@@ -264,7 +264,7 @@ fn render_regular_operation(config: &OperationConfig) -> String {
                 ));
             }
             QueryStringFormat::Multiline => {
-                result.push_str("      #\"\n");
+                result.push_str("      #\"\"\"\n");
                 // Indent each line of the source with 6 spaces
                 for line in config.source.lines() {
                     if line.is_empty() {
@@ -273,7 +273,7 @@ fn render_regular_operation(config: &OperationConfig) -> String {
                         result.push_str(&format!("      {}\n", line));
                     }
                 }
-                result.push_str("      \"#");
+                result.push_str("      \"\"\"#");
             }
         }
 

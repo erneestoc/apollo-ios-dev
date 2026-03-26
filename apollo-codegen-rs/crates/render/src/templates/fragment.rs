@@ -83,7 +83,7 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
             ));
         }
         super::operation::QueryStringFormat::Multiline => {
-            result.push_str(&format!("{}  #\"\n", inner_indent));
+            result.push_str(&format!("{}  #\"\"\"\n", inner_indent));
             for line in config.fragment_definition.lines() {
                 if line.is_empty() {
                     result.push('\n');
@@ -91,7 +91,7 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
                     result.push_str(&format!("{}  {}\n", inner_indent, line));
                 }
             }
-            result.push_str(&format!("{}  \"#\n", inner_indent));
+            result.push_str(&format!("{}  \"\"\"#\n", inner_indent));
         }
     }
     result.push_str(&format!("{}}}\n", inner_indent));
