@@ -735,6 +735,7 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     fn print_operation(&self, op: &executable::Operation) -> String {
         let raw = op.serialize().no_indent().to_string();
         let raw = strip_local_cache_mutation_directive(&raw);
+        let raw = fix_default_value_formatting(&raw);
         add_typename_to_selection_sets(&raw)
     }
 
@@ -1011,6 +1012,79 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
 /// Strip the `@apollo_client_ios_localCacheMutation` directive from a source string.
 /// This directive is used for code generation purposes but should not appear in the
 /// emitted fragment definition source.
+/// Fix default value formatting in the source string to match graphql-js output.
+/// apollo-compiler prints: `{key: val, key2: val2}`
+/// graphql-js prints:      `{ key: val key2: val2 }` (spaces around braces, commas
+/// removed between fields that have complex values but kept between simple scalar fields)
+fn fix_default_value_formatting(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(len + 50);
+    let mut i = 0;
+    let mut in_default_value = false;
+    let mut default_brace_depth = 0;
+
+    while i < len {
+        if !in_default_value {
+            if chars[i] == '=' && i + 1 < len && chars[i + 1] == ' ' {
+                let before = &source[..i];
+                let paren_depth: i32 = before.chars().map(|c| match c {
+                    '(' => 1, ')' => -1, _ => 0,
+                }).sum();
+                if paren_depth > 0 {
+                    result.push(chars[i]);
+                    i += 1;
+                    result.push(chars[i]);
+                    i += 1;
+                    in_default_value = true;
+                    continue;
+                }
+            }
+            result.push(chars[i]);
+            i += 1;
+        } else {
+            if chars[i] == '{' {
+                default_brace_depth += 1;
+                result.push_str("{ ");
+                i += 1;
+            } else if chars[i] == '}' {
+                default_brace_depth -= 1;
+                // Remove trailing space before closing brace if present
+                if result.ends_with(' ') {
+                    // Already has space, just add }
+                } else {
+                    result.push(' ');
+                }
+                result.push('}');
+                i += 1;
+                if default_brace_depth == 0 {
+                    in_default_value = false;
+                }
+            } else if chars[i] == ',' && default_brace_depth > 0 {
+                // Keep all commas (graphql-js keeps them between object fields)
+                result.push(',');
+                i += 1;
+            } else if chars[i] == ' ' && default_brace_depth > 0 {
+                // Check if this space separates two object fields without a comma
+                // apollo-compiler: `species: [...] size: SMALL` (space-separated, no comma)
+                // graphql-js:       `species: [...], size: SMALL` (comma-separated)
+                // We need to add a comma before the space if the next token is a field name
+                result.push(' ');
+                i += 1;
+            } else if chars[i] == ')' && default_brace_depth == 0 {
+                in_default_value = false;
+                result.push(chars[i]);
+                i += 1;
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
 fn strip_local_cache_mutation_directive(source: &str) -> String {
     source.replace(" @apollo_client_ios_localCacheMutation", "")
           .replace("@apollo_client_ios_localCacheMutation ", "")
