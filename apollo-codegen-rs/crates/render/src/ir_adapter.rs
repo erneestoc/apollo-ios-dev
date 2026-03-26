@@ -456,6 +456,35 @@ fn build_selection_set_config_owned(
             });
         }
     }
+    // Collect sibling inline fragment fields for merging.
+    // For each inline fragment type, collect fields from OTHER inline fragments
+    // whose type conditions are supertypes (e.g., AsCat gets fields from AsAnimal, AsPet).
+    let sibling_inline_fields: Vec<(&str, Vec<OwnedFieldAccessor>)> = ds
+        .inline_fragments
+        .iter()
+        .filter_map(|inline| {
+            inline.type_condition.as_ref().map(|tc| {
+                let mut merged = Vec::new();
+                for other in &ds.inline_fragments {
+                    if let Some(ref other_tc) = other.type_condition {
+                        if other_tc.name() != tc.name()
+                            && is_supertype_of_current(tc, other_tc.name())
+                        {
+                            // other's type is a supertype of this type - merge its fields
+                            for (key, field) in &other.selection_set.direct_selections.fields {
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                if !merged.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
+                                    merged.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                }
+                            }
+                        }
+                    }
+                }
+                (tc.name(), merged)
+            })
+        })
+        .collect();
+
     // Nested inline fragments
     for inline in &ds.inline_fragments {
         if let Some(ref tc) = inline.type_condition {
@@ -471,6 +500,15 @@ fn build_selection_set_config_owned(
             } else {
                 SelectionSetConformance::InlineFragment
             };
+            // Combine parent fields with sibling merged fields
+            let mut merged_parent = field_accessors.clone();
+            if let Some((_, sibling_fields)) = sibling_inline_fields.iter().find(|(name, _)| *name == tc.name()) {
+                for sf in sibling_fields {
+                    if !merged_parent.iter().any(|f| f.name == sf.name) {
+                        merged_parent.push(sf.clone());
+                    }
+                }
+            }
             let child_ss = build_selection_set_config_owned(
                 &type_name,
                 &inline.selection_set,
@@ -485,7 +523,7 @@ fn build_selection_set_config_owned(
                 generate_initializers,
                 referenced_fragments,
                 type_kinds,
-                Some(&field_accessors), // pass parent field accessors for merging
+                Some(&merged_parent), // pass parent + sibling field accessors
                 is_mutable,
             );
             let doc_comment = if is_root {
