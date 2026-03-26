@@ -525,8 +525,13 @@ fn build_selection_set_config_owned(
                 }
             }
             let parent_type_name = ef.selection_set.scope.parent_type.name();
+            let doc_comment = if is_root {
+                format!("/// {}", child_name)
+            } else {
+                format!("/// {}.{}", struct_name, child_name)
+            };
             nested_types.push(OwnedNestedSelectionSet {
-                doc_comment: format!("/// {}", child_name),
+                doc_comment,
                 parent_type_comment: format!(
                     "///\n{}/// Parent Type: `{}`",
                     " ".repeat(indent + 2),
