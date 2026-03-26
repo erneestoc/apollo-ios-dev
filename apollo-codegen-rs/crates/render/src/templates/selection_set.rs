@@ -38,6 +38,9 @@ pub struct SelectionSetConfig<'a> {
     pub nested_types: Vec<NestedSelectionSet<'a>>,
     /// Type aliases (e.g. "public typealias Height = HeightInMeters.Height").
     pub type_aliases: Vec<TypeAliasConfig<'a>>,
+    /// Index into nested_types where type aliases should be rendered.
+    /// Type aliases are rendered after nested_types[0..index] and before nested_types[index..].
+    pub type_alias_insert_index: usize,
     /// Indentation level (number of spaces).
     pub indent: usize,
     /// The access modifier (e.g. "public ").
@@ -399,8 +402,9 @@ pub fn render(config: &SelectionSetConfig) -> String {
         render_initializer(&mut result, init_config, &inner_indent, config.access_modifier);
     }
 
-    // Nested selection set structs
-    for nested in &config.nested_types {
+    // Nested selection set structs (entity types), up to insert index
+    let insert_idx = config.type_alias_insert_index.min(config.nested_types.len());
+    for nested in &config.nested_types[..insert_idx] {
         result.push('\n');
         result.push_str(&format!(
             "{}{}\n",
@@ -413,13 +417,27 @@ pub fn render(config: &SelectionSetConfig) -> String {
         result.push_str(&render(&nested.config));
     }
 
-    // Type aliases (at end, after nested types)
+    // Type aliases (between entity types and inline fragment types)
     for alias in &config.type_aliases {
         result.push('\n');
         result.push_str(&format!(
             "{}{}typealias {} = {}\n",
             inner_indent, config.access_modifier, alias.name, alias.target
         ));
+    }
+
+    // Remaining nested selection set structs (inline fragment types)
+    for nested in &config.nested_types[insert_idx..] {
+        result.push('\n');
+        result.push_str(&format!(
+            "{}{}\n",
+            inner_indent, nested.doc_comment
+        ));
+        result.push_str(&format!(
+            "{}{}\n",
+            inner_indent, nested.parent_type_comment
+        ));
+        result.push_str(&render(&nested.config));
     }
 
     // Close struct

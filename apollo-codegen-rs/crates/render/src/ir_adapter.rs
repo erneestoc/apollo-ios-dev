@@ -98,6 +98,7 @@ pub fn render_operation(
         customizer,
         None,  // entity_root_graphql_type (set per-entity below)
         &[],   // no ancestor fragments for root
+        None,  // no parent scope DS for root
     );
 
     let config = OwnedOperationConfig {
@@ -149,6 +150,7 @@ pub fn render_fragment(
         customizer,
         None, // entity_root_graphql_type
         &[],  // no ancestor fragments for fragment root
+        None, // no parent scope DS for fragment root
     );
 
     let config = OwnedFragmentConfig {
@@ -209,6 +211,9 @@ struct OwnedSelectionSetConfig {
     initializer: Option<OwnedInitializerConfig>,
     nested_types: Vec<OwnedNestedSelectionSet>,
     type_aliases: Vec<OwnedTypeAlias>,
+    /// Index into nested_types where type aliases should be rendered.
+    /// Type aliases are rendered after nested_types[0..index] and before nested_types[index..].
+    type_alias_insert_index: usize,
     indent: usize,
     access_modifier: String,
     is_mutable: bool,
@@ -309,6 +314,7 @@ fn build_selection_set_config_owned(
     customizer: &SchemaCustomizer,
     entity_root_graphql_type: Option<&str>,
     ancestor_fragments: &[String],
+    parent_scope_ds: Option<&DirectSelections>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -624,6 +630,7 @@ fn build_selection_set_config_owned(
                 customizer,
                 None, // entity_root_graphql_type: entity fields start a new entity
                 &[],  // entity fields start a new entity scope
+                None, // entity fields start a new scope
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -783,6 +790,9 @@ fn build_selection_set_config_owned(
     // They go after entity fields/absorbed entity types but before direct inline fragments.
     // This index is incremented after each insertion to maintain order.
     let mut promoted_insert_index = nested_types.len();
+    // Save the entity type count for type_alias_insert_index (type aliases should be
+    // rendered after entity nested types but before inline fragment nested types).
+    let entity_nested_type_count = nested_types.len();
 
     // Pre-compute which fragments will be promoted to inline fragments (type narrowing).
     // We need this before processing direct inline fragments so we can determine
@@ -914,6 +924,7 @@ fn build_selection_set_config_owned(
                 customizer,
                 Some(entity_root_for_inline),
                 &child_ancestor_frags,
+                Some(ds), // pass parent scope's direct selections
             );
 
             // Propagate absorbed type names from parent to child
@@ -1128,9 +1139,25 @@ fn build_selection_set_config_owned(
                     let already_has = child_ss.nested_types.iter().any(|nt| nt.config.struct_name == entity_struct_name);
                     if already_has { continue; }
 
-                    // Check if the parent has this entity field (for the merged struct)
+                    // Check if the parent has this entity field (for the merged struct).
+                    // Also check parent_scope_ds (grandparent scope) if not found in current scope.
                     let parent_entity_field = ds.fields.get(field_key).and_then(|f| {
                         if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
+                    }).or_else(|| {
+                        // Check absorbed inline fragments of current scope
+                        for &abs_idx in &absorbed_inline_indices {
+                            if let Some(FieldSelection::Entity(ef)) = ds.inline_fragments[abs_idx].selection_set.direct_selections.fields.get(field_key) {
+                                return Some(ef);
+                            }
+                        }
+                        None
+                    }).or_else(|| {
+                        // Check parent scope's direct fields
+                        parent_scope_ds.and_then(|pds| {
+                            pds.fields.get(field_key).and_then(|f| {
+                                if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
+                            })
+                        })
                     });
 
                     // Check if the inline fragment itself has direct selections on this field
@@ -1194,6 +1221,44 @@ fn build_selection_set_config_owned(
                         }
                     }
 
+                    // Also check parent_scope_ds's inline fragments for entity fields
+                    // (e.g., AsPet has ... on Animal { height { relativeSize centimeters } } in AllAnimal)
+                    if let Some(pds) = parent_scope_ds {
+                        // Determine the root qualified name for parent scope siblings
+                        let root_qualified = root_entity_type.unwrap_or(qualified_name);
+                        for pds_inline in &pds.inline_fragments {
+                            if let Some(ref pds_tc) = pds_inline.type_condition {
+                                if is_supertype_of_current(tc, pds_tc.name()) || tc.name() == pds_tc.name() {
+                                    // Check nested inline fragments within this parent sibling
+                                    for nested_inline in &pds_inline.selection_set.direct_selections.inline_fragments {
+                                        if let Some(ref nested_tc) = nested_inline.type_condition {
+                                            if is_supertype_of_current(tc, nested_tc.name()) || tc.name() == nested_tc.name() {
+                                                if let Some(FieldSelection::Entity(nested_ef)) = nested_inline.selection_set.direct_selections.fields.get(field_key) {
+                                                    let nested_qualified = format!("{}.As{}.{}", root_qualified, naming::first_uppercased(pds_tc.name()), entity_struct_name);
+                                                    let mut nested_fields = Vec::new();
+                                                    for (key, field) in &nested_ef.selection_set.direct_selections.fields {
+                                                        if key == "__typename" { continue; }
+                                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                                        nested_fields.push((key.clone(), swift_type));
+                                                    }
+                                                    if let Some(existing) = sibling_entity.iter_mut().find(|(q, _)| q == &nested_qualified) {
+                                                        for (key, st) in &nested_fields {
+                                                            if !existing.1.iter().any(|(k, _)| k == key) {
+                                                                existing.1.push((key.clone(), st.clone()));
+                                                            }
+                                                        }
+                                                    } else if !sibling_entity.iter().any(|(q, _)| q == &nested_qualified) {
+                                                        sibling_entity.push((nested_qualified, nested_fields));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(parent_ef) = parent_entity_field {
                         // Build a merged entity type
                         let entity_qualified = format!("{}.{}", child_qualified, entity_struct_name);
@@ -1213,6 +1278,16 @@ fn build_selection_set_config_owned(
                             // Don't add an OID for this - the inline's entity field is part of AsPet.Height selections
                         }
 
+                        // Check if the CURRENT scope (parent) actually has this entity field
+                        // in its direct fields or absorbed inlines (not just via grandparent)
+                        let parent_has_this_entity = ds.fields.get(field_key)
+                            .map(|f| matches!(f, FieldSelection::Entity(_)))
+                            .unwrap_or(false)
+                            || absorbed_inline_indices.iter().any(|&abs_idx| {
+                                ds.inline_fragments[abs_idx].selection_set.direct_selections.fields.get(field_key)
+                                    .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                    .unwrap_or(false)
+                            });
                         let merged = build_inline_fragment_entity_type(
                             &entity_struct_name,
                             field_key,
@@ -1230,6 +1305,8 @@ fn build_selection_set_config_owned(
                             has_direct,
                             customizer,
                             inline_has_field, // pass inline's entity field for __selections
+                            root_entity_type,
+                            parent_has_this_entity,
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -1255,6 +1332,8 @@ fn build_selection_set_config_owned(
                         // Insert entity types BEFORE inline fragment nested types
                         // to match the golden file ordering (entity fields before inline fragments)
                         child_ss.nested_types.insert(0, merged_config);
+                        // Update type_alias_insert_index since we added an entity type before inline types
+                        child_ss.type_alias_insert_index += 1;
                         // Remove any type alias that conflicts with this nested type
                         child_ss.type_aliases.retain(|ta| ta.name != entity_struct_name);
                     } else if !sibling_entity.is_empty() {
@@ -1425,29 +1504,67 @@ fn build_selection_set_config_owned(
                         if !init.fulfilled_fragments.contains(&qualified_name.to_string())
                             && init.fulfilled_fragments.contains(&root_str)
                         {
-                            // Insert after root and self
+                            // Insert BEFORE self (child_qualified) to match golden ordering
+                            // e.g., AsClassroomPet before AsBird
                             let insert_pos = init.fulfilled_fragments.iter()
                                 .position(|f| f == &child_qualified)
-                                .map(|p| p + 1)
                                 .unwrap_or(init.fulfilled_fragments.len());
                             init.fulfilled_fragments.insert(insert_pos, qualified_name.to_string());
                         }
 
                         // For each applicable fragment, check if its type condition maps to
-                        // a known scope path at the root level.
+                        // a known scope path at the root level. Insert scope OIDs BEFORE
+                        // their corresponding fragment names for correct ordering.
                         // Skip if the fragment's type condition is the same as the root entity's
                         // type (e.g., skip "Animal" when root is AllAnimal on Animal interface).
                         let root_entity_type_name = entity_root_graphql_type.unwrap_or("");
+
+                        // First pass: collect all fragments that are sub-fragments of other applicable fragments
+                        let mut sub_fragment_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        for frag_name in &applicable_frags {
+                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                                for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                                    if applicable_frags.contains(&sub.fragment_name) {
+                                        sub_fragment_of.insert(sub.fragment_name.clone(), frag_name.clone());
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reorder applicable_frags: parent fragments before their sub-fragments
+                        // Move sub-fragments to right after their parent fragment
+                        for frag_name in &applicable_frags {
+                            if let Some(parent_frag) = sub_fragment_of.get(frag_name) {
+                                // This fragment is a sub-fragment. Ensure it comes after its parent.
+                                let self_pos = init.fulfilled_fragments.iter().position(|f| f == frag_name);
+                                let parent_pos = init.fulfilled_fragments.iter().position(|f| f == parent_frag);
+                                if let (Some(sp), Some(pp)) = (self_pos, parent_pos) {
+                                    if sp < pp {
+                                        // Sub-fragment is before parent - move it after parent
+                                        let removed = init.fulfilled_fragments.remove(sp);
+                                        // Recalculate parent position after removal
+                                        let new_pp = init.fulfilled_fragments.iter().position(|f| f == parent_frag).unwrap_or(init.fulfilled_fragments.len());
+                                        init.fulfilled_fragments.insert(new_pp + 1, removed);
+                                    }
+                                }
+                            }
+                        }
+
                         for frag_name in &applicable_frags {
                             if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                                 let ftc = &frag_arc.type_condition_name;
                                 // Skip if this fragment's type is the root entity type itself
                                 if *ftc == root_entity_type_name { continue; }
                                 // Add root-level scope OID (e.g., AllAnimal.AsWarmBlooded)
+                                // Insert BEFORE the fragment name for correct ordering
                                 let root_scope = format!("{}.As{}", root_str, naming::first_uppercased(ftc));
                                 if !init.fulfilled_fragments.contains(&root_scope) && type_satisfies_condition(tc, ftc) {
-                                    init.fulfilled_fragments.push(root_scope.clone());
+                                    let insert_pos = init.fulfilled_fragments.iter()
+                                        .position(|f| f == frag_name)
+                                        .unwrap_or(init.fulfilled_fragments.len());
+                                    init.fulfilled_fragments.insert(insert_pos, root_scope.clone());
                                 }
+
                                 // Add nested promoted OIDs (e.g., AllAnimal.AsPet.AsWarmBlooded)
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                                     if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
@@ -1457,6 +1574,42 @@ fn build_selection_set_config_owned(
                                             let nested_scope = format!("{}.As{}.As{}", root_str, naming::first_uppercased(ftc), naming::first_uppercased(&sub_frag.type_condition_name));
                                             if !init.fulfilled_fragments.contains(&nested_scope) {
                                                 init.fulfilled_fragments.push(nested_scope);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Also check parent scope's sibling inline fragments for promoted
+                // fragment scopes (e.g., AsPet.AsWarmBlooded from AsPet spreading WarmBloodedDetails)
+                if let Some(ref mut init) = child_ss.initializer {
+                    if let Some(pds) = parent_scope_ds {
+                        if let Some(root) = root_entity_type {
+                            let root_str = root.to_string();
+                            for pds_inline in &pds.inline_fragments {
+                                if let Some(ref pds_tc) = pds_inline.type_condition {
+                                    if is_supertype_of_current(tc, pds_tc.name()) || tc.name() == pds_tc.name() {
+                                        let pds_scope = format!("{}.As{}", root_str, naming::first_uppercased(pds_tc.name()));
+                                        // Check this sibling's named fragment spreads for promoted fragments
+                                        for sib_spread in &pds_inline.selection_set.direct_selections.named_fragments {
+                                            if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                                let sib_ftc = &sib_frag.type_condition_name;
+                                                if *sib_ftc != pds_tc.name().to_string()
+                                                    && type_satisfies_condition(tc, sib_ftc)
+                                                {
+                                                    let promoted_scope = format!("{}.As{}", pds_scope, naming::first_uppercased(sib_ftc));
+                                                    if !init.fulfilled_fragments.contains(&promoted_scope) {
+                                                        // Insert after AsPet scope OID, before remaining fragments
+                                                        let insert_pos = init.fulfilled_fragments.iter()
+                                                            .position(|f| f == &pds_scope)
+                                                            .map(|p| p + 1)
+                                                            .unwrap_or(init.fulfilled_fragments.len());
+                                                        init.fulfilled_fragments.insert(insert_pos, promoted_scope);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1579,14 +1732,38 @@ fn build_selection_set_config_owned(
 
                 // Selection and accessor were already added early in the function (before direct inline fragments)
 
+                // Build field accessors for the promoted inline fragment.
+                // Order: root entity fields (in parent scope order) first,
+                // then the promoted fragment's own fields,
+                // then non-promoted applicable fragment fields.
                 let mut pfa = Vec::new();
-                for fa in &field_accessors { pfa.push(fa.clone()); }
+
+                // 1. Root entity fields from the parent scope (e.g., AllAnimal's fields
+                //    via parent_scope_ds, or the current scope's parent-inherited fields).
+                //    Use parent_scope_ds if available to get the root entity field order.
+                if let Some(parent_ds) = parent_scope_ds {
+                    // Add fields from the parent scope's direct fields (root entity order)
+                    for (key, field) in &parent_ds.fields {
+                        if key == "__typename" { continue; }
+                        if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                        }
+                    }
+                } else {
+                    // Fallback: use the current scope's field_accessors
+                    // (these include parent-inherited fields but in the current scope's order)
+                    for fa in &field_accessors { pfa.push(fa.clone()); }
+                }
+
+                // 2. Add the promoted fragment's own fields
                 for (key, field) in &frag_ds.fields {
                     if !pfa.iter().any(|f| f.name == *key) {
                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                         pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                     }
                 }
+                // Add sub-fragment fields
                 for fs in &frag_ds.named_fragments {
                     if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
@@ -1594,6 +1771,18 @@ fn build_selection_set_config_owned(
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                             }
+                        }
+                    }
+                }
+
+                // 3. Add absorbed inline fragment fields that aren't yet included
+                for &abs_idx in &absorbed_inline_indices {
+                    let abs_inline = &ds.inline_fragments[abs_idx];
+                    for (key, field) in &abs_inline.selection_set.direct_selections.fields {
+                        if key == "__typename" { continue; }
+                        if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                         }
                     }
                 }
@@ -1609,7 +1798,7 @@ fn build_selection_set_config_owned(
                     });
                 }
 
-                // Add parent scope's non-promoted fragments that are applicable to this promoted type.
+                // 4. Add parent scope's non-promoted fragments that are applicable to this promoted type.
                 // E.g., when AsPet.AsWarmBlooded is promoted from WarmBloodedDetails, PetDetails
                 // (non-promoted on AsPet) should also be included if Pet is satisfied by WarmBlooded's scope.
                 // Since we're inside AsPet (which guarantees Pet), PetDetails is always applicable.
@@ -1680,17 +1869,33 @@ fn build_selection_set_config_owned(
                     // Also check if the field is inherited from a higher scope
                     let inherited_field = !parent_has_field && field_accessors.iter().any(|fa| fa.name == *key);
                     if (parent_has_field || inherited_field) && generate_initializers {
-                        // Find the best entity field source - direct, from fragment, or from sibling inline
+                        // Find the best entity field source - direct, from parent scope, from absorbed inline, or from fragment.
+                        // Prefer the parent scope's entity field (e.g., AllAnimal.height with feet/inches)
+                        // over fragments (e.g., HeightInMeters.height with only meters).
                         let entity_field_source = if let Some(FieldSelection::Entity(ef)) = ds.fields.get(key) {
                             Some(ef)
+                        } else if let Some(parent_ds) = parent_scope_ds {
+                            // Check parent scope's direct entity fields first (has the most complete field set)
+                            parent_ds.fields.get(key).and_then(|f| {
+                                if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
+                            })
                         } else {
-                            // Try to find from referenced fragments
+                            None
+                        }.or_else(|| {
+                            // Try absorbed inline fragments (they contain entity fields from absorbed scopes)
+                            absorbed_inline_indices.iter().find_map(|&idx| {
+                                ds.inline_fragments[idx].selection_set.direct_selections.fields.get(key).and_then(|f| {
+                                    if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
+                                })
+                            })
+                        }).or_else(|| {
+                            // Fallback: try to find from referenced fragments
                             referenced_fragments.iter().find_map(|frag| {
                                 frag.root_field.selection_set.direct_selections.fields.get(key).and_then(|f| {
                                     if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
                                 })
                             })
-                        };
+                        });
                         if let Some(parent_ef) = entity_field_source {
                             let entity_qualified = format!("{}.{}", child_qualified, child_struct_name);
                             // Collect applicable fragments for this promoted inline fragment
@@ -1760,6 +1965,15 @@ fn build_selection_set_config_owned(
                                 }
                             }
 
+                            // Check if the current scope actually has this entity field
+                            let parent_has = ds.fields.get(key)
+                                .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                .unwrap_or(false)
+                                || absorbed_inline_indices.iter().any(|&abs_idx| {
+                                    ds.inline_fragments[abs_idx].selection_set.direct_selections.fields.get(key)
+                                        .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                        .unwrap_or(false)
+                                });
                             let merged_struct = build_inline_fragment_entity_type(
                                 &child_struct_name,
                                 key,
@@ -1777,6 +1991,8 @@ fn build_selection_set_config_owned(
                                 false,
                                 customizer,
                                 None,
+                                root_entity_type,
+                                parent_has,
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -1813,6 +2029,7 @@ fn build_selection_set_config_owned(
                     GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
                 };
                 let ic = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::InlineFragment };
+                let pnt_len = pnt.len();
                 let pss = OwnedSelectionSetConfig {
                     struct_name: type_name.clone(), schema_namespace: schema_namespace.to_string(),
                     parent_type: frag_parent_type, is_root: false, is_inline_fragment: true,
@@ -1820,7 +2037,7 @@ fn build_selection_set_config_owned(
                     merged_sources: vec![], selections: vec![OwnedSelectionItem { kind: OwnedSelectionKind::Fragment(spread.fragment_name.clone()) }],
                     field_accessors: pfa, inline_fragment_accessors: vec![],
                     fragment_spreads: pfs, initializer: pinit,
-                    nested_types: pnt, type_aliases: pta,
+                    nested_types: pnt, type_aliases: pta, type_alias_insert_index: pnt_len,
                     indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
                 };
                 let dc = if is_root {
@@ -2043,6 +2260,9 @@ fn build_selection_set_config_owned(
                             }
 
                             let entity_qualified = format!("{}.{}", child_qualified, entity_struct_name);
+                            let parent_has = ds.fields.get(field_key)
+                                .map(|f| matches!(f, FieldSelection::Entity(_)))
+                                .unwrap_or(false);
                             let merged_entity = build_inline_fragment_entity_type(
                                 &entity_struct_name,
                                 field_key,
@@ -2060,6 +2280,8 @@ fn build_selection_set_config_owned(
                                 false,
                                 customizer,
                                 None,
+                                root_entity_type,
+                                parent_has,
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -2133,6 +2355,7 @@ fn build_selection_set_config_owned(
                     }
 
                     let pc = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::CompositeInlineFragment };
+                    let case2_nested_len = case2_nested.len();
                     let pss = OwnedSelectionSetConfig {
                         struct_name: type_name.clone(), schema_namespace: schema_namespace.to_string(),
                         parent_type: ppt, is_root: false, is_inline_fragment: true,
@@ -2140,7 +2363,7 @@ fn build_selection_set_config_owned(
                         merged_sources: ms, selections: vec![],
                         field_accessors: pfa, inline_fragment_accessors: vec![],
                         fragment_spreads: pfs, initializer: pinit,
-                        nested_types: case2_nested, type_aliases: case2_aliases,
+                        nested_types: case2_nested, type_aliases: case2_aliases, type_alias_insert_index: case2_nested_len,
                         indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
                     };
                     let dc = if is_root {
@@ -2258,6 +2481,7 @@ fn build_selection_set_config_owned(
         initializer,
         nested_types,
         type_aliases: build_type_aliases(ds, referenced_fragments),
+        type_alias_insert_index: entity_nested_type_count,
         indent,
         access_modifier: access_modifier.to_string(),
         is_mutable,
@@ -2442,6 +2666,8 @@ fn build_inline_fragment_entity_type(
     has_direct_selections: bool,
     customizer: &SchemaCustomizer,
     inline_entity_field: Option<&EntityField>,  // The inline fragment's own entity field (for __selections)
+    root_entity_qualified: Option<&str>,  // Root entity qualified name for fulfilled fragments
+    parent_has_entity_field: bool,  // Whether the parent scope actually has this entity field
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -2511,8 +2737,27 @@ fn build_inline_fragment_entity_type(
     }
 
     // Build fulfilled fragments
+    // Order: self, root entity scope (if different from parent), then parent if same as root,
+    // then fragment entities, then parent if different from root.
     let parent_entity_qualified = format!("{}.{}", parent_qualified_name, struct_name);
-    let mut fulfilled = vec![qualified_name.to_string(), parent_entity_qualified.clone()];
+    let mut fulfilled = vec![qualified_name.to_string()];
+
+    // Determine if root is different from parent
+    let root_differs_from_parent = root_entity_qualified.map(|root_qual| {
+        let root_entity = format!("{}.{}", root_qual, struct_name);
+        root_entity != parent_entity_qualified && root_entity != qualified_name.to_string()
+    }).unwrap_or(false);
+
+    if root_differs_from_parent {
+        // Add root entity scope first (e.g., AllAnimal.Height)
+        if let Some(root_qual) = root_entity_qualified {
+            let root_entity = format!("{}.{}", root_qual, struct_name);
+            fulfilled.push(root_entity);
+        }
+    } else if parent_has_entity_field {
+        // Root == parent: add parent here (before fragments) only if parent actually has this entity
+        fulfilled.push(parent_entity_qualified.clone());
+    }
 
     // Add fragment entity type OIDs
     for frag_name in applicable_fragments {
@@ -2534,6 +2779,11 @@ fn build_inline_fragment_entity_type(
                 }
             }
         }
+    }
+
+    // Add parent entity scope at end (if different from root and parent actually has this entity)
+    if root_differs_from_parent && parent_has_entity_field && !fulfilled.contains(&parent_entity_qualified) {
+        fulfilled.push(parent_entity_qualified.clone());
     }
 
     // Add sibling inline fragment entity type OIDs
@@ -2632,6 +2882,7 @@ fn build_inline_fragment_entity_type(
         initializer: Some(initializer),
         nested_types: vec![],
         type_aliases: vec![],
+        type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
         is_mutable, absorbed_type_names: vec![],
@@ -2809,6 +3060,7 @@ fn build_merged_entity_nested_type(
         initializer: Some(initializer),
         nested_types: vec![],
         type_aliases: vec![],
+        type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
         is_mutable, absorbed_type_names: vec![],
@@ -3491,6 +3743,7 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
         initializer,
         nested_types,
         type_aliases,
+        type_alias_insert_index: owned.type_alias_insert_index,
         indent: owned.indent,
         access_modifier: &owned.access_modifier,
         is_mutable: owned.is_mutable,
