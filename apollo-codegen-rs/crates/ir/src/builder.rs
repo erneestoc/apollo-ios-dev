@@ -1,5 +1,6 @@
 //! IR Builder - transforms CompilationResult into IR.
 
+use crate::field_collector::{TypeKind, build_type_kinds};
 use crate::fields::{EntityField, ScalarField};
 use crate::inclusion::{InclusionCondition, InclusionConditions};
 use crate::named_fragment::NamedFragment;
@@ -11,6 +12,7 @@ use crate::selection_set::{
 };
 use apollo_codegen_frontend::compilation_result::{CompilationResult, OperationType};
 use apollo_codegen_frontend::types::*;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,6 +20,10 @@ use std::sync::Arc;
 pub struct IRBuilder {
     pub schema: Schema,
     fragments: HashMap<String, Arc<NamedFragment>>,
+    /// Map from type name to its kind (enum, input object, etc.)
+    type_kinds: HashMap<String, TypeKind>,
+    /// Map from input object type name to its field definitions
+    input_object_fields: HashMap<String, IndexMap<String, GraphQLInputField>>,
 }
 
 impl IRBuilder {
@@ -28,9 +34,20 @@ impl IRBuilder {
             result.schema_documentation.clone(),
         );
 
+        let type_kinds = build_type_kinds(result);
+
+        let mut input_object_fields: HashMap<String, IndexMap<String, GraphQLInputField>> = HashMap::new();
+        for named_type in &result.referenced_types {
+            if let GraphQLNamedType::InputObject(io) = named_type {
+                input_object_fields.insert(io.name.clone(), io.fields.clone());
+            }
+        }
+
         let mut builder = IRBuilder {
             schema,
             fragments: HashMap::new(),
+            type_kinds,
+            input_object_fields,
         };
 
         // Build fragments first (operations may reference them)
@@ -72,12 +89,8 @@ impl IRBuilder {
             .map(|v| VariableDefinition {
                 name: v.name.clone(),
                 type_str: render_graphql_type(&v.variable_type),
-                default_value: v.default_value.as_ref().and_then(|dv| {
-                    // Skip complex default values (objects) that can't be trivially rendered as Swift
-                    match dv {
-                        GraphQLValue::Object(_) => None,
-                        _ => Some(render_graphql_value(dv)),
-                    }
+                default_value: v.default_value.as_ref().map(|dv| {
+                    self.render_swift_default_value(dv, &v.variable_type, 2)
                 }),
             })
             .collect();
@@ -277,6 +290,190 @@ impl IRBuilder {
             }
         }
         (false, None)
+    }
+
+    /// Render a GraphQL default value as a Swift expression for an operation variable.
+    ///
+    /// This is type-aware: it uses the GraphQL type to determine type names for
+    /// input objects, whether to wrap enum values, etc.
+    ///
+    /// `indent` is the base indentation level (number of spaces) for the enclosing scope.
+    fn render_swift_default_value(
+        &self,
+        val: &GraphQLValue,
+        graphql_type: &GraphQLType,
+        indent: usize,
+    ) -> String {
+        // If the type is nullable (Named or List without NonNull), wrap in .init(...)
+        let is_nullable = matches!(graphql_type, GraphQLType::Named(_) | GraphQLType::List(_));
+        let inner_type = match graphql_type {
+            GraphQLType::NonNull(inner) => inner.as_ref(),
+            _ => graphql_type,
+        };
+
+        if is_nullable {
+            let is_complex = matches!(val, GraphQLValue::Object(_));
+            if is_complex {
+                // Multi-line .init() wrapper for complex values
+                let content_indent = indent + 2;
+                let inner_rendered = self.render_swift_value_for_type(val, inner_type, content_indent);
+                format!(".init(\n{}{}\n{})",
+                    " ".repeat(content_indent),
+                    inner_rendered,
+                    " ".repeat(indent))
+            } else {
+                // Inline .init() for simple values
+                let inner_rendered = self.render_swift_value_for_type(val, inner_type, indent);
+                format!(".init({})", inner_rendered)
+            }
+        } else {
+            self.render_swift_value_for_type(val, inner_type, indent)
+        }
+    }
+
+    /// Render a value given the "unwrapped" (non-null) type.
+    fn render_swift_value_for_type(
+        &self,
+        val: &GraphQLValue,
+        graphql_type: &GraphQLType,
+        indent: usize,
+    ) -> String {
+        match val {
+            GraphQLValue::Object(map) => {
+                // Input object: render as TypeName(field1: value1, field2: value2)
+                let type_name = graphql_type.named_type();
+                self.render_input_object_value(type_name, map, indent)
+            }
+            GraphQLValue::Enum(e) => {
+                // Enum: render as .camelCasedValue
+                let camel = to_camel_case(e);
+                format!(".{}", camel)
+            }
+            GraphQLValue::String(s) => format!("\"{}\"", s),
+            GraphQLValue::Int(i) => i.to_string(),
+            GraphQLValue::Float(f) => render_swift_float(*f),
+            GraphQLValue::Boolean(b) => b.to_string(),
+            GraphQLValue::Null => "nil".to_string(),
+            GraphQLValue::List(list) => {
+                // Determine inner type for list elements
+                let elem_type = match graphql_type {
+                    GraphQLType::List(inner) => {
+                        // Unwrap NonNull wrapper if present
+                        match inner.as_ref() {
+                            GraphQLType::NonNull(inner2) => inner2.as_ref(),
+                            other => other,
+                        }
+                    }
+                    _ => graphql_type,
+                };
+                let items: Vec<String> = list
+                    .iter()
+                    .map(|item| self.render_swift_value_for_type(item, elem_type, indent))
+                    .collect();
+                format!("[{}]", items.join(", "))
+            }
+            GraphQLValue::Variable(v) => format!("${}", v),
+        }
+    }
+
+    /// Render a nullable field value, wrapping in `.init()` if needed.
+    fn render_nullable_field_value(
+        &self,
+        val: &GraphQLValue,
+        field_type: &GraphQLType,
+        indent: usize,
+    ) -> String {
+        let is_nullable = matches!(field_type, GraphQLType::Named(_) | GraphQLType::List(_));
+        let inner_type = match field_type {
+            GraphQLType::NonNull(inner) => inner.as_ref(),
+            _ => field_type,
+        };
+
+        if is_nullable && !matches!(val, GraphQLValue::Null) {
+            let is_complex = matches!(val, GraphQLValue::Object(_));
+            if is_complex {
+                // Multi-line .init() for complex nested values
+                let content_indent = indent + 2;
+                let inner_rendered = self.render_swift_value_for_type(val, inner_type, content_indent);
+                format!(".init(\n{}{}\n{})",
+                    " ".repeat(content_indent),
+                    inner_rendered,
+                    " ".repeat(indent))
+            } else {
+                let inner_rendered = self.render_swift_value_for_type(val, inner_type, indent);
+                format!(".init({})", inner_rendered)
+            }
+        } else if matches!(val, GraphQLValue::Null) {
+            "nil".to_string()
+        } else {
+            self.render_swift_value_for_type(val, inner_type, indent)
+        }
+    }
+
+    /// Render an input object value as `TypeName(field1: value1, field2: value2)`.
+    fn render_input_object_value(
+        &self,
+        type_name: &str,
+        map: &IndexMap<String, GraphQLValue>,
+        indent: usize,
+    ) -> String {
+        let fields = self.input_object_fields.get(type_name);
+        let inner_indent = indent + 2;
+
+        let mut field_strs = Vec::new();
+        for (key, value) in map {
+            let field_type = fields
+                .and_then(|f| f.get(key))
+                .map(|f| &f.field_type);
+
+            let rendered_value = if let Some(ft) = field_type {
+                self.render_nullable_field_value(value, ft, inner_indent)
+            } else {
+                // Fallback: render without type context
+                render_graphql_value(value)
+            };
+
+            field_strs.push(format!("{}: {}", key, rendered_value));
+        }
+
+        format!("{}(\n{}{}\n{})",
+            type_name,
+            " ".repeat(inner_indent),
+            field_strs.join(&format!(",\n{}", " ".repeat(inner_indent))),
+            " ".repeat(indent))
+    }
+}
+
+/// Convert a SCREAMING_SNAKE_CASE enum value to camelCase.
+fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    let mut first = true;
+
+    for c in s.chars() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_uppercase().next().unwrap_or(c));
+            capitalize_next = false;
+        } else if first {
+            result.push(c.to_lowercase().next().unwrap_or(c));
+            first = false;
+        } else {
+            result.push(c.to_lowercase().next().unwrap_or(c));
+        }
+    }
+
+    result
+}
+
+/// Render a float value ensuring it always has a decimal point.
+fn render_swift_float(f: f64) -> String {
+    let s = f.to_string();
+    if s.contains('.') {
+        s
+    } else {
+        format!("{}.0", s)
     }
 }
 

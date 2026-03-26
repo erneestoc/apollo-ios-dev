@@ -126,13 +126,22 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
         }
         result.push('\n');
 
-        // init with variables - multi-line when more than 1 param
-        if config.variables.len() == 1 && config.variables[0].default_value.is_none() {
+        // init with variables
+        if config.variables.len() == 1 {
             let var = &config.variables[0];
-            result.push_str(&format!(
-                "  {}init({}: {}) {{\n",
-                config.access_modifier, var.name, var.swift_type
-            ));
+            if let Some(default) = var.default_value {
+                // Single variable with default value - inline format
+                result.push_str(&format!(
+                    "  {}init({}: {} = {}) {{\n",
+                    config.access_modifier, var.name, var.swift_type, default
+                ));
+            } else {
+                // Single variable without default - inline format
+                result.push_str(&format!(
+                    "  {}init({}: {}) {{\n",
+                    config.access_modifier, var.name, var.swift_type
+                ));
+            }
         } else {
             result.push_str(&format!("  {}init(\n", config.access_modifier));
             for (i, var) in config.variables.iter().enumerate() {
@@ -250,13 +259,22 @@ fn render_regular_operation(config: &OperationConfig) -> String {
         }
         result.push('\n');
 
-        // init with variables - multi-line when more than 1 param
-        if config.variables.len() == 1 && config.variables[0].default_value.is_none() {
+        // init with variables
+        if config.variables.len() == 1 {
             let var = &config.variables[0];
-            result.push_str(&format!(
-                "  {}init({}: {}) {{\n",
-                config.access_modifier, var.name, var.swift_type
-            ));
+            if let Some(default) = var.default_value {
+                // Single variable with default value - inline format
+                result.push_str(&format!(
+                    "  {}init({}: {} = {}) {{\n",
+                    config.access_modifier, var.name, var.swift_type, default
+                ));
+            } else {
+                // Single variable without default - inline format
+                result.push_str(&format!(
+                    "  {}init({}: {}) {{\n",
+                    config.access_modifier, var.name, var.swift_type
+                ));
+            }
         } else {
             result.push_str(&format!("  {}init(\n", config.access_modifier));
             for (i, var) in config.variables.iter().enumerate() {
