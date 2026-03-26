@@ -116,6 +116,80 @@ impl SchemaCustomizer {
             || !self.enum_cases.is_empty()
             || !self.input_fields.is_empty()
     }
+
+    /// Apply type name customization to a variable type string.
+    ///
+    /// Variable type strings like `GraphQLNullable<PetSearchFilters>` contain
+    /// raw GraphQL type names that need to be replaced with their customized
+    /// Swift names. This handles types appearing as bare names, inside generics
+    /// (angle brackets), or inside array brackets.
+    pub fn customize_variable_type(&self, type_str: &str) -> String {
+        if self.type_names.is_empty() {
+            return type_str.to_string();
+        }
+        let mut result = type_str.to_string();
+        for (graphql_name, swift_name) in &self.type_names {
+            // Replace whole-word occurrences of the type name.
+            // Type names appear in positions like:
+            //   GraphQLNullable<TypeName>  [TypeName]  TypeName?  TypeName
+            // We need to avoid partial matches (e.g., don't replace "Date" inside "CustomDate").
+            // Use word boundary logic: the character before must not be alphanumeric/underscore,
+            // and the character after must not be alphanumeric/underscore.
+            let mut new_result = String::new();
+            let mut i = 0;
+            let bytes = result.as_bytes();
+            let gname_bytes = graphql_name.as_bytes();
+            let gname_len = gname_bytes.len();
+            while i < bytes.len() {
+                if i + gname_len <= bytes.len() && &bytes[i..i + gname_len] == gname_bytes {
+                    // Check word boundary before
+                    let before_ok = if i == 0 {
+                        true
+                    } else {
+                        let c = bytes[i - 1] as char;
+                        !c.is_alphanumeric() && c != '_'
+                    };
+                    // Check word boundary after
+                    let after_ok = if i + gname_len >= bytes.len() {
+                        true
+                    } else {
+                        let c = bytes[i + gname_len] as char;
+                        !c.is_alphanumeric() && c != '_'
+                    };
+                    if before_ok && after_ok {
+                        new_result.push_str(swift_name);
+                        i += gname_len;
+                        continue;
+                    }
+                }
+                new_result.push(bytes[i] as char);
+                i += 1;
+            }
+            result = new_result;
+        }
+        result
+    }
+    /// Apply customization to a default value string.
+    /// Replaces type names and input field names within the value.
+    pub fn customize_default_value(&self, default_value: &str) -> String {
+        let mut result = default_value.to_string();
+        // Replace type names (input object names used as constructors)
+        for (graphql_name, swift_name) in &self.type_names {
+            // Replace TypeName( with CustomName(
+            let pattern = format!("{}(", graphql_name);
+            let replacement = format!("{}(", swift_name);
+            result = result.replace(&pattern, &replacement);
+        }
+        // Replace input field names (fieldName: with customFieldName:)
+        for ((input_name, field_name), custom_name) in &self.input_fields {
+            // Replace "fieldName:" with "customName:" inside the value
+            // Be careful to only replace field references, not arbitrary occurrences
+            let pattern = format!("{}: ", field_name);
+            let replacement = format!("{}: ", custom_name);
+            result = result.replace(&pattern, &replacement);
+        }
+        result
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use apollo_codegen_frontend::compilation_result::OperationType;
 use apollo_codegen_ir::builder::IRBuilder;
 use apollo_codegen_render::ir_adapter;
 use apollo_codegen_render::naming;
+use apollo_codegen_render::schema_customization::SchemaCustomizer;
 use apollo_codegen_render::templates;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -98,6 +99,9 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
 
     let schema_output_path = resolve_path(root_url, &config.output.schema_types.path);
 
+    // 5b. Build schema customizer
+    let customizer = SchemaCustomizer::new(&config.options.schema_customization);
+
     // 6. Generate files
     let mut result = GenerationResult::new();
 
@@ -114,6 +118,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         camel_case_enums,
         config,
         &type_kinds,
+        &customizer,
     );
 
     // Package.swift (for SPM module type)
@@ -129,6 +134,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &access_mod,
         config,
         &type_kinds,
+        &customizer,
     );
 
     generate_fragment_files(
@@ -140,6 +146,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &access_mod,
         config,
         &type_kinds,
+        &customizer,
     );
 
     // Test mock files
@@ -151,6 +158,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &ns,
         api_target,
         &access_mod,
+        &customizer,
     );
 
     Ok(result)
@@ -189,16 +197,23 @@ fn generate_schema_files(
     camel_case_enums: bool,
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) {
     let sources_path = schema_path.join("Sources");
 
     // Objects
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Object(obj) = named_type {
+            let swift_name = customizer.custom_type_name(&obj.name);
+            // Customize interface names referenced by this object
+            let custom_interfaces: Vec<String> = obj.interfaces
+                .iter()
+                .map(|iface| customizer.custom_type_name(iface).to_string())
+                .collect();
             let content = templates::object::render(
-                &obj.name,
-                &obj.name,
-                &obj.interfaces,
+                swift_name,
+                &obj.name, // GraphQL typename stays original
+                &custom_interfaces,
                 access_mod,
                 api_target,
                 &config.schema_namespace,
@@ -206,7 +221,7 @@ fn generate_schema_files(
             );
             let file_path = sources_path
                 .join("Schema/Objects")
-                .join(format!("{}.graphql.swift", naming::first_uppercased(&obj.name)));
+                .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -214,15 +229,16 @@ fn generate_schema_files(
     // Interfaces
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Interface(iface) = named_type {
+            let swift_name = customizer.custom_type_name(&iface.name);
             let content = templates::interface::render(
-                &iface.name,
-                &iface.name,
+                swift_name,
+                &iface.name, // GraphQL name stays original
                 access_mod,
                 api_target,
             );
             let file_path = sources_path
                 .join("Schema/Interfaces")
-                .join(format!("{}.graphql.swift", naming::first_uppercased(&iface.name)));
+                .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -230,10 +246,16 @@ fn generate_schema_files(
     // Unions
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Union(union_t) = named_type {
+            let swift_name = customizer.custom_type_name(&union_t.name);
+            // Customize member type names referenced by this union
+            let custom_members: Vec<String> = union_t.member_types
+                .iter()
+                .map(|m| customizer.custom_type_name(m).to_string())
+                .collect();
             let content = templates::union_type::render(
-                &union_t.name,
-                &union_t.name,
-                &union_t.member_types,
+                swift_name,
+                &union_t.name, // GraphQL name stays original
+                &custom_members,
                 access_mod,
                 api_target,
                 &config.schema_namespace,
@@ -241,7 +263,7 @@ fn generate_schema_files(
             );
             let file_path = sources_path
                 .join("Schema/Unions")
-                .join(format!("{}.graphql.swift", naming::first_uppercased(&union_t.name)));
+                .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -249,20 +271,24 @@ fn generate_schema_files(
     // Enums
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Enum(enum_t) = named_type {
+            let swift_name = customizer.custom_type_name(&enum_t.name);
             let values: Vec<templates::enum_type::EnumValue> = enum_t
                 .values
                 .iter()
-                .map(|v| templates::enum_type::EnumValue {
-                    name: v.name.clone(),
-                    raw_value: v.name.clone(),
-                    description: v.description.clone(),
-                    is_deprecated: v.is_deprecated,
-                    deprecation_reason: v.deprecation_reason.clone(),
+                .map(|v| {
+                    let custom_case = customizer.custom_enum_case(&enum_t.name, &v.name);
+                    templates::enum_type::EnumValue {
+                        name: custom_case.to_string(),
+                        raw_value: v.name.clone(), // GraphQL value stays original
+                        description: v.description.clone(),
+                        is_deprecated: v.is_deprecated,
+                        deprecation_reason: v.deprecation_reason.clone(),
+                    }
                 })
                 .collect();
 
             let content = templates::enum_type::render(
-                &enum_t.name,
+                swift_name,
                 &values,
                 access_mod,
                 api_target,
@@ -270,7 +296,7 @@ fn generate_schema_files(
             );
             let file_path = sources_path
                 .join("Schema/Enums")
-                .join(format!("{}.graphql.swift", naming::first_uppercased(&enum_t.name)));
+                .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -278,19 +304,21 @@ fn generate_schema_files(
     // Input Objects
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::InputObject(input) = named_type {
+            let swift_name = customizer.custom_type_name(&input.name);
             let fields: Vec<templates::input_object::InputField> = input
                 .fields
                 .iter()
                 .map(|(fname, fdef)| {
-                    let mut swift_type = render_input_field_type(&fdef.field_type, ns, &type_kinds);
+                    let custom_field_name = customizer.custom_input_field(&input.name, fname);
+                    let mut swift_type = render_input_field_type(&fdef.field_type, ns, &type_kinds, customizer);
                     // Non-null fields with default values become optional
                     if matches!(fdef.field_type, GraphQLType::NonNull(_)) && fdef.default_value.is_some() {
                         swift_type = format!("{}?", swift_type);
                     }
-                    let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds);
+                    let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds, customizer);
                     templates::input_object::InputField {
-                        schema_name: fname.clone(),
-                        rendered_name: fname.clone(),
+                        schema_name: fname.clone(), // GraphQL field name for __data access
+                        rendered_name: custom_field_name.to_string(),
                         rendered_type: swift_type,
                         rendered_init_type: init_type,
                         description: fdef.description.clone(),
@@ -300,7 +328,7 @@ fn generate_schema_files(
                 .collect();
 
             let content = templates::input_object::render(
-                &input.name,
+                swift_name,
                 &fields,
                 access_mod,
                 api_target,
@@ -309,7 +337,7 @@ fn generate_schema_files(
             );
             let file_path = sources_path
                 .join("Schema/InputObjects")
-                .join(format!("{}.graphql.swift", naming::first_uppercased(&input.name)));
+                .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -317,6 +345,7 @@ fn generate_schema_files(
     // Custom Scalars
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Scalar(scalar) = named_type {
+            let swift_name = customizer.custom_type_name(&scalar.name);
             // Skip built-in scalars
             if matches!(
                 scalar.name.as_str(),
@@ -325,7 +354,7 @@ fn generate_schema_files(
                 // ID is a custom scalar in Apollo
                 if scalar.name == "ID" {
                     let content = templates::custom_scalar::render(
-                        &scalar.name,
+                        swift_name,
                         scalar.description.as_deref(),
                         scalar.specified_by_url.as_deref(),
                         access_mod,
@@ -333,13 +362,13 @@ fn generate_schema_files(
                     );
                     let file_path = sources_path
                         .join("Schema/CustomScalars")
-                        .join(format!("{}.swift", naming::first_uppercased(&scalar.name)));
+                        .join(format!("{}.swift", naming::first_uppercased(swift_name)));
                     result.add_file(file_path, content);
                 }
                 continue;
             }
             let content = templates::custom_scalar::render(
-                &scalar.name,
+                swift_name,
                 scalar.description.as_deref(),
                 scalar.specified_by_url.as_deref(),
                 access_mod,
@@ -347,7 +376,7 @@ fn generate_schema_files(
             );
             let file_path = sources_path
                 .join("Schema/CustomScalars")
-                .join(format!("{}.swift", naming::first_uppercased(&scalar.name)));
+                .join(format!("{}.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
     }
@@ -358,7 +387,8 @@ fn generate_schema_files(
         .iter()
         .filter_map(|t| {
             if let GraphQLNamedType::Object(obj) = t {
-                Some((obj.name.clone(), obj.name.clone()))
+                let swift_name = customizer.custom_type_name(&obj.name).to_string();
+                Some((obj.name.clone(), swift_name))
             } else {
                 None
             }
@@ -422,17 +452,26 @@ fn generate_operation_files(
     access_mod: &str,
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) {
     let sources_path = schema_path.join("Sources");
 
     for op_def in &compilation.operations {
-        let operation = ir.build_operation(op_def);
+        let mut operation = ir.build_operation(op_def);
+        // Apply schema customization to variable default values
+        for var in &mut operation.variables {
+            if let Some(ref mut dv) = var.default_value {
+                *dv = customizer.customize_default_value(dv);
+            }
+            var.type_str = customizer.customize_variable_type(&var.type_str);
+        }
         let content = ir_adapter::render_operation(
             &operation,
             ns,
             access_mod,
             true, // generate initializers
             type_kinds,
+            customizer,
         );
 
         let subdir = match op_def.operation_type {
@@ -477,6 +516,7 @@ fn generate_fragment_files(
     access_mod: &str,
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -488,6 +528,7 @@ fn generate_fragment_files(
                 access_mod,
                 true, // generate initializers
                 type_kinds,
+                customizer,
             );
 
             if frag.is_local_cache_mutation {
@@ -513,6 +554,7 @@ fn generate_test_mock_files(
     ns: &str,
     api_target: &str,
     access_mod: &str,
+    customizer: &SchemaCustomizer,
 ) {
     let mock_path = match &config.output.test_mocks {
         TestMockFileOutput::None(_) => return,
@@ -536,7 +578,7 @@ fn generate_test_mock_files(
         .iter()
         .filter_map(|t| {
             if let GraphQLNamedType::Interface(i) = t {
-                Some(i.name.clone())
+                Some(customizer.custom_type_name(&i.name).to_string())
             } else {
                 None
             }
@@ -557,7 +599,7 @@ fn generate_test_mock_files(
         .iter()
         .filter_map(|t| {
             if let GraphQLNamedType::Union(u) = t {
-                Some(u.name.clone())
+                Some(customizer.custom_type_name(&u.name).to_string())
             } else {
                 None
             }
@@ -578,18 +620,21 @@ fn generate_test_mock_files(
     let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(compilation);
 
     for (object_name, collected_fields) in &all_fields {
+        let swift_object_name = customizer.custom_type_name(object_name);
         let mock_fields: Vec<templates::mock_object::MockField> = collected_fields
             .iter()
             .map(|cf| {
-                let field_type_str = apollo_codegen_ir::field_collector::render_mock_field_type(
+                let field_type_str = render_mock_field_type_customized(
                     &cf.field_type,
                     ns,
                     &type_kinds,
+                    customizer,
                 );
-                let mock_type_str = apollo_codegen_ir::field_collector::render_mock_init_type(
+                let mock_type_str = render_mock_init_type_customized(
                     &cf.field_type,
                     ns,
                     &type_kinds,
+                    customizer,
                 );
                 let set_function = apollo_codegen_ir::field_collector::determine_set_function(
                     &cf.field_type,
@@ -608,7 +653,7 @@ fn generate_test_mock_files(
             .collect();
 
         let content = templates::mock_object::render(
-            object_name,
+            swift_object_name,
             &mock_fields,
             access_mod,
             ns,
@@ -616,7 +661,7 @@ fn generate_test_mock_files(
         );
         let file_path = mock_path.join(format!(
             "{}+Mock.graphql.swift",
-            naming::first_uppercased(object_name),
+            naming::first_uppercased(swift_object_name),
         ));
         result.add_file(file_path, content);
     }
@@ -664,21 +709,22 @@ fn render_input_field_type(
     ty: &GraphQLType,
     ns: &str,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     match ty {
         GraphQLType::Named(name) => {
-            let base = render_scalar_swift(name, ns, type_kinds);
+            let base = render_scalar_swift(name, ns, type_kinds, customizer);
             format!("GraphQLNullable<{}>", base)
         }
         GraphQLType::NonNull(inner) => match inner.as_ref() {
-            GraphQLType::Named(name) => render_scalar_swift(name, ns, type_kinds),
+            GraphQLType::Named(name) => render_scalar_swift(name, ns, type_kinds, customizer),
             GraphQLType::List(list_inner) => {
-                format!("[{}]", render_input_field_type(list_inner, ns, type_kinds))
+                format!("[{}]", render_input_field_type(list_inner, ns, type_kinds, customizer))
             }
-            _ => render_input_field_type(inner, ns, type_kinds),
+            _ => render_input_field_type(inner, ns, type_kinds, customizer),
         },
         GraphQLType::List(inner) => {
-            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns, type_kinds))
+            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns, type_kinds, customizer))
         }
     }
 }
@@ -688,9 +734,10 @@ fn render_input_field_property_type(
     ty: &GraphQLType,
     ns: &str,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     // Property type same as field type for input objects
-    render_input_field_type(ty, ns, type_kinds)
+    render_input_field_type(ty, ns, type_kinds, customizer)
 }
 
 fn render_input_field_init_type(
@@ -698,8 +745,9 @@ fn render_input_field_init_type(
     ns: &str,
     default_value: &Option<GraphQLValue>,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
-    let base = render_input_field_type(ty, ns, type_kinds);
+    let base = render_input_field_type(ty, ns, type_kinds, customizer);
     match ty {
         GraphQLType::Named(_) | GraphQLType::List(_) => {
             // Nullable fields get default = nil
@@ -720,6 +768,7 @@ fn render_scalar_swift(
     name: &str,
     _ns: &str,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     use apollo_codegen_ir::field_collector::TypeKind;
     match name {
@@ -729,11 +778,144 @@ fn render_scalar_swift(
         "Boolean" => "Bool".to_string(),
         "ID" => "ID".to_string(),
         _ => {
+            let swift_name = customizer.custom_type_name(name);
             let kind = type_kinds.get(name).copied().unwrap_or(TypeKind::Scalar);
             match kind {
-                TypeKind::Enum => format!("GraphQLEnum<{}>", name),
-                _ => name.to_string(),
+                TypeKind::Enum => format!("GraphQLEnum<{}>", swift_name),
+                _ => swift_name.to_string(),
             }
         }
+    }
+}
+
+// === Mock type rendering helpers with schema customization ===
+
+/// Render mock field type with schema customization applied.
+fn render_mock_field_type_customized(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    let inner = strip_outer_nonnull(ty);
+    render_mock_type_inner_customized(inner, ns, type_kinds, customizer)
+}
+
+fn render_mock_type_inner_customized(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    use apollo_codegen_ir::field_collector::TypeKind;
+    match ty {
+        GraphQLType::Named(name) => render_mock_named_type_customized(name, ns, type_kinds, customizer),
+        GraphQLType::NonNull(inner) => render_mock_type_inner_customized(inner, ns, type_kinds, customizer),
+        GraphQLType::List(inner) => {
+            let inner_str = match inner.as_ref() {
+                GraphQLType::NonNull(inner_inner) => {
+                    render_mock_type_inner_customized(inner_inner, ns, type_kinds, customizer)
+                }
+                other => {
+                    format!("{}?", render_mock_type_inner_customized(other, ns, type_kinds, customizer))
+                }
+            };
+            format!("[{}]", inner_str)
+        }
+    }
+}
+
+fn render_mock_named_type_customized(
+    name: &str,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    use apollo_codegen_ir::field_collector::TypeKind;
+    match name {
+        "String" => "String".to_string(),
+        "Int" => "Int".to_string(),
+        "Float" => "Double".to_string(),
+        "Boolean" => "Bool".to_string(),
+        "ID" => format!("{}.ID", ns),
+        _ => {
+            let swift_name = customizer.custom_type_name(name);
+            let kind = type_kinds.get(name).copied().unwrap_or(TypeKind::Scalar);
+            match kind {
+                TypeKind::Enum => format!("GraphQLEnum<{}.{}>", ns, swift_name),
+                TypeKind::Scalar => format!("{}.{}", ns, swift_name),
+                TypeKind::Object | TypeKind::Interface | TypeKind::Union => swift_name.to_string(),
+                _ => swift_name.to_string(),
+            }
+        }
+    }
+}
+
+/// Render mock init type with schema customization applied.
+fn render_mock_init_type_customized(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    let inner = strip_outer_nonnull(ty);
+    render_mock_init_type_inner_customized(inner, ns, type_kinds, customizer)
+}
+
+fn render_mock_init_type_inner_customized(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    use apollo_codegen_ir::field_collector::TypeKind;
+    match ty {
+        GraphQLType::Named(name) => render_mock_init_named_type_customized(name, ns, type_kinds, customizer),
+        GraphQLType::NonNull(inner) => render_mock_init_type_inner_customized(inner, ns, type_kinds, customizer),
+        GraphQLType::List(inner) => {
+            let inner_str = match inner.as_ref() {
+                GraphQLType::NonNull(inner_inner) => {
+                    render_mock_init_type_inner_customized(inner_inner, ns, type_kinds, customizer)
+                }
+                other => {
+                    format!("{}?", render_mock_init_type_inner_customized(other, ns, type_kinds, customizer))
+                }
+            };
+            format!("[{}]", inner_str)
+        }
+    }
+}
+
+fn render_mock_init_named_type_customized(
+    name: &str,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+) -> String {
+    use apollo_codegen_ir::field_collector::TypeKind;
+    match name {
+        "String" => "String".to_string(),
+        "Int" => "Int".to_string(),
+        "Float" => "Double".to_string(),
+        "Boolean" => "Bool".to_string(),
+        "ID" => format!("{}.ID", ns),
+        _ => {
+            let swift_name = customizer.custom_type_name(name);
+            let kind = type_kinds.get(name).copied().unwrap_or(TypeKind::Scalar);
+            match kind {
+                TypeKind::Enum => format!("GraphQLEnum<{}.{}>", ns, swift_name),
+                TypeKind::Scalar => format!("{}.{}", ns, swift_name),
+                TypeKind::Object => format!("Mock<{}>", swift_name),
+                TypeKind::Interface | TypeKind::Union => "(any AnyMock)".to_string(),
+                _ => swift_name.to_string(),
+            }
+        }
+    }
+}
+
+fn strip_outer_nonnull(ty: &GraphQLType) -> &GraphQLType {
+    match ty {
+        GraphQLType::NonNull(inner) => inner.as_ref(),
+        other => other,
     }
 }

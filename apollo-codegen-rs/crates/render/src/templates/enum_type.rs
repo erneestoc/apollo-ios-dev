@@ -35,9 +35,9 @@ pub fn render(
 
     for value in values {
         let case_name = if camel_case_conversion {
-            crate::naming::to_camel_case(&value.raw_value)
+            crate::naming::to_camel_case(&value.name)
         } else {
-            value.raw_value.clone()
+            value.name.clone()
         };
 
         let escaped_name = crate::naming::escape_swift_name(&case_name);

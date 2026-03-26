@@ -4,6 +4,7 @@
 //! configuration that the templates consume.
 
 use crate::naming;
+use crate::schema_customization::SchemaCustomizer;
 use crate::templates::fragment::FragmentConfig;
 use crate::templates::operation::{OperationConfig, OperationType as TemplateOpType, VariableConfig as TemplateVariableConfig};
 use crate::templates::selection_set::*;
@@ -28,6 +29,7 @@ pub fn render_operation(
     access_modifier: &str,
     generate_initializers: bool,
     type_kinds: &HashMap<String, TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     // Build owned strings we'll reference
     let op_type = match op.operation_type {
@@ -48,8 +50,8 @@ pub fn render_operation(
         .iter()
         .map(|v| OwnedVariableConfig {
             name: v.name.clone(),
-            swift_type: v.type_str.clone(),
-            default_value: v.default_value.clone(),
+            swift_type: customizer.customize_variable_type(&v.type_str),
+            default_value: v.default_value.as_ref().map(|dv| customizer.customize_variable_type(dv)),
         })
         .collect();
 
@@ -92,6 +94,7 @@ pub fn render_operation(
         type_kinds,
         None,  // no parent fields for root
         op.is_local_cache_mutation,
+        customizer,
     );
 
     let config = OwnedOperationConfig {
@@ -117,6 +120,7 @@ pub fn render_fragment(
     access_modifier: &str,
     generate_initializers: bool,
     type_kinds: &HashMap<String, TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     let frag_conformance = if frag.is_local_cache_mutation {
         SelectionSetConformance::MutableFragment
@@ -139,6 +143,7 @@ pub fn render_fragment(
         type_kinds,
         None, // no parent fields for fragment root
         frag.is_local_cache_mutation,
+        customizer,
     );
 
     let config = OwnedFragmentConfig {
@@ -294,11 +299,12 @@ fn build_selection_set_config_owned(
     type_kinds: &HashMap<String, TypeKind>,
     parent_fields: Option<&[OwnedFieldAccessor]>,
     is_mutable: bool,
+    customizer: &SchemaCustomizer,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
-        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
-        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
-        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
     };
 
     let ds = &ir_ss.direct_selections;
@@ -324,7 +330,7 @@ fn build_selection_set_config_owned(
     for (key, field) in &ds.fields {
         // Skip __typename since it's added explicitly above when needed
         if key == "__typename" { continue; }
-        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds);
+        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         let arguments = render_field_arguments(field);
         selections.push(OwnedSelectionItem {
             kind: OwnedSelectionKind::Field {
@@ -354,7 +360,7 @@ fn build_selection_set_config_owned(
         .iter()
         .filter(|(key, _)| key.as_str() != "__typename") // __typename handled separately
         .map(|(key, field)| {
-            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
             OwnedFieldAccessor {
                 name: key.clone(),
                 swift_type,
@@ -380,7 +386,7 @@ fn build_selection_set_config_owned(
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                 if !field_accessors.iter().any(|f| f.name == *key) {
-                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                     field_accessors.push(OwnedFieldAccessor {
                         name: key.clone(),
                         swift_type,
@@ -446,6 +452,7 @@ fn build_selection_set_config_owned(
                 type_kinds,
                 None, // entity fields don't inherit parent fields
                 is_mutable,
+                customizer,
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -455,18 +462,18 @@ fn build_selection_set_config_owned(
                         for (frag_key, frag_field) in &frag_ef.selection_set.direct_selections.fields {
                             if frag_key == "__typename" { continue; }
                             if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
-                                let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                 child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
                                 // Also add to initializer if it exists
                                 if let Some(ref mut init) = child_ss.initializer {
                                     init.parameters.push(OwnedInitParam {
                                         name: frag_key.clone(),
                                         swift_type: {
-                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                             st
                                         },
                                         default_value: {
-                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                             if st.ends_with('?') { Some("nil".to_string()) } else { None }
                                         },
                                     });
@@ -492,17 +499,17 @@ fn build_selection_set_config_owned(
                                 for (frag_key, frag_field) in &sub_ef.selection_set.direct_selections.fields {
                                     if frag_key == "__typename" { continue; }
                                     if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
-                                        let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                        let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                         child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
                                         if let Some(ref mut init) = child_ss.initializer {
                                             init.parameters.push(OwnedInitParam {
                                                 name: frag_key.clone(),
                                                 swift_type: {
-                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                                     st
                                                 },
                                                 default_value: {
-                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
                                                     if st.ends_with('?') { Some("nil".to_string()) } else { None }
                                                 },
                                             });
@@ -585,7 +592,7 @@ fn build_selection_set_config_owned(
                         {
                             // other's type is a supertype of this type - merge its fields
                             for (key, field) in &other.selection_set.direct_selections.fields {
-                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 if !merged.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
                                     merged.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                 }
@@ -638,6 +645,7 @@ fn build_selection_set_config_owned(
                 type_kinds,
                 Some(&merged_parent), // pass parent + sibling field accessors
                 is_mutable,
+                customizer,
             );
 
             // Add sibling supertype fulfilled fragments to the initializer.
@@ -690,7 +698,7 @@ fn build_selection_set_config_owned(
                     for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
                         if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
-                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                             child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                         }
                     }
@@ -700,7 +708,7 @@ fn build_selection_set_config_owned(
                             for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
                                 if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
-                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                     child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                 }
                             }
@@ -719,7 +727,7 @@ fn build_selection_set_config_owned(
                                 for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                     if key == "__typename" { continue; }
                                     if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
-                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                         child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                     }
                                 }
@@ -728,7 +736,7 @@ fn build_selection_set_config_owned(
                                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                             if key == "__typename" { continue; }
                                             if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
-                                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                                 child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                             }
                                         }
@@ -812,7 +820,7 @@ fn build_selection_set_config_owned(
                                     let mut sib_fields = Vec::new();
                                     for (key, field) in &sib_ef.selection_set.direct_selections.fields {
                                         if key == "__typename" { continue; }
-                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                         sib_fields.push((key.clone(), swift_type));
                                     }
                                     sibling_entity.push((sibling_height_qualified, sib_fields));
@@ -827,7 +835,7 @@ fn build_selection_set_config_owned(
                                                 let mut nested_fields = Vec::new();
                                                 for (key, field) in &nested_ef.selection_set.direct_selections.fields {
                                                     if key == "__typename" { continue; }
-                                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                                     nested_fields.push((key.clone(), swift_type));
                                                 }
                                                 // Merge into existing sibling entity or add new
@@ -861,7 +869,7 @@ fn build_selection_set_config_owned(
                             let mut inline_fields = Vec::new();
                             for (key, field) in &inline_ef.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
-                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 inline_fields.push((key.clone(), swift_type));
                             }
                             // Don't add an OID for this - the inline's entity field is part of AsPet.Height selections
@@ -882,6 +890,7 @@ fn build_selection_set_config_owned(
                             type_kinds,
                             is_mutable,
                             has_direct,
+                            customizer,
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -889,7 +898,7 @@ fn build_selection_set_config_owned(
                             for (key, field) in &inline_ef.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
                                 if !merged_config.config.field_accessors.iter().any(|f| f.name == *key) {
-                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                     merged_config.config.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone() });
                                     if let Some(ref mut init) = merged_config.config.initializer {
                                         init.parameters.push(OwnedInitParam {
@@ -1092,7 +1101,7 @@ fn build_selection_set_config_owned(
                 for fa in &field_accessors { pfa.push(fa.clone()); }
                 for (key, field) in &frag_ds.fields {
                     if !pfa.iter().any(|f| f.name == *key) {
-                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                         pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                     }
                 }
@@ -1100,7 +1109,7 @@ fn build_selection_set_config_owned(
                     if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                             if !pfa.iter().any(|f| f.name == *key) {
-                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                             }
                         }
@@ -1123,6 +1132,7 @@ fn build_selection_set_config_owned(
                         &frag_arc.root_field.selection_set.scope.parent_type,
                         &pfa, schema_namespace, &child_qualified, &child_root_entity,
                         &spread.fragment_name, &frag_ds.named_fragments, referenced_fragments,
+                        customizer,
                     ))
                 } else { None };
 
@@ -1201,7 +1211,7 @@ fn build_selection_set_config_owned(
                                             let mut sib_fields = Vec::new();
                                             for (fk, ff) in &sib_ef.selection_set.direct_selections.fields {
                                                 if fk == "__typename" { continue; }
-                                                let (swift_type, _) = render_field_swift_type(ff, schema_namespace, type_kinds);
+                                                let (swift_type, _) = render_field_swift_type(ff, schema_namespace, type_kinds, customizer);
                                                 sib_fields.push((fk.clone(), swift_type));
                                             }
                                             case1_sibling.push((sib_qualified, sib_fields));
@@ -1216,7 +1226,7 @@ fn build_selection_set_config_owned(
                                                         let mut nested_fields = Vec::new();
                                                         for (fk, ff) in &nested_ef.selection_set.direct_selections.fields {
                                                             if fk == "__typename" { continue; }
-                                                            let (swift_type, _) = render_field_swift_type(ff, schema_namespace, type_kinds);
+                                                            let (swift_type, _) = render_field_swift_type(ff, schema_namespace, type_kinds, customizer);
                                                             nested_fields.push((fk.clone(), swift_type));
                                                         }
                                                         if let Some(existing) = case1_sibling.iter_mut().find(|(q, _)| q == &nested_qualified) {
@@ -1251,6 +1261,7 @@ fn build_selection_set_config_owned(
                                 type_kinds,
                                 is_mutable,
                                 false,
+                                customizer,
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -1262,9 +1273,9 @@ fn build_selection_set_config_owned(
                 }
 
                 let frag_parent_type = match &frag_arc.root_field.selection_set.scope.parent_type {
-                    GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
-                    GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
-                    GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+                    GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+                    GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+                    GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
                 };
                 let ic = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::InlineFragment };
                 let pss = OwnedSelectionSetConfig {
@@ -1302,9 +1313,9 @@ fn build_selection_set_config_owned(
                     });
 
                     let ppt = match tc {
-                        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
-                        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
-                        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+                        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+                        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+                        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
                     };
 
                     // Build merged_sources: include self, the fragment's own inline fragment,
@@ -1334,7 +1345,7 @@ fn build_selection_set_config_owned(
                             if other_name != tc_name && is_supertype_of_current(tc, other_name) {
                                 for (key, field) in &other_frag_inline.selection_set.direct_selections.fields {
                                     if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
-                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                         pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                     }
                                 }
@@ -1344,7 +1355,7 @@ fn build_selection_set_config_owned(
                     // Then: own direct fields from this inline fragment
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         if !pfa.iter().any(|f| f.name == *key) {
-                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                             pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                         }
                     }
@@ -1396,7 +1407,7 @@ fn build_selection_set_config_owned(
                             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
                                 if !pfa.iter().any(|f| f.name == *key) {
-                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                     pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                                 }
                             }
@@ -1449,7 +1460,7 @@ fn build_selection_set_config_owned(
                                             let mut sib_fields = Vec::new();
                                             for (key, field) in &sib_ef.selection_set.direct_selections.fields {
                                                 if key == "__typename" { continue; }
-                                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                                 sib_fields.push((key.clone(), swift_type));
                                             }
                                             case2_sibling.push((sib_qualified, sib_fields));
@@ -1462,7 +1473,7 @@ fn build_selection_set_config_owned(
                                                         let mut nested_fields = Vec::new();
                                                         for (key, field) in &nested_ef.selection_set.direct_selections.fields {
                                                             if key == "__typename" { continue; }
-                                                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                                             nested_fields.push((key.clone(), swift_type));
                                                         }
                                                         if let Some(existing) = case2_sibling.iter_mut().find(|(q, _)| q == &nested_qualified) {
@@ -1498,6 +1509,7 @@ fn build_selection_set_config_owned(
                                 type_kinds,
                                 is_mutable,
                                 false,
+                                customizer,
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -1527,6 +1539,7 @@ fn build_selection_set_config_owned(
                             tc, &pfa, schema_namespace, &child_qualified, &child_root_entity,
                             &spread.fragment_name, referenced_fragments,
                             &extra_frag_fulfilled,
+                            customizer,
                         ))
                     } else { None };
 
@@ -1654,6 +1667,7 @@ fn build_selection_set_config_owned(
             type_kinds,
             &field_accessors,
             &extra_fulfilled,
+            customizer,
         );
         // Filter out promoted fragment names from fulfilled_fragments
         if !promoted_fragment_names.is_empty() {
@@ -1817,19 +1831,20 @@ fn build_inline_fragment_entity_type(
     type_kinds: &HashMap<String, TypeKind>,
     is_mutable: bool,
     has_direct_selections: bool,
+    customizer: &SchemaCustomizer,
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
-        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
-        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
-        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
     };
 
     // Collect fields from parent entity field - always include parent scope's fields
     let mut merged_fields: Vec<OwnedFieldAccessor> = Vec::new();
     for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
         if key == "__typename" { continue; }
-        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         if !merged_fields.iter().any(|f| f.name == *key) {
             merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
         }
@@ -1842,7 +1857,7 @@ fn build_inline_fragment_entity_type(
                 for (key, field) in &frag_ef.selection_set.direct_selections.fields {
                     if key == "__typename" { continue; }
                     if !merged_fields.iter().any(|f| f.name == *key) {
-                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                         merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                     }
                 }
@@ -1854,7 +1869,7 @@ fn build_inline_fragment_entity_type(
                         for (key, field) in &inner_ef.selection_set.direct_selections.fields {
                             if key == "__typename" { continue; }
                             if !merged_fields.iter().any(|f| f.name == *key) {
-                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                             }
                         }
@@ -1907,8 +1922,9 @@ fn build_inline_fragment_entity_type(
     }
 
     let is_parent_object = matches!(entity_parent_type, OwnedParentTypeRef::Object(_));
+    let custom_parent_name = customizer.custom_type_name(parent_type_name);
     let typename_value = if is_parent_object {
-        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type_name)))
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
     } else {
         OwnedTypenameValue::Parameter
     };
@@ -1927,7 +1943,7 @@ fn build_inline_fragment_entity_type(
     let mut data_entries = vec![OwnedDataEntry {
         key: "__typename".to_string(),
         value: if is_parent_object {
-            OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type_name)))
+            OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
         } else {
             OwnedDataEntryValue::Variable("__typename".to_string())
         },
@@ -1959,7 +1975,7 @@ fn build_inline_fragment_entity_type(
         });
         for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
             if key == "__typename" { continue; }
-            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
             sels.push(OwnedSelectionItem {
                 kind: OwnedSelectionKind::Field { name: key.clone(), swift_type, arguments: None },
             });
@@ -2025,19 +2041,20 @@ fn build_merged_entity_nested_type(
     referenced_fragments: &[Arc<NamedFragment>],
     type_kinds: &HashMap<String, TypeKind>,
     is_mutable: bool,
+    customizer: &SchemaCustomizer,
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
-        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
-        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
-        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
     };
 
     // Collect field accessors from the parent entity field
     let mut merged_fields: Vec<OwnedFieldAccessor> = Vec::new();
     for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
         if key == "__typename" { continue; }
-        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
     }
 
@@ -2050,7 +2067,7 @@ fn build_merged_entity_nested_type(
             for (key, field) in &frag_ef.selection_set.direct_selections.fields {
                 if key == "__typename" { continue; }
                 if !merged_fields.iter().any(|f| f.name == *key) {
-                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                     merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                 }
             }
@@ -2062,7 +2079,7 @@ fn build_merged_entity_nested_type(
                     for (key, field) in &inner_ef.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
                         if !merged_fields.iter().any(|f| f.name == *key) {
-                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                             merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
                         }
                     }
@@ -2099,8 +2116,9 @@ fn build_merged_entity_nested_type(
     }
 
     let is_parent_object = matches!(entity_parent_type, OwnedParentTypeRef::Object(_));
+    let custom_parent_name = customizer.custom_type_name(parent_type_name);
     let typename_value = if is_parent_object {
-        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type_name)))
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
     } else {
         OwnedTypenameValue::Parameter
     };
@@ -2119,7 +2137,7 @@ fn build_merged_entity_nested_type(
     let mut data_entries = vec![OwnedDataEntry {
         key: "__typename".to_string(),
         value: if is_parent_object {
-            OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type_name)))
+            OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
         } else {
             OwnedDataEntryValue::Variable("__typename".to_string())
         },
@@ -2216,18 +2234,20 @@ fn build_initializer_config(
     is_inline_fragment: bool,
     root_entity_type: Option<&str>,
     referenced_fragments: &[Arc<NamedFragment>],
-    type_kinds: &HashMap<String, TypeKind>,
+    _type_kinds: &HashMap<String, TypeKind>,
     all_field_accessors: &[OwnedFieldAccessor],
     extra_fulfilled: &[String],
+    customizer: &SchemaCustomizer,
 ) -> OwnedInitializerConfig {
     // Determine typename handling based on parent type
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
 
     let typename_value = if parent_is_object {
+        let swift_name = customizer.custom_type_name(parent_type.name());
         let type_ref = format!(
             "{}.Objects.{}.typename",
             schema_namespace,
-            naming::first_uppercased(parent_type.name())
+            naming::first_uppercased(swift_name)
         );
         OwnedTypenameValue::Fixed(type_ref)
     } else {
@@ -2267,10 +2287,11 @@ fn build_initializer_config(
     data_entries.push(OwnedDataEntry {
         key: "__typename".to_string(),
         value: if parent_is_object {
+            let swift_name = customizer.custom_type_name(parent_type.name());
             let type_ref = format!(
                 "{}.Objects.{}.typename",
                 schema_namespace,
-                naming::first_uppercased(parent_type.name())
+                naming::first_uppercased(swift_name)
             );
             OwnedDataEntryValue::Typename(type_ref)
         } else {
@@ -2354,10 +2375,12 @@ fn build_promoted_initializer(
     schema_namespace: &str, qualified_name: &str, root_entity_type: &str,
     fragment_name: &str, frag_named_fragments: &[NamedFragmentSpread],
     referenced_fragments: &[Arc<NamedFragment>],
+    customizer: &SchemaCustomizer,
 ) -> OwnedInitializerConfig {
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
+    let swift_name = customizer.custom_type_name(parent_type.name());
     let typename_value = if parent_is_object {
-        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name())))
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(swift_name)))
     } else { OwnedTypenameValue::Parameter };
     let mut parameters = Vec::new();
     if !parent_is_object { parameters.push(OwnedInitParam { name: "__typename".to_string(), swift_type: "String".to_string(), default_value: None }); }
@@ -2366,7 +2389,7 @@ fn build_promoted_initializer(
     }
     let mut data_entries = vec![OwnedDataEntry {
         key: "__typename".to_string(),
-        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name()))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
+        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(swift_name))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
     }];
     for a in all_field_accessors {
         let is_entity = referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
@@ -2383,10 +2406,12 @@ fn build_promoted_composite_initializer(
     schema_namespace: &str, qualified_name: &str, root_entity_type: &str,
     fragment_name: &str, referenced_fragments: &[Arc<NamedFragment>],
     extra_fulfilled: &[String],
+    customizer: &SchemaCustomizer,
 ) -> OwnedInitializerConfig {
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
+    let swift_name = customizer.custom_type_name(parent_type.name());
     let typename_value = if parent_is_object {
-        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name())))
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(swift_name)))
     } else { OwnedTypenameValue::Parameter };
     let mut parameters = Vec::new();
     if !parent_is_object { parameters.push(OwnedInitParam { name: "__typename".to_string(), swift_type: "String".to_string(), default_value: None }); }
@@ -2395,7 +2420,7 @@ fn build_promoted_composite_initializer(
     }
     let mut data_entries = vec![OwnedDataEntry {
         key: "__typename".to_string(),
-        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name()))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
+        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(swift_name))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
     }];
     for a in all_field_accessors {
         let is_entity = referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
@@ -2416,10 +2441,11 @@ fn render_field_swift_type(
     field: &FieldSelection,
     schema_namespace: &str,
     type_kinds: &HashMap<String, TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> (String, bool) {
     match field {
         FieldSelection::Scalar(sf) => {
-            let swift_type = render_graphql_type_as_swift(&sf.field_type, schema_namespace, type_kinds);
+            let swift_type = render_graphql_type_as_swift(&sf.field_type, schema_namespace, type_kinds, customizer);
             (swift_type, false)
         }
         FieldSelection::Entity(ef) => {
@@ -2477,11 +2503,12 @@ fn render_graphql_type_as_swift(
     ty: &GraphQLType,
     schema_namespace: &str,
     type_kinds: &HashMap<String, TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     match ty {
-        GraphQLType::Named(name) => render_named_type_as_swift(name, schema_namespace, type_kinds),
+        GraphQLType::Named(name) => render_named_type_as_swift(name, schema_namespace, type_kinds, customizer),
         GraphQLType::NonNull(inner) => {
-            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds);
+            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds, customizer);
             // Remove trailing ? if present (NonNull removes optionality)
             if inner_str.ends_with('?') {
                 inner_str[..inner_str.len() - 1].to_string()
@@ -2490,7 +2517,7 @@ fn render_graphql_type_as_swift(
             }
         }
         GraphQLType::List(inner) => {
-            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds);
+            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds, customizer);
             format!("[{}]?", inner_str)
         }
     }
@@ -2500,6 +2527,7 @@ fn render_named_type_as_swift(
     name: &str,
     schema_namespace: &str,
     type_kinds: &HashMap<String, TypeKind>,
+    customizer: &SchemaCustomizer,
 ) -> String {
     match name {
         "String" => "String?".to_string(),
@@ -2508,18 +2536,19 @@ fn render_named_type_as_swift(
         "Boolean" => "Bool?".to_string(),
         "ID" => format!("{}.ID?", schema_namespace),
         _ => {
+            let swift_name = customizer.custom_type_name(name);
             let kind = type_kinds
                 .get(name)
                 .copied()
                 .unwrap_or(TypeKind::Scalar);
             match kind {
-                TypeKind::Enum => format!("GraphQLEnum<{}.{}>?", schema_namespace, name),
-                TypeKind::Scalar => format!("{}.{}?", schema_namespace, name),
+                TypeKind::Enum => format!("GraphQLEnum<{}.{}>?", schema_namespace, swift_name),
+                TypeKind::Scalar => format!("{}.{}?", schema_namespace, swift_name),
                 TypeKind::Object | TypeKind::Interface | TypeKind::Union => {
                     // Composite types used as scalars (e.g., custom JSON Object type)
-                    format!("{}.{}?", schema_namespace, name)
+                    format!("{}.{}?", schema_namespace, swift_name)
                 }
-                TypeKind::InputObject => format!("{}?", name),
+                TypeKind::InputObject => format!("{}?", swift_name),
             }
         }
     }
