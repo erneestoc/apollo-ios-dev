@@ -53,6 +53,18 @@ pub fn render_operation(
         })
         .collect();
 
+    // Class name includes the operation type suffix if not already present
+    let type_suffix = match op.operation_type {
+        OperationType::Query => "Query",
+        OperationType::Mutation => "Mutation",
+        OperationType::Subscription => "Subscription",
+    };
+    let class_name = if op.name.ends_with(type_suffix) {
+        op.name.clone()
+    } else {
+        format!("{}{}", op.name, type_suffix)
+    };
+
     // Build the Data selection set config
     let data_ss = build_selection_set_config_owned(
         "Data",
@@ -64,7 +76,7 @@ pub fn render_operation(
         SelectionSetConformance::SelectionSet,
         None,  // root_entity_type
         2,     // indent (inside class)
-        &format!("{}.Data", op.name),
+        &format!("{}.Data", class_name),
         generate_initializers,
         &op.referenced_fragments,
         type_kinds,
@@ -72,7 +84,7 @@ pub fn render_operation(
     );
 
     let config = OwnedOperationConfig {
-        class_name: op.name.clone(),
+        class_name: class_name.clone(),
         operation_name: op.name.clone(),
         operation_type: op_type,
         schema_namespace: schema_namespace.to_string(),
@@ -328,23 +340,25 @@ fn build_selection_set_config_owned(
     if is_inline_fragment {
         if let Some(parent) = parent_fields {
             for pf in parent {
-                // Don't duplicate fields already directly selected
                 if !field_accessors.iter().any(|f| f.name == pf.name) {
                     field_accessors.push(pf.clone());
                 }
             }
         }
-        // Also add fields from spread fragments
-        for spread in &ds.named_fragments {
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
-                for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
-                    if !field_accessors.iter().any(|f| f.name == *key) {
-                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
-                        field_accessors.push(OwnedFieldAccessor {
-                            name: key.clone(),
-                            swift_type,
-                        });
-                    }
+    }
+
+    // For ALL selection sets with named fragment spreads, include the spread
+    // fragment's fields as merged accessors (e.g., WarmBloodedDetails spreading
+    // HeightInMeters gets a `height` accessor from HeightInMeters)
+    for spread in &ds.named_fragments {
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                if !field_accessors.iter().any(|f| f.name == *key) {
+                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                    field_accessors.push(OwnedFieldAccessor {
+                        name: key.clone(),
+                        swift_type,
+                    });
                 }
             }
         }
@@ -487,10 +501,39 @@ fn build_selection_set_config_owned(
         fragment_spreads,
         initializer,
         nested_types,
-        type_aliases: vec![],
+        type_aliases: build_type_aliases(ds, referenced_fragments),
         indent,
         access_modifier: access_modifier.to_string(),
     }
+}
+
+/// Build type aliases for entity types from spread fragments.
+/// E.g., `typealias Height = HeightInMeters.Height` when the current selection set
+/// spreads HeightInMeters which has a nested Height entity type.
+fn build_type_aliases(
+    ds: &DirectSelections,
+    referenced_fragments: &[Arc<NamedFragment>],
+) -> Vec<OwnedTypeAlias> {
+    let mut aliases = Vec::new();
+
+    for spread in &ds.named_fragments {
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                if let FieldSelection::Entity(_) = field {
+                    let type_name = naming::first_uppercased(key);
+                    // Only add alias if we don't have a direct entity field with the same name
+                    if !ds.fields.contains_key(key) || !matches!(ds.fields.get(key), Some(FieldSelection::Entity(_))) {
+                        aliases.push(OwnedTypeAlias {
+                            name: type_name.clone(),
+                            target: format!("{}.{}", spread.fragment_name, type_name),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    aliases
 }
 
 /// Build an `OwnedInitializerConfig` for a selection set.
@@ -574,10 +617,24 @@ fn build_initializer_config(
 
     // Add each field accessor to data entries (includes merged fields)
     for accessor in all_field_accessors {
-        // Check if this is an entity or scalar field
-        let is_entity = ds.fields.get(&accessor.name)
+        // Check if this is an entity or scalar field - check direct fields first,
+        // then check fragment spread fields for merged fields
+        let mut is_entity = ds.fields.get(&accessor.name)
             .map(|f| matches!(f, FieldSelection::Entity(_)))
             .unwrap_or(false);
+        if !is_entity {
+            // Check fragment spreads for entity fields
+            for spread in &ds.named_fragments {
+                if let Some(frag) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    if let Some(field) = frag.root_field.selection_set.direct_selections.fields.get(&accessor.name) {
+                        if matches!(field, FieldSelection::Entity(_)) {
+                            is_entity = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         let value = if is_entity {
             OwnedDataEntryValue::FieldData(accessor.name.clone())
         } else {
