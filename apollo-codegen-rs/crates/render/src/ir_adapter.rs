@@ -406,7 +406,7 @@ fn build_selection_set_config_owned(
         .collect();
 
     // Build fragment spread accessors
-    let fragment_spreads: Vec<OwnedFragmentSpreadAccessor> = ds
+    let mut fragment_spreads: Vec<OwnedFragmentSpreadAccessor> = ds
         .named_fragments
         .iter()
         .map(|spread| OwnedFragmentSpreadAccessor {
@@ -430,7 +430,7 @@ fn build_selection_set_config_owned(
             } else {
                 SelectionSetConformance::SelectionSet
             };
-            let child_ss = build_selection_set_config_owned(
+            let mut child_ss = build_selection_set_config_owned(
                 &child_name,
                 &ef.selection_set,
                 schema_namespace,
@@ -447,6 +447,83 @@ fn build_selection_set_config_owned(
                 None, // entity fields don't inherit parent fields
                 is_mutable,
             );
+            // Merge fields from fragment spreads that also have this entity field.
+            // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
+            for spread in &ds.named_fragments {
+                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    if let Some(FieldSelection::Entity(frag_ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(key) {
+                        for (frag_key, frag_field) in &frag_ef.selection_set.direct_selections.fields {
+                            if frag_key == "__typename" { continue; }
+                            if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
+                                let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
+                                // Also add to initializer if it exists
+                                if let Some(ref mut init) = child_ss.initializer {
+                                    init.parameters.push(OwnedInitParam {
+                                        name: frag_key.clone(),
+                                        swift_type: {
+                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                            st
+                                        },
+                                        default_value: {
+                                            let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                            if st.ends_with('?') { Some("nil".to_string()) } else { None }
+                                        },
+                                    });
+                                    init.data_entries.push(OwnedDataEntry {
+                                        key: frag_key.clone(),
+                                        value: OwnedDataEntryValue::Variable(frag_key.clone()),
+                                    });
+                                }
+                            }
+                        }
+                        // Add the fragment's entity type to fulfilled fragments
+                        if let Some(ref mut init) = child_ss.initializer {
+                            let frag_entity_qualified = format!("{}.{}", spread.fragment_name, child_name);
+                            if !init.fulfilled_fragments.contains(&frag_entity_qualified) {
+                                init.fulfilled_fragments.push(frag_entity_qualified);
+                            }
+                        }
+                    }
+                    // Also check sub-fragments
+                    for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                            if let Some(FieldSelection::Entity(sub_ef)) = sub_frag.root_field.selection_set.direct_selections.fields.get(key) {
+                                for (frag_key, frag_field) in &sub_ef.selection_set.direct_selections.fields {
+                                    if frag_key == "__typename" { continue; }
+                                    if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
+                                        let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                        child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
+                                        if let Some(ref mut init) = child_ss.initializer {
+                                            init.parameters.push(OwnedInitParam {
+                                                name: frag_key.clone(),
+                                                swift_type: {
+                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                                    st
+                                                },
+                                                default_value: {
+                                                    let (st, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds);
+                                                    if st.ends_with('?') { Some("nil".to_string()) } else { None }
+                                                },
+                                            });
+                                            init.data_entries.push(OwnedDataEntry {
+                                                key: frag_key.clone(),
+                                                value: OwnedDataEntryValue::Variable(frag_key.clone()),
+                                            });
+                                        }
+                                    }
+                                }
+                                if let Some(ref mut init) = child_ss.initializer {
+                                    let sub_frag_entity_qualified = format!("{}.{}", sub_spread.fragment_name, child_name);
+                                    if !init.fulfilled_fragments.contains(&sub_frag_entity_qualified) {
+                                        init.fulfilled_fragments.push(sub_frag_entity_qualified);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let parent_type_name = ef.selection_set.scope.parent_type.name();
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment: format!("/// {}", child_name),
@@ -567,6 +644,10 @@ fn build_selection_set_config_owned(
         .filter_map(|inline| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
         .collect();
 
+    // Track fragments that get promoted to inline fragments (type narrowing).
+    // These should be removed from the parent scope's selections/fragments/fields.
+    let mut promoted_fragment_names: Vec<String> = Vec::new();
+
     for spread in &ds.named_fragments {
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             let frag_type_condition = &frag_arc.type_condition_name;
@@ -582,6 +663,7 @@ fn build_selection_set_config_owned(
                 && !direct_inline_type_names.contains(frag_type_condition)
                 && !inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(frag_type_condition)))
             {
+                promoted_fragment_names.push(spread.fragment_name.clone());
                 let type_name = format!("As{}", naming::first_uppercased(frag_type_condition));
                 let child_qualified = format!("{}.{}", qualified_name, type_name);
                 let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
@@ -822,6 +904,54 @@ fn build_selection_set_config_owned(
                 }
             }
         }
+    }
+
+    // Remove promoted fragments from the parent scope's selections, field_accessors,
+    // and fragment_spreads. When a fragment is promoted to an inline fragment (type narrowing),
+    // it should not appear at the parent scope.
+    if !promoted_fragment_names.is_empty() {
+        // Remove .fragment(FragName.self) from selections
+        selections.retain(|s| {
+            if let OwnedSelectionKind::Fragment(name) = &s.kind {
+                !promoted_fragment_names.contains(name)
+            } else {
+                true
+            }
+        });
+        // Remove from fragment_spreads
+        fragment_spreads.retain(|fs| !promoted_fragment_names.contains(&fs.fragment_type));
+        // Remove fields that came exclusively from promoted fragments
+        // (only remove if the field doesn't exist in direct selections or non-promoted fragments)
+        let mut fields_from_nonpromoted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (key, _) in &ds.fields {
+            fields_from_nonpromoted.insert(key.clone());
+        }
+        for spread in &ds.named_fragments {
+            if !promoted_fragment_names.contains(&spread.fragment_name) {
+                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    for (key, _) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                        fields_from_nonpromoted.insert(key.clone());
+                    }
+                    // Also check sub-fragment fields
+                    for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                            for (key, _) in &sub_frag.root_field.selection_set.direct_selections.fields {
+                                fields_from_nonpromoted.insert(key.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if is_inline_fragment {
+            // For inline fragments, also consider fields from parent_fields
+            if let Some(parent) = parent_fields {
+                for pf in parent {
+                    fields_from_nonpromoted.insert(pf.name.clone());
+                }
+            }
+        }
+        field_accessors.retain(|fa| fields_from_nonpromoted.contains(&fa.name));
     }
 
     // Build initializer when requested

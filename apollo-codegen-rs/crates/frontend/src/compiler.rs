@@ -833,28 +833,181 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     fn collect_referenced_types(
         &self,
         schema: &Schema,
-        _doc: &ExecutableDocument,
+        doc: &ExecutableDocument,
         _options: &CompileOptions,
     ) -> Vec<GraphQLNamedType> {
-        let mut types = Vec::new();
-
         // Built-in scalars that should be skipped
         let builtin_scalars = ["String", "Int", "Float", "Boolean"];
 
+        // Collect types in encounter order by walking operations and fragments.
+        // This matches the JS frontend behavior where types appear in the order
+        // they are first encountered during traversal.
+        let mut seen = IndexSet::new();
+
+        // Walk all operations - collect types from selection sets
+        for op in doc.operations.iter() {
+            // Add the root type (just the name, don't expand)
+            let root_name = op.object_type();
+            self.add_type_name(root_name.as_str(), &builtin_scalars, &mut seen);
+
+            // Walk the selection set
+            self.collect_types_from_selection_set(&op.selection_set, schema, doc, &builtin_scalars, &mut seen);
+
+            // Walk variable types
+            for var in &op.variables {
+                self.collect_types_from_ast_type(&var.ty, schema, &builtin_scalars, &mut seen);
+            }
+        }
+
+        // Walk all fragments
+        for (_name, frag) in &doc.fragments {
+            let tc_name = frag.type_condition();
+            self.add_type_name(tc_name.as_str(), &builtin_scalars, &mut seen);
+            self.collect_types_from_selection_set(&frag.selection_set, schema, doc, &builtin_scalars, &mut seen);
+        }
+
+        // Add any remaining schema types not encountered during traversal
         for (name, _extended_type) in &schema.types {
-            // Skip built-in introspection types
             if name.starts_with("__") {
                 continue;
             }
-            // Skip built-in scalars (but keep ID since it's treated as custom scalar)
             if builtin_scalars.contains(&name.as_str()) {
                 continue;
             }
-
-            types.push(self.build_named_type(name.as_str(), schema));
+            seen.insert(name.to_string());
         }
 
-        types
+        // Build the final list
+        seen.iter()
+            .map(|name| self.build_named_type(name.as_str(), schema))
+            .collect()
+    }
+
+    /// Add a type name to the seen set (without recursively expanding).
+    fn add_type_name(
+        &self,
+        name: &str,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        if name.starts_with("__") || builtin_scalars.contains(&name) {
+            return;
+        }
+        seen.insert(name.to_string());
+    }
+
+    /// Add a type name and expand its dependent types (for input objects, enums, etc.)
+    fn add_type_name_with_deps(
+        &self,
+        name: &str,
+        schema: &Schema,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        if name.starts_with("__") || builtin_scalars.contains(&name) {
+            return;
+        }
+        if !seen.insert(name.to_string()) {
+            return; // Already seen
+        }
+
+        // For input objects, collect their field types (transitive)
+        if let Some(ExtendedType::InputObject(io)) = schema.types.get(name) {
+            for (_fname, fdef) in io.fields.iter() {
+                self.collect_type_from_schema_type_with_deps(&fdef.ty, schema, builtin_scalars, seen);
+            }
+        }
+    }
+
+    /// Collect type from schema type, expanding input object dependencies.
+    fn collect_type_from_schema_type_with_deps(
+        &self,
+        ty: &apollo_compiler::ast::Type,
+        schema: &Schema,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        match ty {
+            apollo_compiler::ast::Type::Named(name)
+            | apollo_compiler::ast::Type::NonNullNamed(name) => {
+                self.add_type_name_with_deps(name.as_str(), schema, builtin_scalars, seen);
+            }
+            apollo_compiler::ast::Type::List(inner)
+            | apollo_compiler::ast::Type::NonNullList(inner) => {
+                self.collect_type_from_schema_type_with_deps(inner, schema, builtin_scalars, seen);
+            }
+        }
+    }
+
+    /// Collect types from a selection set, in encounter order.
+    /// Only collects composite types from type conditions and field return types,
+    /// plus scalars/enums/input objects from field arguments.
+    fn collect_types_from_selection_set(
+        &self,
+        sel_set: &executable::SelectionSet,
+        schema: &Schema,
+        doc: &ExecutableDocument,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        for sel in &sel_set.selections {
+            match sel {
+                AcSelection::Field(field) => {
+                    // Collect the field's return type (just the name)
+                    self.collect_type_from_schema_type(&field.definition.ty, builtin_scalars, seen);
+                    // Collect argument types (with deps for input objects)
+                    for arg in &field.definition.arguments {
+                        self.collect_type_from_schema_type_with_deps(&arg.ty, schema, builtin_scalars, seen);
+                    }
+                    // Recurse into nested selection set
+                    if !field.selection_set.selections.is_empty() {
+                        self.collect_types_from_selection_set(&field.selection_set, schema, doc, builtin_scalars, seen);
+                    }
+                }
+                AcSelection::InlineFragment(inline) => {
+                    if let Some(ref tc) = inline.type_condition {
+                        self.add_type_name(tc.as_str(), builtin_scalars, seen);
+                    }
+                    self.collect_types_from_selection_set(&inline.selection_set, schema, doc, builtin_scalars, seen);
+                }
+                AcSelection::FragmentSpread(spread) => {
+                    if let Some(frag) = doc.fragments.get(&spread.fragment_name) {
+                        let tc_name = frag.type_condition();
+                        self.add_type_name(tc_name.as_str(), builtin_scalars, seen);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract the named type from a schema type and add it (without expanding).
+    fn collect_type_from_schema_type(
+        &self,
+        ty: &apollo_compiler::ast::Type,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        match ty {
+            apollo_compiler::ast::Type::Named(name)
+            | apollo_compiler::ast::Type::NonNullNamed(name) => {
+                self.add_type_name(name.as_str(), builtin_scalars, seen);
+            }
+            apollo_compiler::ast::Type::List(inner)
+            | apollo_compiler::ast::Type::NonNullList(inner) => {
+                self.collect_type_from_schema_type(inner, builtin_scalars, seen);
+            }
+        }
+    }
+
+    /// Collect types from an AST type (for variable types).
+    fn collect_types_from_ast_type(
+        &self,
+        ty: &Node<apollo_compiler::ast::Type>,
+        schema: &Schema,
+        builtin_scalars: &[&str],
+        seen: &mut IndexSet<String>,
+    ) {
+        self.collect_type_from_schema_type_with_deps(ty.as_ref(), schema, builtin_scalars, seen);
     }
 }
 
