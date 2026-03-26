@@ -416,7 +416,7 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
                                         .default_value
                                         .as_ref()
                                         .map(|v| self.convert_ast_value(v)),
-                                    deprecation_reason: None,
+                                    deprecation_reason: get_directive_arg_string(&fdef.directives, "deprecated", "reason"),
                                     is_deprecated: has_directive(&fdef.directives, "deprecated"),
                                 },
                             )
@@ -856,8 +856,12 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     }
 }
 
-/// Add `__typename` to every selection set in a printed GraphQL document.
-/// This matches the behavior of graphql-js's `transformToNetworkRequestSourceDefinition`.
+/// Add `__typename` to selection sets in a printed GraphQL document.
+/// This matches the behavior of graphql-js's `transformToNetworkRequestSourceDefinition`:
+/// - Add `__typename` in field selection sets (e.g., `allAnimals { __typename id }`)
+/// - Do NOT add `__typename` at the root operation level (e.g., `query Foo { field }`)
+/// - Do NOT add `__typename` inside inline fragments (e.g., `... on Dog { species }`)
+/// - DO add `__typename` in fragment definition root selection sets
 fn add_typename_to_selection_sets(source: &str) -> String {
     let mut result = String::with_capacity(source.len() + 100);
     let chars: Vec<char> = source.chars().collect();
@@ -866,6 +870,10 @@ fn add_typename_to_selection_sets(source: &str) -> String {
 
     while i < len {
         if chars[i] == '{' {
+            // Determine context by looking at what precedes this `{`.
+            // We look backwards through the already-built result string, skipping whitespace.
+            let should_add_typename = should_add_typename_before_brace(&result);
+
             result.push('{');
             i += 1;
             // Skip whitespace after {
@@ -873,12 +881,16 @@ fn add_typename_to_selection_sets(source: &str) -> String {
                 result.push(' ');
                 i += 1;
             }
-            // Check if this is a selection set (not an argument object like {key: value})
-            // Selection sets have field names or spread notation as first content
-            if i < len
+            // Only inject __typename for field selection sets (not root operations,
+            // not inline fragments, not argument objects)
+            if should_add_typename
+                && i < len
                 && (chars[i].is_alphabetic()
                     || chars[i] == '_'
-                    || (i + 2 < len && chars[i] == '.' && chars[i + 1] == '.' && chars[i + 2] == '.'))
+                    || (i + 2 < len
+                        && chars[i] == '.'
+                        && chars[i + 1] == '.'
+                        && chars[i + 2] == '.'))
             {
                 // Check if __typename is already first
                 let remaining: String = chars[i..].iter().collect();
@@ -893,4 +905,214 @@ fn add_typename_to_selection_sets(source: &str) -> String {
     }
 
     result
+}
+
+/// Determine whether `__typename` should be injected after the `{` that is about
+/// to be appended to `result`.
+///
+/// Returns `true` for field selection sets (the `{` follows a field name or `)` after
+/// field arguments).
+/// Returns `false` for:
+/// - Root operation braces: `{` preceded by the operation name/closing `)` of variable
+///   list at depth 0 (first `{` in the document)
+/// - Inline fragment braces: `{` preceded by a type name after `... on`
+/// - Argument object literals: `{` preceded by `:` or `[` etc.
+fn should_add_typename_before_brace(result_so_far: &str) -> bool {
+    let trimmed = result_so_far.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Check if this is the root operation brace (first `{` in the document).
+    // For operations (query/mutation/subscription), the first `{` is the root and
+    // should NOT get __typename. For fragments, the first `{` IS a selection set
+    // and SHOULD get __typename.
+    if !result_so_far.contains('{') {
+        // This is the first `{`. Check if the document starts with an operation keyword.
+        let start = trimmed.trim_start();
+        if start.starts_with("query")
+            || start.starts_with("mutation")
+            || start.starts_with("subscription")
+        {
+            return false;
+        }
+        // For fragments (`fragment Name on Type {`), we DO want __typename
+        // so fall through to the normal logic.
+    }
+
+    // Check if preceded by `... on TypeName` (inline fragment).
+    // Walk backwards: we expect an identifier (type name), then "on", then "...".
+    let bytes = trimmed.as_bytes();
+    let pos = bytes.len();
+
+    // Skip trailing identifier (type name) or closing paren of directives
+    // First, skip the type name or closing paren
+    let last_char = bytes[pos - 1];
+
+    if last_char == b')' {
+        // Could be a closing paren of field arguments -> this is a field selection set.
+        // Could also be directive arguments on an inline fragment like `... on Cat @include(if: $x)`.
+        // We need to skip past the balanced parens and check what's before them.
+        let mut depth = 0;
+        let mut p = pos;
+        while p > 0 {
+            p -= 1;
+            if bytes[p] == b')' {
+                depth += 1;
+            } else if bytes[p] == b'(' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
+        // p now points to the opening '('
+        // Check what's before the opening paren (skip whitespace)
+        let before_paren = trimmed[..p].trim_end();
+        if before_paren.is_empty() {
+            return false;
+        }
+
+        // Extract the identifier before the paren
+        let before_bytes = before_paren.as_bytes();
+        let end = before_bytes.len();
+        // The thing before '(' could be a directive like @include, or a field name, or a type name
+        // If it's a directive, we need to keep looking backwards
+        let last_b = before_bytes[end - 1];
+
+        if last_b.is_ascii_alphanumeric() || last_b == b'_' {
+            // Extract this identifier
+            let mut start = end;
+            while start > 0
+                && (before_bytes[start - 1].is_ascii_alphanumeric()
+                    || before_bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            // Check if preceded by '@' (directive)
+            if start > 0 && before_bytes[start - 1] == b'@' {
+                // This is a directive like @include(...). Look further back to see
+                // if there's a `... on TypeName` pattern.
+                let before_directive = trimmed[..start - 1].trim_end();
+                return !is_inline_fragment_context(before_directive);
+            }
+            // Not a directive - this is likely a field name with arguments
+            // But we should still check if the identifier is a type name after `... on`
+            let before_ident = before_paren[..start].trim_end();
+            if before_ident.ends_with("on") {
+                let before_on = before_ident[..before_ident.len() - 2].trim_end();
+                if before_on.ends_with("...") {
+                    return false; // inline fragment with arguments: `... on Type(...) {`
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // The last non-whitespace character is an identifier character
+    if last_char.is_ascii_alphanumeric() || last_char == b'_' {
+        return !is_inline_fragment_context(trimmed);
+    }
+
+    // For any other character (e.g., `:`, `[`), don't add __typename
+    // (this covers argument object literals like `{key: value}`)
+    false
+}
+
+/// Check if the trimmed text before a `{` ends with an inline fragment pattern:
+/// `... on TypeName` possibly followed by directives like `@include(if: $var)`.
+fn is_inline_fragment_context(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    let len = bytes.len();
+    if len == 0 {
+        return false;
+    }
+
+    let mut pos = len;
+
+    // We may have multiple directives like `@skip(if: $x) @include(if: $y)`.
+    // Skip past all of them.
+    loop {
+        // Try to skip a directive at the end: `@name(args)` or `@name`
+        let at_pos = pos;
+
+        // Check if last char is ')' - directive with arguments
+        if pos > 0 && bytes[pos - 1] == b')' {
+            let mut depth = 0;
+            let mut p = pos;
+            while p > 0 {
+                p -= 1;
+                if bytes[p] == b')' {
+                    depth += 1;
+                } else if bytes[p] == b'(' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            pos = p; // points to '('
+        }
+
+        // Now check for `@identifier` before the current pos
+        let s = trimmed[..pos].trim_end();
+        let sb = s.as_bytes();
+        if sb.is_empty() {
+            return false;
+        }
+
+        // Extract identifier
+        let end = sb.len();
+        if !sb[end - 1].is_ascii_alphanumeric() && sb[end - 1] != b'_' {
+            // Not an identifier - we've gone past any directives
+            pos = at_pos; // restore
+            break;
+        }
+        let mut start = end;
+        while start > 0
+            && (sb[start - 1].is_ascii_alphanumeric() || sb[start - 1] == b'_')
+        {
+            start -= 1;
+        }
+
+        // Check if preceded by '@'
+        if start > 0 && sb[start - 1] == b'@' {
+            // This is a directive, continue skipping
+            pos = start - 1;
+            let remaining = trimmed[..pos].trim_end();
+            pos = remaining.len();
+            // Need to re-assign trimmed context for next iteration
+            continue;
+        }
+
+        // Not a directive - this is the final identifier before `{`
+        pos = at_pos; // restore since we didn't find a directive
+        break;
+    }
+
+    // Now `trimmed[..pos]` should end with the type name (if inline fragment) or field name.
+    let text = trimmed[..pos].trim_end();
+    let tb = text.as_bytes();
+    if tb.is_empty() {
+        return false;
+    }
+
+    // Extract the last identifier (should be type name or field name)
+    if !tb[tb.len() - 1].is_ascii_alphanumeric() && tb[tb.len() - 1] != b'_' {
+        return false;
+    }
+    let end = tb.len();
+    let mut start = end;
+    while start > 0 && (tb[start - 1].is_ascii_alphanumeric() || tb[start - 1] == b'_') {
+        start -= 1;
+    }
+
+    // Check what's before this identifier
+    let before_ident = text[..start].trim_end();
+    if !before_ident.ends_with("on") {
+        return false;
+    }
+    let before_on = before_ident[..before_ident.len() - 2].trim_end();
+    before_on.ends_with("...")
 }

@@ -77,6 +77,9 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
     // 4. Build IR
     let ir = IRBuilder::build(&compilation_result);
 
+    // 4b. Build type kind map for type resolution in templates
+    let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
+
     // 5. Determine output configuration
     let ns = naming::first_uppercased(&config.schema_namespace);
     let api_target = "ApolloAPI";
@@ -124,6 +127,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &ns,
         &access_mod,
         config,
+        &type_kinds,
     );
 
     generate_fragment_files(
@@ -134,6 +138,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &ns,
         &access_mod,
         config,
+        &type_kinds,
     );
 
     // Test mock files
@@ -275,7 +280,11 @@ fn generate_schema_files(
                 .fields
                 .iter()
                 .map(|(fname, fdef)| {
-                    let swift_type = render_input_field_type(&fdef.field_type, ns);
+                    let mut swift_type = render_input_field_type(&fdef.field_type, ns);
+                    // Non-null fields with default values become optional
+                    if matches!(fdef.field_type, GraphQLType::NonNull(_)) && fdef.default_value.is_some() {
+                        swift_type = format!("{}?", swift_type);
+                    }
                     let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value);
                     templates::input_object::InputField {
                         schema_name: fname.clone(),
@@ -410,6 +419,7 @@ fn generate_operation_files(
     ns: &str,
     access_mod: &str,
     config: &ApolloCodegenConfiguration,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -420,6 +430,7 @@ fn generate_operation_files(
             ns,
             access_mod,
             true, // generate initializers
+            type_kinds,
         );
 
         let subdir = match op_def.operation_type {
@@ -463,6 +474,7 @@ fn generate_fragment_files(
     ns: &str,
     access_mod: &str,
     config: &ApolloCodegenConfiguration,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -473,6 +485,7 @@ fn generate_fragment_files(
                 ns,
                 access_mod,
                 true, // generate initializers
+                type_kinds,
             );
 
             if frag.is_local_cache_mutation {
@@ -674,7 +687,7 @@ fn render_input_field_property_type(ty: &GraphQLType, ns: &str) -> String {
 fn render_input_field_init_type(
     ty: &GraphQLType,
     ns: &str,
-    _default_value: &Option<GraphQLValue>,
+    default_value: &Option<GraphQLValue>,
 ) -> String {
     let base = render_input_field_type(ty, ns);
     match ty {
@@ -682,7 +695,14 @@ fn render_input_field_init_type(
             // Nullable fields get default = nil
             format!("{} = nil", base)
         }
-        GraphQLType::NonNull(_) => base,
+        GraphQLType::NonNull(_) => {
+            // Non-null fields with a default value become optional in the initializer
+            if default_value.is_some() {
+                format!("{}? = nil", base)
+            } else {
+                base
+            }
+        }
     }
 }
 

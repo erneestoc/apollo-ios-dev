@@ -8,8 +8,9 @@ use crate::templates::fragment::FragmentConfig;
 use crate::templates::operation::{OperationConfig, OperationType as TemplateOpType, VariableConfig as TemplateVariableConfig};
 use crate::templates::selection_set::*;
 use apollo_codegen_frontend::compilation_result::OperationType;
-use apollo_codegen_frontend::types::{GraphQLCompositeType, GraphQLType};
+use apollo_codegen_frontend::types::{Argument, GraphQLCompositeType, GraphQLType, GraphQLValue};
 use apollo_codegen_ir::builder::IRBuilder;
+use apollo_codegen_ir::field_collector::TypeKind;
 use apollo_codegen_ir::fields::EntityField;
 use apollo_codegen_ir::named_fragment::NamedFragment;
 use apollo_codegen_ir::operation::Operation;
@@ -17,6 +18,7 @@ use apollo_codegen_ir::selection_set::{
     DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread,
     SelectionSet as IrSelectionSet,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Render an operation to its complete Swift file content.
@@ -25,6 +27,7 @@ pub fn render_operation(
     schema_namespace: &str,
     access_modifier: &str,
     generate_initializers: bool,
+    type_kinds: &HashMap<String, TypeKind>,
 ) -> String {
     // Build owned strings we'll reference
     let op_type = match op.operation_type {
@@ -64,6 +67,7 @@ pub fn render_operation(
         &format!("{}.Data", op.name),
         generate_initializers,
         &op.referenced_fragments,
+        type_kinds,
     );
 
     let config = OwnedOperationConfig {
@@ -87,6 +91,7 @@ pub fn render_fragment(
     schema_namespace: &str,
     access_modifier: &str,
     generate_initializers: bool,
+    type_kinds: &HashMap<String, TypeKind>,
 ) -> String {
     let ss = build_selection_set_config_owned(
         &frag.name,
@@ -101,6 +106,7 @@ pub fn render_fragment(
         &frag.name,
         generate_initializers,
         &frag.referenced_fragments,
+        type_kinds,
     );
 
     let config = OwnedFragmentConfig {
@@ -248,6 +254,7 @@ fn build_selection_set_config_owned(
     qualified_name: &str,
     generate_initializers: bool,
     referenced_fragments: &[Arc<NamedFragment>],
+    type_kinds: &HashMap<String, TypeKind>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
@@ -276,12 +283,13 @@ fn build_selection_set_config_owned(
         });
     }
     for (key, field) in &ds.fields {
-        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace);
+        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds);
+        let arguments = render_field_arguments(field);
         selections.push(OwnedSelectionItem {
             kind: OwnedSelectionKind::Field {
                 name: key.clone(),
                 swift_type,
-                arguments: None, // TODO: render arguments
+                arguments,
             },
         });
     }
@@ -304,7 +312,7 @@ fn build_selection_set_config_owned(
         .fields
         .iter()
         .map(|(key, field)| {
-            let (swift_type, _) = render_field_swift_type(field, schema_namespace);
+            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
             OwnedFieldAccessor {
                 name: key.clone(),
                 swift_type,
@@ -342,7 +350,10 @@ fn build_selection_set_config_owned(
     // Nested entity fields
     for (key, field) in &ds.fields {
         if let FieldSelection::Entity(ef) = field {
-            let child_name = naming::first_uppercased(key);
+            // Singularize the response key to get the struct name
+            // (e.g., "allAnimals" → "AllAnimal", "predators" → "Predator")
+            let singularized_key = naming::singularize(key);
+            let child_name = naming::first_uppercased(&singularized_key);
             let child_qualified = format!("{}.{}", qualified_name, child_name);
             let child_ss = build_selection_set_config_owned(
                 &child_name,
@@ -357,6 +368,7 @@ fn build_selection_set_config_owned(
                 &child_qualified,
                 generate_initializers,
                 referenced_fragments,
+                type_kinds,
             );
             let parent_type_name = ef.selection_set.scope.parent_type.name();
             nested_types.push(OwnedNestedSelectionSet {
@@ -393,6 +405,7 @@ fn build_selection_set_config_owned(
                 &child_qualified,
                 generate_initializers,
                 referenced_fragments,
+                type_kinds,
             );
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment: format!(
@@ -420,6 +433,7 @@ fn build_selection_set_config_owned(
             is_inline_fragment,
             root_entity_type,
             referenced_fragments,
+            type_kinds,
         ))
     } else {
         None
@@ -464,6 +478,7 @@ fn build_initializer_config(
     is_inline_fragment: bool,
     root_entity_type: Option<&str>,
     referenced_fragments: &[Arc<NamedFragment>],
+    type_kinds: &HashMap<String, TypeKind>,
 ) -> OwnedInitializerConfig {
     // Determine typename handling based on parent type
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
@@ -493,7 +508,7 @@ fn build_initializer_config(
 
     // Add a parameter for each direct field
     for (key, field) in &ds.fields {
-        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace);
+        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds);
         let default_value = if swift_type.ends_with('?') {
             Some("nil".to_string())
         } else {
@@ -567,27 +582,73 @@ fn build_initializer_config(
 fn render_field_swift_type(
     field: &FieldSelection,
     schema_namespace: &str,
+    type_kinds: &HashMap<String, TypeKind>,
 ) -> (String, bool) {
     match field {
         FieldSelection::Scalar(sf) => {
-            let swift_type = render_graphql_type_as_swift(&sf.field_type, schema_namespace);
+            let swift_type = render_graphql_type_as_swift(&sf.field_type, schema_namespace, type_kinds);
             (swift_type, false)
         }
         FieldSelection::Entity(ef) => {
-            // Entity fields use the struct name from the response key
-            let struct_name = naming::first_uppercased(ef.response_key());
+            // Entity fields use the singularized struct name from the response key
+            let singularized_key = naming::singularize(ef.response_key());
+            let struct_name = naming::first_uppercased(&singularized_key);
             let swift_type = wrap_type_with_struct_name(&ef.field_type, &struct_name);
             (swift_type, true)
         }
     }
 }
 
+/// Render field arguments as a Swift dictionary literal string.
+fn render_field_arguments(field: &FieldSelection) -> Option<String> {
+    let args = match field {
+        FieldSelection::Scalar(sf) => &sf.arguments,
+        FieldSelection::Entity(ef) => &ef.arguments,
+    };
+    if args.is_empty() {
+        return None;
+    }
+    let entries: Vec<String> = args
+        .iter()
+        .map(|arg| format!("\"{}\": {}", arg.name, render_argument_value(&arg.value)))
+        .collect();
+    Some(format!("[{}]", entries.join(", ")))
+}
+
+/// Render a GraphQL argument value as a Swift expression.
+fn render_argument_value(value: &GraphQLValue) -> String {
+    match value {
+        GraphQLValue::Variable(name) => format!(".variable(\"{}\")", name),
+        GraphQLValue::String(s) => format!("\"{}\"", s),
+        GraphQLValue::Int(i) => i.to_string(),
+        GraphQLValue::Float(f) => f.to_string(),
+        GraphQLValue::Boolean(b) => if *b { "true".to_string() } else { "false".to_string() },
+        GraphQLValue::Null => ".null".to_string(),
+        GraphQLValue::Enum(e) => format!(".init(.{})", naming::to_camel_case(e)),
+        GraphQLValue::List(items) => {
+            let rendered: Vec<String> = items.iter().map(render_argument_value).collect();
+            format!("[{}]", rendered.join(", "))
+        }
+        GraphQLValue::Object(map) => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("\"{}\": {}", k, render_argument_value(v)))
+                .collect();
+            format!("[{}]", entries.join(", "))
+        }
+    }
+}
+
 /// Render a GraphQL type as a Swift type string for scalar fields.
-fn render_graphql_type_as_swift(ty: &GraphQLType, schema_namespace: &str) -> String {
+fn render_graphql_type_as_swift(
+    ty: &GraphQLType,
+    schema_namespace: &str,
+    type_kinds: &HashMap<String, TypeKind>,
+) -> String {
     match ty {
-        GraphQLType::Named(name) => render_named_type_as_swift(name, schema_namespace),
+        GraphQLType::Named(name) => render_named_type_as_swift(name, schema_namespace, type_kinds),
         GraphQLType::NonNull(inner) => {
-            let inner_str = render_graphql_type_as_swift(inner, schema_namespace);
+            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds);
             // Remove trailing ? if present (NonNull removes optionality)
             if inner_str.ends_with('?') {
                 inner_str[..inner_str.len() - 1].to_string()
@@ -596,13 +657,17 @@ fn render_graphql_type_as_swift(ty: &GraphQLType, schema_namespace: &str) -> Str
             }
         }
         GraphQLType::List(inner) => {
-            let inner_str = render_graphql_type_as_swift(inner, schema_namespace);
+            let inner_str = render_graphql_type_as_swift(inner, schema_namespace, type_kinds);
             format!("[{}]?", inner_str)
         }
     }
 }
 
-fn render_named_type_as_swift(name: &str, schema_namespace: &str) -> String {
+fn render_named_type_as_swift(
+    name: &str,
+    schema_namespace: &str,
+    type_kinds: &HashMap<String, TypeKind>,
+) -> String {
     match name {
         "String" => "String?".to_string(),
         "Int" => "Int?".to_string(),
@@ -610,9 +675,19 @@ fn render_named_type_as_swift(name: &str, schema_namespace: &str) -> String {
         "Boolean" => "Bool?".to_string(),
         "ID" => format!("{}.ID?", schema_namespace),
         _ => {
-            // Could be enum, custom scalar, or input object
-            // For now, namespace-qualify it
-            format!("{}?", name)
+            let kind = type_kinds
+                .get(name)
+                .copied()
+                .unwrap_or(TypeKind::Scalar);
+            match kind {
+                TypeKind::Enum => format!("GraphQLEnum<{}.{}>?", schema_namespace, name),
+                TypeKind::Scalar => format!("{}.{}?", schema_namespace, name),
+                TypeKind::Object | TypeKind::Interface | TypeKind::Union => {
+                    // Composite types used as scalars (e.g., custom JSON Object type)
+                    format!("{}.{}?", schema_namespace, name)
+                }
+                TypeKind::InputObject => format!("{}?", name),
+            }
         }
     }
 }

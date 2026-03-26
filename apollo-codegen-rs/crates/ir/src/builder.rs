@@ -151,7 +151,7 @@ impl IRBuilder {
 
                     if field.selection_set.is_some() {
                         // Entity field
-                        let sub_type = infer_composite_type(&field.field_type, &field.name);
+                        let sub_type = infer_composite_type(&field.field_type, &field.name, &self.schema);
                         let sub_selection = field.selection_set.as_ref().map(|ss| {
                             self.build_selection_set_from_compiled(ss, &sub_type)
                         }).unwrap_or_else(|| SelectionSet {
@@ -274,12 +274,47 @@ impl IRBuilder {
     }
 }
 
-/// Render a GraphQL type to its Swift type string.
+/// Render a GraphQL type to its Swift variable type string.
+///
+/// Swift variable types differ from GraphQL notation:
+/// - NonNull types are bare: `PetAdoptionInput` (not `PetAdoptionInput!`)
+/// - Nullable types use `GraphQLNullable<T>`: `GraphQLNullable<PetSearchFilters>`
+/// - List types follow GraphQL: `[Type]`
 fn render_graphql_type(ty: &GraphQLType) -> String {
     match ty {
-        GraphQLType::Named(name) => name.clone(),
-        GraphQLType::NonNull(inner) => format!("{}!", render_graphql_type(inner)),
-        GraphQLType::List(inner) => format!("[{}]", render_graphql_type(inner)),
+        GraphQLType::Named(name) => format!("GraphQLNullable<{}>", render_swift_variable_named_type(name)),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
+        GraphQLType::List(inner) => format!("GraphQLNullable<[{}]>", render_graphql_type_list_inner(inner)),
+    }
+}
+
+/// Render the inner type for a NonNull wrapper (no GraphQLNullable wrapping).
+fn render_graphql_type_nonnull(ty: &GraphQLType) -> String {
+    match ty {
+        GraphQLType::Named(name) => render_swift_variable_named_type(name),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
+        GraphQLType::List(inner) => format!("[{}]", render_graphql_type_list_inner(inner)),
+    }
+}
+
+/// Render the inner type for a List wrapper.
+fn render_graphql_type_list_inner(ty: &GraphQLType) -> String {
+    match ty {
+        GraphQLType::Named(name) => format!("{}?", render_swift_variable_named_type(name)),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
+        GraphQLType::List(inner) => format!("[{}]?", render_graphql_type_list_inner(inner)),
+    }
+}
+
+/// Render a named type for Swift variable declarations.
+fn render_swift_variable_named_type(name: &str) -> String {
+    match name {
+        "String" => "String".to_string(),
+        "Int" => "Int".to_string(),
+        "Float" => "Double".to_string(),
+        "Boolean" => "Bool".to_string(),
+        "ID" => "ID".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -307,10 +342,29 @@ fn render_graphql_value(val: &GraphQLValue) -> String {
     }
 }
 
-/// Infer a composite type from a GraphQL type.
-fn infer_composite_type(ty: &GraphQLType, field_name: &str) -> GraphQLCompositeType {
+/// Infer a composite type from a GraphQL type, using the schema to
+/// determine the correct kind (Object, Interface, or Union).
+fn infer_composite_type(ty: &GraphQLType, _field_name: &str, schema: &Schema) -> GraphQLCompositeType {
     let named = ty.named_type();
-    // We don't have full schema info here, so create a minimal object type
+
+    // Look up in schema's referenced types
+    for obj in &schema.referenced_types.objects {
+        if obj.name == named {
+            return GraphQLCompositeType::Object(obj.clone());
+        }
+    }
+    for iface in &schema.referenced_types.interfaces {
+        if iface.name == named {
+            return GraphQLCompositeType::Interface(iface.clone());
+        }
+    }
+    for union_t in &schema.referenced_types.unions {
+        if union_t.name == named {
+            return GraphQLCompositeType::Union(union_t.clone());
+        }
+    }
+
+    // Fallback: create a minimal object type (should not happen with a valid schema)
     GraphQLCompositeType::Object(GraphQLObjectType {
         name: named.to_string(),
         description: None,
