@@ -963,7 +963,7 @@ fn build_selection_set_config_owned(
     let initializer = if generate_initializers {
         let extra_fulfilled: Vec<String> = vec![];
 
-        Some(build_initializer_config(
+        let mut init = build_initializer_config(
             &ir_ss.scope.parent_type,
             ds,
             schema_namespace,
@@ -974,7 +974,12 @@ fn build_selection_set_config_owned(
             type_kinds,
             &field_accessors,
             &extra_fulfilled,
-        ))
+        );
+        // Filter out promoted fragment names from fulfilled_fragments
+        if !promoted_fragment_names.is_empty() {
+            init.fulfilled_fragments.retain(|f| !promoted_fragment_names.contains(f));
+        }
+        Some(init)
     } else {
         None
     };
