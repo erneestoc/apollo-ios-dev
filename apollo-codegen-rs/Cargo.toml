@@ -9,6 +9,7 @@ members = [
     "crates/cache",
     "crates/cli",
     "crates/golden-test",
+    "crates/fuzz-test",
 ]
 
 [workspace.package]
@@ -46,6 +47,11 @@ rayon = "1"
 
 # Diffing (for golden tests)
 similar = "2"
+
+# Fuzzing (for apollo-smith fuzz tests)
+apollo-smith = "0.15"
+arbitrary = "1"
+rand = "0.8"
 
 # Utilities
 indexmap = { version = "2", features = ["serde"] }

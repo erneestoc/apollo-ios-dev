@@ -1,0 +1,19 @@
+[package]
+name = "apollo-codegen-fuzz-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fuzz test generator using apollo-smith for Apollo iOS codegen"
+
+[[bin]]
+name = "apollo-codegen-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+apollo-smith.workspace = true
+arbitrary.workspace = true
+rand.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+anyhow.workspace = true
