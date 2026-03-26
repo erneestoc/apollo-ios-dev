@@ -32,6 +32,10 @@ glob = "0.3"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# HTTP
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
 # Hashing / caching
 sha2 = "0.10"
 zstd = "0.13"

@@ -15,7 +15,7 @@ pub struct ApolloCodegenConfiguration {
     #[serde(default)]
     pub experimental_features: ExperimentalFeatures,
     #[serde(default)]
-    pub schema_download: Option<serde_json::Value>,
+    pub schema_download: Option<SchemaDownloadConfiguration>,
     #[serde(default)]
     pub operation_manifest: Option<OperationManifestConfiguration>,
 }
@@ -174,13 +174,69 @@ pub struct ExperimentalFeatures {
     pub client_controlled_nullability: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum FieldMergingBehavior {
-    #[default]
-    None,
-    Incremental,
-    All,
+/// Field merging behavior.
+///
+/// In the Swift codegen (1.15.1), this is an `OptionSet` serialized as an array of strings:
+/// - `["all"]` → merge all fields (ancestors + siblings + namedFragments)
+/// - `["ancestors"]`, `["siblings"]`, `["namedFragments"]` → individual strategies
+/// - `["ancestors", "siblings"]` → combined strategies
+/// - `[]` → no merging
+///
+/// The default is `["all"]` (i.e., all merging enabled).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldMerging {
+    pub ancestors: bool,
+    pub siblings: bool,
+    pub named_fragments: bool,
+}
+
+impl FieldMerging {
+    pub fn all() -> Self {
+        Self { ancestors: true, siblings: true, named_fragments: true }
+    }
+
+    pub fn none() -> Self {
+        Self { ancestors: false, siblings: false, named_fragments: false }
+    }
+
+    pub fn is_all(&self) -> bool {
+        self.ancestors && self.siblings && self.named_fragments
+    }
+
+    pub fn is_none(&self) -> bool {
+        !self.ancestors && !self.siblings && !self.named_fragments
+    }
+}
+
+impl Default for FieldMerging {
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+impl<'de> de::Deserialize<'de> for FieldMerging {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let values: Vec<String> = Vec::deserialize(deserializer)?;
+        let mut result = FieldMerging::none();
+        for v in &values {
+            match v.as_str() {
+                "all" => return Ok(FieldMerging::all()),
+                "ancestors" => result.ancestors = true,
+                "siblings" => result.siblings = true,
+                "namedFragments" => result.named_fragments = true,
+                other => {
+                    return Err(de::Error::custom(format!(
+                        "unknown fieldMerging value: {}",
+                        other
+                    )));
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 // --- Operation Manifest ---
@@ -446,6 +502,143 @@ pub enum InputObjectConversionStrategy {
 pub struct InflectionRule {
     pub pluralization: String,
     pub singularization: String,
+}
+
+// --- Schema Download Configuration ---
+
+/// Configuration for downloading a GraphQL schema.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaDownloadConfiguration {
+    pub download_method: SchemaDownloadMethod,
+    #[serde(default = "default_download_timeout")]
+    pub download_timeout: f64,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: Vec<HTTPHeader>,
+    pub output_path: String,
+}
+
+fn default_download_timeout() -> f64 {
+    30.0
+}
+
+/// An HTTP header for schema download requests.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HTTPHeader {
+    pub key: String,
+    pub value: String,
+}
+
+/// Deserialize headers from either an array of `{key, value}` objects or a
+/// flat `{key: value}` dictionary.
+fn deserialize_headers<'de, D>(deserializer: D) -> Result<Vec<HTTPHeader>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(_) => {
+            let headers: Vec<HTTPHeader> =
+                serde_json::from_value(value).map_err(de::Error::custom)?;
+            Ok(headers)
+        }
+        serde_json::Value::Object(map) => {
+            let mut headers: Vec<HTTPHeader> = map
+                .into_iter()
+                .map(|(k, v)| HTTPHeader {
+                    key: k,
+                    value: v.as_str().unwrap_or_default().to_string(),
+                })
+                .collect();
+            headers.sort_by(|a, b| a.key.cmp(&b.key));
+            Ok(headers)
+        }
+        serde_json::Value::Null => Ok(Vec::new()),
+        _ => Err(de::Error::custom("expected array, object, or null for headers")),
+    }
+}
+
+impl SchemaDownloadConfiguration {
+    /// The output format based on the download method.
+    pub fn output_format(&self) -> SchemaDownloadOutputFormat {
+        match &self.download_method {
+            SchemaDownloadMethod::ApolloRegistry(_) => SchemaDownloadOutputFormat::SDL,
+            SchemaDownloadMethod::Introspection(settings) => settings.output_format,
+        }
+    }
+}
+
+/// How to download the schema.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SchemaDownloadMethod {
+    Introspection(IntrospectionSettings),
+    ApolloRegistry(ApolloRegistrySettings),
+}
+
+/// Settings for downloading a schema via GraphQL introspection.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntrospectionSettings {
+    #[serde(rename = "endpointURL")]
+    pub endpoint_url: String,
+    #[serde(default = "default_http_method")]
+    pub http_method: SchemaDownloadHTTPMethod,
+    #[serde(default)]
+    pub output_format: SchemaDownloadOutputFormat,
+    #[serde(default)]
+    pub include_deprecated_input_values: bool,
+}
+
+fn default_http_method() -> SchemaDownloadHTTPMethod {
+    SchemaDownloadHTTPMethod::POST { header_name: None, header_value: None }
+}
+
+/// HTTP method used for introspection requests.
+#[derive(Debug, Clone, Deserialize)]
+pub enum SchemaDownloadHTTPMethod {
+    POST {
+        #[serde(default, rename = "headerName")]
+        header_name: Option<String>,
+        #[serde(default, rename = "headerValue")]
+        header_value: Option<String>,
+    },
+    GET {
+        #[serde(default = "default_query_parameter_name", rename = "queryParameterName")]
+        query_parameter_name: String,
+    },
+}
+
+fn default_query_parameter_name() -> String {
+    "query".to_string()
+}
+
+/// Output format for introspection download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum SchemaDownloadOutputFormat {
+    SDL,
+    JSON,
+}
+
+impl Default for SchemaDownloadOutputFormat {
+    fn default() -> Self {
+        SchemaDownloadOutputFormat::SDL
+    }
+}
+
+/// Settings for downloading a schema from the Apollo Registry.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApolloRegistrySettings {
+    pub key: String,
+    #[serde(rename = "graphID")]
+    pub graph_id: String,
+    #[serde(default = "default_variant")]
+    pub variant: String,
+}
+
+fn default_variant() -> String {
+    "current".to_string()
 }
 
 // --- Parsing ---
