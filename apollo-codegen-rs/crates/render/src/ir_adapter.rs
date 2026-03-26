@@ -506,17 +506,6 @@ fn build_selection_set_config_owned(
     }
 
     // Promote inline fragments from spread fragments.
-    // When a selection set spreads a fragment, we check for two cases:
-    //
-    // Case 1 - Type-narrowing: If the fragment's type condition differs from the current
-    //   parent type, create a synthetic InlineFragment wrapping the fragment spread.
-    //   E.g., spreading `...WarmBloodedDetails` (on WarmBlooded) in an Animal scope creates
-    //   an `AsWarmBlooded` with `__selections: [.fragment(WarmBloodedDetails.self)]`.
-    //
-    // Case 2 - Fragment inline fragments: If the fragment contains inline fragments,
-    //   promote each as a CompositeInlineFragment with `__mergedSources`.
-    //   E.g., spreading `...ClassroomPetDetails` which has `... on Animal` creates an
-    //   `AsAnimal` CompositeInlineFragment in the operation scope.
     let current_parent_type_name = ir_ss.scope.parent_type.name().to_string();
     let direct_inline_type_names: Vec<String> = ds
         .inline_fragments
@@ -529,32 +518,26 @@ fn build_selection_set_config_owned(
             let frag_type_condition = &frag_arc.type_condition_name;
             let frag_ds = &frag_arc.root_field.selection_set.direct_selections;
 
-            // Case 1: Fragment type condition differs from parent type
-            if *frag_type_condition != current_parent_type_name
+            // Case 1: Fragment type condition differs from parent type - create synthetic inline fragment
+            // BUT only if the fragment's type is NOT a supertype of the current parent type.
+            // E.g., WarmBlooded implements Animal, so spreading HeightInMeters (on Animal)
+            // into WarmBloodedDetails does NOT need an AsAnimal wrapper.
+            let needs_narrowing = *frag_type_condition != current_parent_type_name
+                && !is_supertype_of_current(&ir_ss.scope.parent_type, frag_type_condition);
+            if needs_narrowing
                 && !direct_inline_type_names.contains(frag_type_condition)
-                && !inline_fragment_accessors.iter().any(|a| {
-                    a.type_name == format!("As{}", naming::first_uppercased(frag_type_condition))
-                })
+                && !inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(frag_type_condition)))
             {
                 let type_name = format!("As{}", naming::first_uppercased(frag_type_condition));
                 let child_qualified = format!("{}.{}", qualified_name, type_name);
-                let child_root_entity = if is_root {
-                    qualified_name.to_string()
-                } else {
-                    root_entity_type.unwrap_or(qualified_name).to_string()
-                };
+                let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
 
-                // Add inline fragment selection entry
-                selections.push(OwnedSelectionItem {
-                    kind: OwnedSelectionKind::InlineFragment(type_name.clone()),
-                });
-                // Add inline fragment accessor
+                selections.push(OwnedSelectionItem { kind: OwnedSelectionKind::InlineFragment(type_name.clone()) });
                 inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
                     property_name: format!("as{}", naming::first_uppercased(frag_type_condition)),
                     type_name: type_name.clone(),
                 });
 
-                // Build field accessors: parent + fragment + transitive
                 let mut pfa = Vec::new();
                 for fa in &field_accessors { pfa.push(fa.clone()); }
                 for (key, field) in &frag_ds.fields {
@@ -574,7 +557,6 @@ fn build_selection_set_config_owned(
                     }
                 }
 
-                // Fragment spread accessors
                 let mut pfs = vec![OwnedFragmentSpreadAccessor {
                     property_name: naming::first_lowercased(&spread.fragment_name),
                     fragment_type: spread.fragment_name.clone(),
@@ -586,7 +568,6 @@ fn build_selection_set_config_owned(
                     });
                 }
 
-                // Initializer
                 let pinit = if generate_initializers {
                     Some(build_promoted_initializer(
                         &frag_arc.root_field.selection_set.scope.parent_type,
@@ -595,7 +576,6 @@ fn build_selection_set_config_owned(
                     ))
                 } else { None };
 
-                // Type aliases
                 let mut pta = Vec::new();
                 for (key, field) in &frag_ds.fields {
                     if matches!(field, FieldSelection::Entity(_)) {
@@ -622,16 +602,11 @@ fn build_selection_set_config_owned(
                     GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
                 };
                 let ic = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::InlineFragment };
-
                 let pss = OwnedSelectionSetConfig {
-                    struct_name: type_name.clone(),
-                    schema_namespace: schema_namespace.to_string(),
-                    parent_type: frag_parent_type,
-                    is_root: false, is_inline_fragment: true,
-                    conformance: ic,
-                    root_entity_type: Some(child_root_entity.clone()),
-                    merged_sources: vec![],
-                    selections: vec![OwnedSelectionItem { kind: OwnedSelectionKind::Fragment(spread.fragment_name.clone()) }],
+                    struct_name: type_name.clone(), schema_namespace: schema_namespace.to_string(),
+                    parent_type: frag_parent_type, is_root: false, is_inline_fragment: true,
+                    conformance: ic, root_entity_type: Some(child_root_entity.clone()),
+                    merged_sources: vec![], selections: vec![OwnedSelectionItem { kind: OwnedSelectionKind::Fragment(spread.fragment_name.clone()) }],
                     field_accessors: pfa, inline_fragment_accessors: vec![],
                     fragment_spreads: pfs, initializer: pinit,
                     nested_types: vec![], type_aliases: pta,
@@ -645,7 +620,7 @@ fn build_selection_set_config_owned(
                 });
             }
 
-            // Case 2: Fragment contains inline fragments - promote them
+            // Case 2: Fragment contains inline fragments - promote them as CompositeInlineFragment
             for frag_inline in &frag_ds.inline_fragments {
                 if let Some(ref tc) = frag_inline.type_condition {
                     let tc_name = tc.name().to_string();
@@ -668,7 +643,6 @@ fn build_selection_set_config_owned(
                     };
                     let ms = vec![qualified_name.to_string(), format!("{}.{}", spread.fragment_name, type_name)];
 
-                    // Field accessors: fragment inline fragment fields + parent fields
                     let mut pfa = Vec::new();
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
@@ -692,11 +666,9 @@ fn build_selection_set_config_owned(
 
                     let pc = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::CompositeInlineFragment };
                     let pss = OwnedSelectionSetConfig {
-                        struct_name: type_name.clone(),
-                        schema_namespace: schema_namespace.to_string(),
+                        struct_name: type_name.clone(), schema_namespace: schema_namespace.to_string(),
                         parent_type: ppt, is_root: false, is_inline_fragment: true,
-                        conformance: pc,
-                        root_entity_type: Some(child_root_entity),
+                        conformance: pc, root_entity_type: Some(child_root_entity),
                         merged_sources: ms, selections: vec![],
                         field_accessors: pfa, inline_fragment_accessors: vec![],
                         fragment_spreads: pfs, initializer: pinit,
@@ -756,6 +728,20 @@ fn build_selection_set_config_owned(
 /// Build type aliases for entity types from spread fragments.
 /// E.g., `typealias Height = HeightInMeters.Height` when the current selection set
 /// spreads HeightInMeters which has a nested Height entity type.
+/// Check if `type_name` is a supertype of `current_type`.
+/// This is true when the current type implements the interface `type_name`.
+fn is_supertype_of_current(current_type: &GraphQLCompositeType, type_name: &str) -> bool {
+    match current_type {
+        GraphQLCompositeType::Object(obj) => {
+            obj.interfaces.iter().any(|i| i == type_name)
+        }
+        GraphQLCompositeType::Interface(iface) => {
+            iface.interfaces.iter().any(|i| i == type_name)
+        }
+        GraphQLCompositeType::Union(_) => false,
+    }
+}
+
 fn build_type_aliases(
     ds: &DirectSelections,
     referenced_fragments: &[Arc<NamedFragment>],
@@ -917,6 +903,62 @@ fn build_initializer_config(
         fulfilled_fragments,
         typename_value,
     }
+}
+
+/// Build an initializer for a promoted type-narrowing inline fragment (Case 1).
+fn build_promoted_initializer(
+    parent_type: &GraphQLCompositeType, all_field_accessors: &[OwnedFieldAccessor],
+    schema_namespace: &str, qualified_name: &str, root_entity_type: &str,
+    fragment_name: &str, frag_named_fragments: &[NamedFragmentSpread],
+    referenced_fragments: &[Arc<NamedFragment>],
+) -> OwnedInitializerConfig {
+    let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
+    let typename_value = if parent_is_object {
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name())))
+    } else { OwnedTypenameValue::Parameter };
+    let mut parameters = Vec::new();
+    if !parent_is_object { parameters.push(OwnedInitParam { name: "__typename".to_string(), swift_type: "String".to_string(), default_value: None }); }
+    for a in all_field_accessors {
+        parameters.push(OwnedInitParam { name: a.name.clone(), swift_type: a.swift_type.clone(), default_value: if a.swift_type.ends_with('?') { Some("nil".to_string()) } else { None } });
+    }
+    let mut data_entries = vec![OwnedDataEntry {
+        key: "__typename".to_string(),
+        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name()))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
+    }];
+    for a in all_field_accessors {
+        let is_entity = referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
+        data_entries.push(OwnedDataEntry { key: a.name.clone(), value: if is_entity { OwnedDataEntryValue::FieldData(a.name.clone()) } else { OwnedDataEntryValue::Variable(a.name.clone()) } });
+    }
+    let mut fulfilled_fragments = vec![root_entity_type.to_string(), qualified_name.to_string(), fragment_name.to_string()];
+    for fs in frag_named_fragments { fulfilled_fragments.push(fs.fragment_name.clone()); }
+    OwnedInitializerConfig { parameters, data_entries, fulfilled_fragments, typename_value }
+}
+
+/// Build an initializer for a promoted composite inline fragment (Case 2).
+fn build_promoted_composite_initializer(
+    parent_type: &GraphQLCompositeType, all_field_accessors: &[OwnedFieldAccessor],
+    schema_namespace: &str, qualified_name: &str, root_entity_type: &str,
+    fragment_name: &str, referenced_fragments: &[Arc<NamedFragment>],
+) -> OwnedInitializerConfig {
+    let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
+    let typename_value = if parent_is_object {
+        OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name())))
+    } else { OwnedTypenameValue::Parameter };
+    let mut parameters = Vec::new();
+    if !parent_is_object { parameters.push(OwnedInitParam { name: "__typename".to_string(), swift_type: "String".to_string(), default_value: None }); }
+    for a in all_field_accessors {
+        parameters.push(OwnedInitParam { name: a.name.clone(), swift_type: a.swift_type.clone(), default_value: if a.swift_type.ends_with('?') { Some("nil".to_string()) } else { None } });
+    }
+    let mut data_entries = vec![OwnedDataEntry {
+        key: "__typename".to_string(),
+        value: if parent_is_object { OwnedDataEntryValue::Typename(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(parent_type.name()))) } else { OwnedDataEntryValue::Variable("__typename".to_string()) },
+    }];
+    for a in all_field_accessors {
+        let is_entity = referenced_fragments.iter().any(|f| f.root_field.selection_set.direct_selections.fields.get(&a.name).map(|field| matches!(field, FieldSelection::Entity(_))).unwrap_or(false));
+        data_entries.push(OwnedDataEntry { key: a.name.clone(), value: if is_entity { OwnedDataEntryValue::FieldData(a.name.clone()) } else { OwnedDataEntryValue::Variable(a.name.clone()) } });
+    }
+    let fulfilled_fragments = vec![root_entity_type.to_string(), qualified_name.to_string(), fragment_name.to_string()];
+    OwnedInitializerConfig { parameters, data_entries, fulfilled_fragments, typename_value }
 }
 
 /// Render a GraphQL field type as a Swift type string.
