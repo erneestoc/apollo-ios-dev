@@ -1155,8 +1155,40 @@ fn build_selection_set_config_owned(
                 ancestor_fragments,
             );
 
+            // Reorder applicable fragments for fragment spreads: hoist sub-fragments
+            // to the front, preserving relative order otherwise.
+            // E.g., [PetDetails, WarmBloodedDetails, HeightInMeters] becomes
+            // [HeightInMeters, PetDetails, WarmBloodedDetails] because HeightInMeters
+            // is a sub-fragment of WarmBloodedDetails.
+            let applicable_frags_for_spreads = {
+                // Build a set of sub-fragment names
+                let mut is_sub_frag: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for frag_name in &applicable_frags {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                            if applicable_frags.contains(&sub.fragment_name) {
+                                is_sub_frag.insert(sub.fragment_name.clone());
+                            }
+                        }
+                    }
+                }
+                // Sub-fragments first, then non-sub-fragments, preserving relative order within each group
+                let mut reordered: Vec<String> = Vec::new();
+                for frag_name in &applicable_frags {
+                    if is_sub_frag.contains(frag_name) {
+                        reordered.push(frag_name.clone());
+                    }
+                }
+                for frag_name in &applicable_frags {
+                    if !is_sub_frag.contains(frag_name) {
+                        reordered.push(frag_name.clone());
+                    }
+                }
+                reordered
+            };
+
             // Add applicable fragment spreads that the inline fragment doesn't already have
-            for frag_name in &applicable_frags {
+            for frag_name in &applicable_frags_for_spreads {
                 if !child_ss.fragment_spreads.iter().any(|fs| fs.fragment_type == *frag_name) {
                     child_ss.fragment_spreads.push(OwnedFragmentSpreadAccessor {
                         property_name: naming::first_lowercased(frag_name),
@@ -1166,8 +1198,82 @@ fn build_selection_set_config_owned(
                 }
             }
 
+            // Add conditional parent-scope fragment spreads as optional accessors.
+            // E.g., if the root scope has `...HeightInMeters @skip(if: $skipHeightInMeters)`,
+            // add it as optional in all child inline fragments (AsPet, AsClassroomPet, etc.).
+            // Skip if:
+            // - The fragment is already handled by the child (non-conditional spread)
+            // - The fragment requires type narrowing (its type condition differs from the parent scope's type)
+            for spread in &ds.named_fragments {
+                if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) {
+                    // Skip if the child's own scope already has this fragment as a non-conditional spread
+                    let child_has_unconditional = inline.selection_set.direct_selections.named_fragments.iter()
+                        .any(|s| s.fragment_name == spread.fragment_name && !has_inclusion_conditions(s.inclusion_conditions.as_ref()));
+                    if child_has_unconditional { continue; }
+                    // Skip if the fragment requires type narrowing (its type condition differs from
+                    // the parent scope's type). Such fragments need their own inline fragment scope.
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                        let parent_type_name = ir_ss.scope.parent_type.name();
+                        if frag_arc.type_condition_name != parent_type_name
+                            && !is_supertype_of_current(&ir_ss.scope.parent_type, &frag_arc.type_condition_name)
+                        {
+                            continue;
+                        }
+                    }
+                    if !child_ss.fragment_spreads.iter().any(|fs| fs.fragment_type == spread.fragment_name) {
+                        child_ss.fragment_spreads.push(OwnedFragmentSpreadAccessor {
+                            property_name: naming::first_lowercased(&spread.fragment_name),
+                            fragment_type: spread.fragment_name.clone(),
+                            is_optional: true,
+                        });
+                    }
+                }
+            }
+
+            // Reorder applicable fragments for field merging and fulfilled fragments:
+            // Fragments that have sub-fragments within the applicable set come first,
+            // immediately followed by their sub-fragments, then remaining "leaf" fragments.
+            // This ensures e.g. WarmBloodedDetails.bodyTemperature comes before
+            // PetDetails.humanName, with HeightInMeters (sub of WBD) between them.
+            let applicable_frags_for_fields = {
+                // Map: parent fragment name -> list of its sub-fragment names in applicable set
+                let mut sub_frags_of: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+                let mut is_sub_frag: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for frag_name in &applicable_frags {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                            if applicable_frags.contains(&sub.fragment_name) {
+                                sub_frags_of.entry(frag_name.clone()).or_default().push(sub.fragment_name.clone());
+                                is_sub_frag.insert(sub.fragment_name.clone());
+                            }
+                        }
+                    }
+                }
+                let mut result = Vec::new();
+                // First: parent fragments followed by their sub-fragments
+                for frag_name in &applicable_frags {
+                    if sub_frags_of.contains_key(frag_name) && !is_sub_frag.contains(frag_name) {
+                        result.push(frag_name.clone());
+                        if let Some(subs) = sub_frags_of.get(frag_name) {
+                            for sub in subs {
+                                if !result.contains(sub) {
+                                    result.push(sub.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Then: remaining fragments (not parents, not sub-fragments)
+                for frag_name in &applicable_frags {
+                    if !result.contains(frag_name) {
+                        result.push(frag_name.clone());
+                    }
+                }
+                result
+            };
+
             // Add merged fields from applicable fragments
-            for frag_name in &applicable_frags {
+            for frag_name in &applicable_frags_for_fields {
                 if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                     for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
@@ -1409,7 +1515,12 @@ fn build_selection_set_config_owned(
                                                 let mut nested_fields = Vec::new();
                                                 for (key, field) in &nested_ef.selection_set.direct_selections.fields {
                                                     if key == "__typename" { continue; }
-                                                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                                    let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                                    // Fields with inclusion conditions become optional
+                                                    let conds = field_inclusion_conditions(field);
+                                                    if has_inclusion_conditions(conds) && !swift_type.ends_with('?') {
+                                                        swift_type.push('?');
+                                                    }
                                                     nested_fields.push((key.clone(), swift_type));
                                                 }
                                                 // Merge into existing sibling entity or add new
@@ -1447,7 +1558,12 @@ fn build_selection_set_config_owned(
                                                     let mut nested_fields = Vec::new();
                                                     for (key, field) in &nested_ef.selection_set.direct_selections.fields {
                                                         if key == "__typename" { continue; }
-                                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                                        let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                                        // Fields with inclusion conditions become optional
+                                                        let conds = field_inclusion_conditions(field);
+                                                        if has_inclusion_conditions(conds) && !swift_type.ends_with('?') {
+                                                            swift_type.push('?');
+                                                        }
                                                         nested_fields.push((key.clone(), swift_type));
                                                     }
                                                     if let Some(existing) = sibling_entity.iter_mut().find(|(q, _)| q == &nested_qualified) {
@@ -1608,10 +1724,12 @@ fn build_selection_set_config_owned(
             // Order: promoted scope OIDs + their fragment OIDs first,
             // then direct sibling inline fragment scope OIDs + their fragment OIDs,
             // then remaining applicable fragments.
+            let mut step1_added_promoted = false;
             if let Some(ref mut init) = child_ss.initializer {
                 let parent_scope_type = ir_ss.scope.parent_type.name();
 
                 // 1. Process promoted fragments first (e.g., AsWarmBlooded from WarmBloodedDetails)
+                let fulfilled_before_step1 = init.fulfilled_fragments.len();
                 for frag_name in &applicable_frags {
                     if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         if pre_promoted_fragment_names.contains(frag_name) {
@@ -1641,7 +1759,11 @@ fn build_selection_set_config_owned(
                     }
                 }
 
-                // 2. Process each direct sibling inline fragment that is a supertype, in source order.
+                step1_added_promoted = init.fulfilled_fragments.len() > fulfilled_before_step1;
+
+                // 2. Process each direct sibling inline fragment that is a supertype.
+                // Within each sibling, process type-narrowing fragments first (whose type
+                // condition differs from the sibling), then matching-type fragments.
                 for sibling_inline in &ds.inline_fragments {
                     if let Some(ref sibling_tc) = sibling_inline.type_condition {
                         if sibling_tc.name() != tc.name()
@@ -1655,9 +1777,10 @@ fn build_selection_set_config_owned(
                             {
                                 init.fulfilled_fragments.push(sibling_qualified.clone());
                             }
-                            // Add nested promoted fragment OIDs from this sibling
+                            // Pass 1: Add nested promoted OIDs for type-narrowing fragments first
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
                                 if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if sib_frag.type_condition_name == sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sib_frag.type_condition_name));
                                         if !init.fulfilled_fragments.contains(&nested_promoted) {
@@ -1666,9 +1789,43 @@ fn build_selection_set_config_owned(
                                     }
                                 }
                             }
-                            // Add fragment OIDs from this sibling's scope
+                            // Pass 1: Add fragment OIDs for type-narrowing fragments
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
                                 if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if sib_frag.type_condition_name == sibling_tc.name() { continue; }
+                                    if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
+                                        if !init.fulfilled_fragments.contains(&sib_spread.fragment_name) {
+                                            init.fulfilled_fragments.push(sib_spread.fragment_name.clone());
+                                        }
+                                        // Also add sub-fragments of narrowing fragments
+                                        for sub in &sib_frag.root_field.selection_set.direct_selections.named_fragments {
+                                            if !init.fulfilled_fragments.contains(&sub.fragment_name) {
+                                                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                                    if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
+                                                        init.fulfilled_fragments.push(sub.fragment_name.clone());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Pass 2: Add nested promoted OIDs for matching-type fragments
+                            for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
+                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if sib_frag.type_condition_name != sibling_tc.name() { continue; }
+                                    if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
+                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sib_frag.type_condition_name));
+                                        if !init.fulfilled_fragments.contains(&nested_promoted) {
+                                            init.fulfilled_fragments.push(nested_promoted);
+                                        }
+                                    }
+                                }
+                            }
+                            // Pass 2: Add fragment OIDs for matching-type fragments
+                            for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
+                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                    if sib_frag.type_condition_name != sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         if !init.fulfilled_fragments.contains(&sib_spread.fragment_name) {
                                             init.fulfilled_fragments.push(sib_spread.fragment_name.clone());
@@ -1680,11 +1837,13 @@ fn build_selection_set_config_owned(
                     }
                 }
 
-                // 3. Add remaining applicable fragment OIDs not yet added
+                // 3. Add remaining applicable fragment OIDs not yet added.
+                // Use the reordered applicable_frags_for_fields to ensure correct ordering
+                // (parent fragments with sub-frags before leaf fragments).
                 let entity_root_type_name = entity_root_graphql_type
                     .unwrap_or_else(|| ir_ss.scope.parent_type.name());
                 let parent_is_union = matches!(inline.selection_set.scope.parent_type, GraphQLCompositeType::Union(_));
-                for frag_name in &applicable_frags {
+                for frag_name in &applicable_frags_for_fields {
                     let should_fulfill = if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         type_satisfies_condition(tc, &frag_arc.type_condition_name)
                             // For union parents, also include fragments whose type condition
@@ -1871,6 +2030,57 @@ fn build_selection_set_config_owned(
                                         name: entity_type.clone(),
                                         target: format!("{}.{}", frag_name, entity_type),
                                     });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Post-process fulfilled fragments: when step 3 added fragment OIDs that should
+            // come after scope OIDs from the ancestor handling. This only applies when
+            // step 1 didn't add promoted fragment OIDs (which would ensure correct ordering).
+            // Post-process fulfilled fragments: move "orphaned" bare fragment names
+            // (those without a preceding scope OID) to after the last scope OID in the
+            // ancestor region. This handles cases like AllAnimalsIncludeSkipQuery's AsBird
+            // where WBD/HIM appear before AsPet but should come after AsPet.AsWarmBlooded.
+            if !ancestor_fragments.is_empty() && !step1_added_promoted {
+                if let Some(ref mut init) = child_ss.initializer {
+                    let child_pos = init.fulfilled_fragments.iter()
+                        .position(|f| f == &child_qualified)
+                        .unwrap_or(0);
+                    let ancestor_start = child_pos + 1;
+                    if ancestor_start < init.fulfilled_fragments.len() {
+                        // Find bare names that appear before the first scope OID in the ancestor region
+                        let first_scope_in_ancestor = init.fulfilled_fragments[ancestor_start..].iter()
+                            .position(|f| f.contains('.'))
+                            .map(|p| p + ancestor_start);
+                        if let Some(scope_pos) = first_scope_in_ancestor {
+                            // Collect bare names between ancestor_start and scope_pos
+                            let mut orphaned_bares: Vec<(usize, String)> = Vec::new();
+                            for i in ancestor_start..scope_pos {
+                                if !init.fulfilled_fragments[i].contains('.') {
+                                    orphaned_bares.push((i, init.fulfilled_fragments[i].clone()));
+                                }
+                            }
+                            if !orphaned_bares.is_empty() {
+                                // Find the last scope OID in the ancestor region
+                                let last_scope = init.fulfilled_fragments[ancestor_start..].iter()
+                                    .rposition(|f| f.contains('.'))
+                                    .map(|p| p + ancestor_start)
+                                    .unwrap_or(scope_pos);
+                                // Remove orphaned bares from back to front
+                                for (idx, _) in orphaned_bares.iter().rev() {
+                                    init.fulfilled_fragments.remove(*idx);
+                                }
+                                // Recalculate last_scope after removals
+                                let new_last_scope = init.fulfilled_fragments[ancestor_start..].iter()
+                                    .rposition(|f| f.contains('.'))
+                                    .map(|p| p + ancestor_start)
+                                    .unwrap_or(ancestor_start);
+                                // Insert after the last scope OID
+                                for (i, (_, bare)) in orphaned_bares.iter().enumerate() {
+                                    init.fulfilled_fragments.insert(new_last_scope + 1 + i, bare.clone());
                                 }
                             }
                         }
