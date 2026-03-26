@@ -68,14 +68,19 @@ fn render_body(
             .iter()
             .map(|iface| {
                 format!(
-                    "    {}Interfaces.{}.self",
+                    "{}Interfaces.{}.self",
                     prefix,
                     crate::naming::first_uppercased(iface)
                 )
             })
             .collect();
 
-        format!("[\n{}\n  ]", items.join(",\n"))
+        if items.len() == 1 {
+            format!("[{}]", items[0])
+        } else {
+            let indented: Vec<String> = items.iter().map(|i| format!("    {}", i)).collect();
+            format!("[\n{}\n  ]", indented.join(",\n"))
+        }
     };
 
     format!(

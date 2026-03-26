@@ -257,9 +257,16 @@ fn build_selection_set_config_owned(
 
     let ds = &ir_ss.direct_selections;
 
+    // Determine whether __typename should appear in __selections.
+    // It is added for all selection sets EXCEPT:
+    //   - Inline fragments (they inherit __typename from the parent entity)
+    //   - Root operation Data structs (is_root && conformance == SelectionSet)
+    let is_root_operation_data = is_root && matches!(conformance, SelectionSetConformance::SelectionSet);
+    let should_add_typename = !is_inline_fragment && !is_root_operation_data;
+
     // Build selections
     let mut selections = Vec::new();
-    if ir_ss.needs_typename {
+    if should_add_typename {
         selections.push(OwnedSelectionItem {
             kind: OwnedSelectionKind::Field {
                 name: "__typename".to_string(),
@@ -403,6 +410,21 @@ fn build_selection_set_config_owned(
         }
     }
 
+    // Build initializer when requested
+    let initializer = if generate_initializers {
+        Some(build_initializer_config(
+            &ir_ss.scope.parent_type,
+            ds,
+            schema_namespace,
+            qualified_name,
+            is_inline_fragment,
+            root_entity_type,
+            referenced_fragments,
+        ))
+    } else {
+        None
+    };
+
     OwnedSelectionSetConfig {
         struct_name: struct_name.to_string(),
         schema_namespace: schema_namespace.to_string(),
@@ -416,11 +438,128 @@ fn build_selection_set_config_owned(
         field_accessors,
         inline_fragment_accessors,
         fragment_spreads,
-        initializer: None, // TODO: build initializer
+        initializer,
         nested_types,
         type_aliases: vec![],
         indent,
         access_modifier: access_modifier.to_string(),
+    }
+}
+
+/// Build an `OwnedInitializerConfig` for a selection set.
+///
+/// Rules:
+/// - Object parent types get a fixed `__typename` in the data dict (no parameter).
+/// - Interface/Union parent types get `__typename` as a parameter.
+/// - Scalar fields become plain variable entries; entity fields use `._fieldData`.
+/// - Optional Swift types (ending with `?`) get `= nil` default in parameters.
+/// - `fulfilledFragments` always contains the current `qualified_name`.
+///   For inline fragments it also contains the root entity type.
+///   For named fragment spreads it also contains each spread fragment name.
+fn build_initializer_config(
+    parent_type: &GraphQLCompositeType,
+    ds: &DirectSelections,
+    schema_namespace: &str,
+    qualified_name: &str,
+    is_inline_fragment: bool,
+    root_entity_type: Option<&str>,
+    referenced_fragments: &[Arc<NamedFragment>],
+) -> OwnedInitializerConfig {
+    // Determine typename handling based on parent type
+    let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
+
+    let typename_value = if parent_is_object {
+        let type_ref = format!(
+            "{}.Objects.{}.typename",
+            schema_namespace,
+            naming::first_uppercased(parent_type.name())
+        );
+        OwnedTypenameValue::Fixed(type_ref)
+    } else {
+        OwnedTypenameValue::Parameter
+    };
+
+    // Build parameters
+    let mut parameters = Vec::new();
+
+    // If parent is Interface/Union, __typename is a parameter
+    if !parent_is_object {
+        parameters.push(OwnedInitParam {
+            name: "__typename".to_string(),
+            swift_type: "String".to_string(),
+            default_value: None,
+        });
+    }
+
+    // Add a parameter for each direct field
+    for (key, field) in &ds.fields {
+        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace);
+        let default_value = if swift_type.ends_with('?') {
+            Some("nil".to_string())
+        } else {
+            None
+        };
+        parameters.push(OwnedInitParam {
+            name: key.clone(),
+            swift_type,
+            default_value,
+        });
+    }
+
+    // Build data dict entries
+    let mut data_entries = Vec::new();
+
+    // __typename always comes first in the data dict
+    data_entries.push(OwnedDataEntry {
+        key: "__typename".to_string(),
+        value: if parent_is_object {
+            let type_ref = format!(
+                "{}.Objects.{}.typename",
+                schema_namespace,
+                naming::first_uppercased(parent_type.name())
+            );
+            OwnedDataEntryValue::Typename(type_ref)
+        } else {
+            OwnedDataEntryValue::Variable("__typename".to_string())
+        },
+    });
+
+    // Add each direct field
+    for (key, field) in &ds.fields {
+        let value = match field {
+            FieldSelection::Entity(_) => OwnedDataEntryValue::FieldData(key.clone()),
+            FieldSelection::Scalar(_) => OwnedDataEntryValue::Variable(key.clone()),
+        };
+        data_entries.push(OwnedDataEntry {
+            key: key.clone(),
+            value,
+        });
+    }
+
+    // Build fulfilled fragments
+    let mut fulfilled_fragments = Vec::new();
+
+    if is_inline_fragment {
+        // Inline fragments include the root entity type first, then self
+        if let Some(root_entity) = root_entity_type {
+            fulfilled_fragments.push(root_entity.to_string());
+        }
+        fulfilled_fragments.push(qualified_name.to_string());
+    } else {
+        // Non-inline-fragment selection sets include self first
+        fulfilled_fragments.push(qualified_name.to_string());
+    }
+
+    // Add directly spread named fragments to fulfilled fragments
+    for spread in &ds.named_fragments {
+        fulfilled_fragments.push(spread.fragment_name.clone());
+    }
+
+    OwnedInitializerConfig {
+        parameters,
+        data_entries,
+        fulfilled_fragments,
+        typename_value,
     }
 }
 

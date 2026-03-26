@@ -836,9 +836,16 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     ) -> Vec<GraphQLNamedType> {
         let mut types = Vec::new();
 
+        // Built-in scalars that should be skipped
+        let builtin_scalars = ["String", "Int", "Float", "Boolean"];
+
         for (name, _extended_type) in &schema.types {
             // Skip built-in introspection types
             if name.starts_with("__") {
+                continue;
+            }
+            // Skip built-in scalars (but keep ID since it's treated as custom scalar)
+            if builtin_scalars.contains(&name.as_str()) {
                 continue;
             }
 

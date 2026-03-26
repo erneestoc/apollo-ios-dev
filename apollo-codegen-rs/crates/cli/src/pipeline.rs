@@ -647,20 +647,34 @@ use apollo_codegen_frontend::types::{GraphQLType, GraphQLValue};
 
 fn render_input_field_type(ty: &GraphQLType, ns: &str) -> String {
     match ty {
-        GraphQLType::Named(name) => format!("GraphQLNullable<{}>", render_scalar_swift(name, ns)),
+        GraphQLType::Named(name) => {
+            let base = render_scalar_swift(name, ns);
+            // In input objects, nullable types use GraphQLNullable<T> wrapper
+            format!("GraphQLNullable<{}>", base)
+        }
         GraphQLType::NonNull(inner) => match inner.as_ref() {
             GraphQLType::Named(name) => render_scalar_swift(name, ns),
-            GraphQLType::List(inner) => format!("[{}]", render_input_field_type(inner, ns)),
+            GraphQLType::List(list_inner) => {
+                format!("[{}]", render_input_field_type(list_inner, ns))
+            }
             _ => render_input_field_type(inner, ns),
         },
-        GraphQLType::List(inner) => format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns)),
+        GraphQLType::List(inner) => {
+            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns))
+        }
     }
+}
+
+/// Render init parameter type - nullable gets default = nil
+fn render_input_field_property_type(ty: &GraphQLType, ns: &str) -> String {
+    // Property type same as field type for input objects
+    render_input_field_type(ty, ns)
 }
 
 fn render_input_field_init_type(
     ty: &GraphQLType,
     ns: &str,
-    default_value: &Option<GraphQLValue>,
+    _default_value: &Option<GraphQLValue>,
 ) -> String {
     let base = render_input_field_type(ty, ns);
     match ty {
@@ -668,31 +682,17 @@ fn render_input_field_init_type(
             // Nullable fields get default = nil
             format!("{} = nil", base)
         }
-        GraphQLType::NonNull(inner) => match inner.as_ref() {
-            GraphQLType::Named(name) => {
-                // Non-null optional scalar types (like Bool?)
-                if matches!(name.as_str(), "Boolean") {
-                    format!("{}? = nil", base)
-                } else {
-                    base
-                }
-            }
-            _ => base,
-        },
+        GraphQLType::NonNull(_) => base,
     }
 }
 
-fn render_scalar_swift(name: &str, ns: &str) -> String {
+fn render_scalar_swift(name: &str, _ns: &str) -> String {
     match name {
         "String" => "String".to_string(),
         "Int" => "Int".to_string(),
         "Float" => "Double".to_string(),
         "Boolean" => "Bool".to_string(),
-        "ID" => format!("{}.ID", ns),
-        _ => {
-            // Custom scalar or input object - check if it's likely an input object
-            // For now, just use the name (may need namespace prefix for custom scalars)
-            name.to_string()
-        }
+        "ID" => "ID".to_string(),
+        _ => name.to_string(),
     }
 }
