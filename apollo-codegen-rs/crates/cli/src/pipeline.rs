@@ -12,6 +12,7 @@ use apollo_codegen_render::ir_adapter;
 use apollo_codegen_render::naming;
 use apollo_codegen_render::schema_customization::SchemaCustomizer;
 use apollo_codegen_render::templates;
+use sha2::{Sha256, Digest};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -83,7 +84,11 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
 
     // 5. Determine output configuration
     let ns = naming::first_uppercased(&config.schema_namespace);
-    let api_target = "ApolloAPI";
+    let api_target = if config.options.cocoapods_compatible_import_statements {
+        "Apollo"
+    } else {
+        "ApolloAPI"
+    };
     let access_mod = determine_access_modifier(config);
     let is_in_module = matches!(
         config.output.schema_types.module_type,
@@ -92,6 +97,18 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config.output.schema_types.module_type,
         SchemaModuleType::Other(_)
     );
+    let include_schema_docs = matches!(
+        config.options.schema_documentation,
+        SchemaDocumentation::Include
+    );
+    let query_string_format = match config.options.query_string_literal_format {
+        QueryStringLiteralFormat::SingleLine => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::SingleLine
+        }
+        QueryStringLiteralFormat::Multiline => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::Multiline
+        }
+    };
     let camel_case_enums = matches!(
         config.options.conversion_strategies.enum_cases,
         EnumCaseConversionStrategy::CamelCase
@@ -119,6 +136,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config,
         &type_kinds,
         &customizer,
+        include_schema_docs,
     );
 
     // Package.swift (for SPM module type)
@@ -135,6 +153,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config,
         &type_kinds,
         &customizer,
+        query_string_format,
+        api_target,
     );
 
     generate_fragment_files(
@@ -147,6 +167,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config,
         &type_kinds,
         &customizer,
+        query_string_format,
+        api_target,
     );
 
     // Test mock files
@@ -162,6 +184,160 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
     );
 
     Ok(result)
+}
+
+/// Generate an operation manifest file.
+///
+/// This produces a JSON manifest of all operations with their identifiers (SHA256 hashes).
+/// Used for persisted queries / automatic persisted queries.
+pub fn generate_operation_manifest(
+    config: &ApolloCodegenConfiguration,
+    root_url: &Path,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    let manifest_config = config.operation_manifest.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "operationManifest configuration is required for generate-operation-manifest command"
+        )
+    })?;
+
+    // 1. Discover files
+    let schema_files = apollo_codegen_glob::match_search_paths(
+        &config.input.schema_search_paths,
+        Some(root_url),
+    )?;
+    let operation_files = apollo_codegen_glob::match_search_paths(
+        &config.input.operation_search_paths,
+        Some(root_url),
+    )?;
+
+    if schema_files.is_empty() {
+        anyhow::bail!("No schema files found");
+    }
+    if operation_files.is_empty() {
+        anyhow::bail!("No operation files found");
+    }
+
+    // 2. Load schema and parse operations
+    let schema_sources: Vec<(String, String)> = schema_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let frontend = apollo_codegen_frontend::compiler::GraphQLFrontend::load_schema(&schema_sources)
+        .map_err(|errs| anyhow::anyhow!("Schema errors: {}", errs.join(", ")))?;
+
+    let op_sources: Vec<(String, String)> = operation_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let source_map: BTreeMap<String, (String, String)> = op_sources
+        .iter()
+        .map(|(content, path)| (path.clone(), (content.clone(), path.clone())))
+        .collect();
+
+    let doc = frontend
+        .parse_operations(&op_sources)
+        .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?;
+
+    // 3. Compile
+    let compile_options = apollo_codegen_frontend::compiler::CompileOptions {
+        legacy_safelisting_compatible_operations: config
+            .experimental_features
+            .legacy_safelisting_compatible_operations,
+        reduce_generated_schema_types: config.options.reduce_generated_schema_types,
+    };
+
+    let compilation_result = frontend
+        .compile(&doc, &source_map, &compile_options)
+        .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
+
+    // 4. Build IR to get operation sources
+    let ir = IRBuilder::build(&compilation_result);
+
+    // 5. Generate manifest entries
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+
+    for op_def in &compilation_result.operations {
+        let operation = ir.build_operation(op_def);
+        // Skip local cache mutations - they don't go in the manifest
+        if operation.is_local_cache_mutation {
+            continue;
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(operation.source.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+
+        let type_suffix = match op_def.operation_type {
+            OperationType::Query => "Query",
+            OperationType::Mutation => "Mutation",
+            OperationType::Subscription => "Subscription",
+        };
+        let operation_name = if operation.name.ends_with(type_suffix) {
+            operation.name.clone()
+        } else {
+            format!("{}{}", operation.name, type_suffix)
+        };
+
+        match manifest_config.version {
+            OperationManifestVersion::PersistedQueries => {
+                entries.push(serde_json::json!({
+                    "id": hash,
+                    "body": operation.source,
+                    "name": operation_name,
+                    "type": match op_def.operation_type {
+                        OperationType::Query => "query",
+                        OperationType::Mutation => "mutation",
+                        OperationType::Subscription => "subscription",
+                    }
+                }));
+            }
+            OperationManifestVersion::LegacyAPQ => {
+                entries.push(serde_json::json!({
+                    "operationIdentifier": hash,
+                    "operationName": operation_name,
+                    "sourceText": operation.source,
+                }));
+            }
+        }
+    }
+
+    // 6. Write manifest file
+    let manifest_path = resolve_path(root_url, &manifest_config.path);
+    if let Some(parent) = manifest_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let manifest = match manifest_config.version {
+        OperationManifestVersion::PersistedQueries => {
+            serde_json::json!({
+                "format": "apollo-persisted-query-manifest",
+                "version": 1,
+                "operations": entries,
+            })
+        }
+        OperationManifestVersion::LegacyAPQ => {
+            serde_json::Value::Array(entries)
+        }
+    };
+
+    let manifest_str = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(&manifest_path, manifest_str)?;
+
+    if verbose {
+        eprintln!("Operation manifest written to: {}", manifest_path.display());
+    }
+    eprintln!("Generated operation manifest with {} operation(s)", compilation_result.operations.len());
+
+    Ok(())
 }
 
 fn determine_access_modifier(config: &ApolloCodegenConfiguration) -> String {
@@ -198,6 +374,7 @@ fn generate_schema_files(
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
+    include_schema_docs: bool,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -269,18 +446,23 @@ fn generate_schema_files(
     }
 
     // Enums
+    let exclude_deprecated_enums = matches!(
+        config.options.deprecated_enum_cases,
+        Composition::Exclude
+    );
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Enum(enum_t) = named_type {
             let swift_name = customizer.custom_type_name(&enum_t.name);
             let values: Vec<templates::enum_type::EnumValue> = enum_t
                 .values
                 .iter()
+                .filter(|v| !exclude_deprecated_enums || !v.is_deprecated)
                 .map(|v| {
                     let custom_case = customizer.custom_enum_case(&enum_t.name, &v.name);
                     templates::enum_type::EnumValue {
                         name: custom_case.to_string(),
                         raw_value: v.name.clone(), // GraphQL value stays original
-                        description: v.description.clone(),
+                        description: if include_schema_docs { v.description.clone() } else { None },
                         is_deprecated: v.is_deprecated,
                         deprecation_reason: v.deprecation_reason.clone(),
                     }
@@ -321,7 +503,7 @@ fn generate_schema_files(
                         rendered_name: custom_field_name.to_string(),
                         rendered_type: swift_type,
                         rendered_init_type: init_type,
-                        description: fdef.description.clone(),
+                        description: if include_schema_docs { fdef.description.clone() } else { None },
                         deprecation_reason: fdef.deprecation_reason.clone(),
                     }
                 })
@@ -333,7 +515,7 @@ fn generate_schema_files(
                 access_mod,
                 api_target,
                 config.options.warnings_on_deprecated_usage == apollo_codegen_config::types::Composition::Include,
-                input.description.as_deref(),
+                if include_schema_docs { input.description.as_deref() } else { None },
             );
             let file_path = sources_path
                 .join("Schema/InputObjects")
@@ -355,8 +537,8 @@ fn generate_schema_files(
                 if scalar.name == "ID" {
                     let content = templates::custom_scalar::render(
                         swift_name,
-                        scalar.description.as_deref(),
-                        scalar.specified_by_url.as_deref(),
+                        if include_schema_docs { scalar.description.as_deref() } else { None },
+                        if include_schema_docs { scalar.specified_by_url.as_deref() } else { None },
                         access_mod,
                         api_target,
                     );
@@ -369,8 +551,8 @@ fn generate_schema_files(
             }
             let content = templates::custom_scalar::render(
                 swift_name,
-                scalar.description.as_deref(),
-                scalar.specified_by_url.as_deref(),
+                if include_schema_docs { scalar.description.as_deref() } else { None },
+                if include_schema_docs { scalar.specified_by_url.as_deref() } else { None },
                 access_mod,
                 api_target,
             );
@@ -453,6 +635,8 @@ fn generate_operation_files(
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
+    query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
+    api_target: &str,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -465,13 +649,31 @@ fn generate_operation_files(
             }
             var.type_str = customizer.customize_variable_type(&var.type_str);
         }
+        // Determine whether to generate initializers based on config
+        let generate_init = if operation.is_local_cache_mutation {
+            config.options.selection_set_initializers.local_cache_mutations
+        } else {
+            config.options.selection_set_initializers.operations
+        };
+        // Compute operation identifier (SHA256 hash of source) when configured
+        let op_id = if config.options.operation_document_format.operation_identifier {
+            let mut hasher = Sha256::new();
+            hasher.update(operation.source.as_bytes());
+            Some(format!("{:x}", hasher.finalize()))
+        } else {
+            None
+        };
         let content = ir_adapter::render_operation(
             &operation,
             ns,
             access_mod,
-            true, // generate initializers
+            generate_init,
             type_kinds,
             customizer,
+            config.options.operation_document_format.definition,
+            op_id.as_deref(),
+            query_string_format,
+            api_target,
         );
 
         let subdir = match op_def.operation_type {
@@ -517,18 +719,28 @@ fn generate_fragment_files(
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
+    query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
+    api_target: &str,
 ) {
     let sources_path = schema_path.join("Sources");
 
     for frag_def in &compilation.fragments {
         if let Some(frag) = ir.fragments().get(&frag_def.name) {
+            // Determine whether to generate initializers based on config
+            let generate_init = if frag.is_local_cache_mutation {
+                config.options.selection_set_initializers.local_cache_mutations
+            } else {
+                config.options.selection_set_initializers.named_fragments
+            };
             let content = ir_adapter::render_fragment(
                 frag,
                 ns,
                 access_mod,
-                true, // generate initializers
+                generate_init,
                 type_kinds,
                 customizer,
+                query_string_format,
+                api_target,
             );
 
             if frag.is_local_cache_mutation {
@@ -698,6 +910,56 @@ impl GenerationResult {
             std::fs::write(path, content)?;
         }
         Ok(())
+    }
+
+    /// Prune stale `.graphql.swift` files from the output directories.
+    ///
+    /// Walks each directory that contains generated files and removes any
+    /// `.graphql.swift` files that are NOT in the generated file set.
+    pub fn prune_generated_files(&self) -> std::io::Result<usize> {
+        use std::collections::BTreeSet;
+
+        // Canonicalize all generated file paths for comparison
+        let generated_paths: BTreeSet<PathBuf> = self
+            .files
+            .keys()
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .collect();
+
+        // Collect all unique parent directories that contain generated files
+        let mut dirs_to_scan: BTreeSet<PathBuf> = BTreeSet::new();
+        for path in self.files.keys() {
+            if let Some(parent) = path.parent() {
+                // Walk up to find the root output directories
+                // We scan each directory that directly contains generated files
+                dirs_to_scan.insert(parent.to_path_buf());
+            }
+        }
+
+        let mut pruned_count = 0;
+        for dir in &dirs_to_scan {
+            if !dir.exists() {
+                continue;
+            }
+            // Only scan the specific directory (not recursively) for .graphql.swift files
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() {
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    if name.ends_with(".graphql.swift") {
+                        if let Ok(canonical) = std::fs::canonicalize(&path) {
+                            if !generated_paths.contains(&canonical) {
+                                std::fs::remove_file(&path)?;
+                                pruned_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(pruned_count)
     }
 }
 

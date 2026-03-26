@@ -31,6 +31,10 @@ pub struct FragmentConfig<'a> {
     pub selection_set: SelectionSetConfig<'a>,
     /// Whether this is a mutable fragment (for local cache mutations).
     pub is_mutable: bool,
+    /// How to format the query string literal (default: SingleLine).
+    pub query_string_format: super::operation::QueryStringFormat,
+    /// The API target name for import statements (default: "ApolloAPI").
+    pub api_target_name: &'a str,
 }
 
 /// Render a complete fragment file.
@@ -40,7 +44,7 @@ pub fn render(config: &FragmentConfig) -> String {
     // Header
     result.push_str(header::HEADER);
     result.push_str("\n\n");
-    result.push_str("@_exported import ApolloAPI\n\n");
+    result.push_str(&format!("@_exported import {}\n\n", config.api_target_name));
 
     // Render the selection set struct (the fragment itself)
     let body = render_fragment_body(config);
@@ -71,10 +75,25 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
         "{}{}static var fragmentDefinition: StaticString {{\n",
         inner_indent, config.access_modifier
     ));
-    result.push_str(&format!(
-        "{}  #\"{}\"#\n",
-        inner_indent, config.fragment_definition
-    ));
+    match config.query_string_format {
+        super::operation::QueryStringFormat::SingleLine => {
+            result.push_str(&format!(
+                "{}  #\"{}\"#\n",
+                inner_indent, config.fragment_definition
+            ));
+        }
+        super::operation::QueryStringFormat::Multiline => {
+            result.push_str(&format!("{}  #\"\n", inner_indent));
+            for line in config.fragment_definition.lines() {
+                if line.is_empty() {
+                    result.push('\n');
+                } else {
+                    result.push_str(&format!("{}  {}\n", inner_indent, line));
+                }
+            }
+            result.push_str(&format!("{}  \"#\n", inner_indent));
+        }
+    }
     result.push_str(&format!("{}}}\n", inner_indent));
 
     // __data and init
@@ -92,17 +111,18 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
     // __parentType
     result.push('\n');
     result.push_str(&format!(
-        "{}{}static var __parentType: any ApolloAPI.ParentType {{ {} }}\n",
+        "{}{}static var __parentType: any {}.ParentType {{ {} }}\n",
         inner_indent,
         config.access_modifier,
+        config.api_target_name,
         ss.parent_type.render(config.schema_namespace)
     ));
 
     // __mergedSources (for CompositeInlineFragment)
     if !ss.merged_sources.is_empty() {
         result.push_str(&format!(
-            "{}{}static var __mergedSources: [any ApolloAPI.SelectionSet.Type] {{ [\n",
-            inner_indent, config.access_modifier
+            "{}{}static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n",
+            inner_indent, config.access_modifier, config.api_target_name
         ));
         for (i, source) in ss.merged_sources.iter().enumerate() {
             let comma = if i < ss.merged_sources.len() - 1 { "," } else { "" };
@@ -116,7 +136,7 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
 
     // __selections
     if !ss.selections.is_empty() {
-        result.push_str(&render_selections(&ss.selections, &inner_indent, config.access_modifier));
+        result.push_str(&render_selections(&ss.selections, &inner_indent, config.access_modifier, config.api_target_name));
     }
 
     // Field accessors
@@ -254,12 +274,13 @@ fn render_selections(
     selections: &[selection_set::SelectionItem],
     indent: &str,
     access_modifier: &str,
+    api_target_name: &str,
 ) -> String {
     let item_indent = format!("{}  ", indent);
     let mut result = String::new();
     result.push_str(&format!(
-        "{}{}static var __selections: [ApolloAPI.Selection] {{ [\n",
-        indent, access_modifier
+        "{}{}static var __selections: [{}.Selection] {{ [\n",
+        indent, access_modifier, api_target_name
     ));
     for sel in selections.iter() {
         // All items get trailing comma (Swift trailing comma convention)

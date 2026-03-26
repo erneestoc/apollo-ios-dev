@@ -49,6 +49,8 @@ pub struct SelectionSetConfig<'a> {
     /// When true, uses `var __data` instead of `let __data`, get/set field accessors,
     /// and MutableSelectionSet/MutableInlineFragment conformances.
     pub is_mutable: bool,
+    /// The API target name for fully-qualified type references (default: "ApolloAPI").
+    pub api_target_name: &'a str,
 }
 
 /// Parent type reference, mapping to Objects, Interfaces, or Unions namespace.
@@ -252,9 +254,10 @@ pub fn render(config: &SelectionSetConfig) -> String {
 
     // __parentType
     result.push_str(&format!(
-        "{}{}static var __parentType: any ApolloAPI.ParentType {{ {} }}\n",
+        "{}{}static var __parentType: any {}.ParentType {{ {} }}\n",
         inner_indent,
         config.access_modifier,
+        config.api_target_name,
         config.parent_type.render(config.schema_namespace)
     ));
 
@@ -262,8 +265,8 @@ pub fn render(config: &SelectionSetConfig) -> String {
     if !config.merged_sources.is_empty() {
         let item_indent = format!("{}  ", inner_indent);
         result.push_str(&format!(
-            "{}{}static var __mergedSources: [any ApolloAPI.SelectionSet.Type] {{ [\n",
-            inner_indent, config.access_modifier
+            "{}{}static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n",
+            inner_indent, config.access_modifier, config.api_target_name
         ));
         for (i, source) in config.merged_sources.iter().enumerate() {
             let comma = if i < config.merged_sources.len() - 1 { "," } else { "" };
@@ -279,8 +282,8 @@ pub fn render(config: &SelectionSetConfig) -> String {
     if !config.selections.is_empty() {
         let item_indent = format!("{}  ", inner_indent);
         result.push_str(&format!(
-            "{}{}static var __selections: [ApolloAPI.Selection] {{ [\n",
-            inner_indent, config.access_modifier
+            "{}{}static var __selections: [{}.Selection] {{ [\n",
+            inner_indent, config.access_modifier, config.api_target_name
         ));
         // All items get trailing comma (Swift trailing comma convention)
         for sel in config.selections.iter() {
@@ -519,8 +522,8 @@ fn render_conformance(config: &SelectionSetConfig) -> String {
         }
         SelectionSetConformance::CompositeInlineFragment => {
             format!(
-                "{}.InlineFragment, ApolloAPI.CompositeInlineFragment",
-                config.schema_namespace
+                "{}.InlineFragment, {}.CompositeInlineFragment",
+                config.schema_namespace, config.api_target_name
             )
         }
         SelectionSetConformance::MutableSelectionSet => {

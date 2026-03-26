@@ -31,6 +31,10 @@ pub fn render_operation(
     generate_initializers: bool,
     type_kinds: &HashMap<String, TypeKind>,
     customizer: &SchemaCustomizer,
+    include_definition: bool,
+    operation_identifier: Option<&str>,
+    query_string_format: crate::templates::operation::QueryStringFormat,
+    api_target_name: &str,
 ) -> String {
     // Build owned strings we'll reference
     let op_type = match op.operation_type {
@@ -101,6 +105,7 @@ pub fn render_operation(
         &[],   // no ancestor fragments for root
         None,  // no parent scope DS for root
         None,  // no scope conditions for root
+        api_target_name,
     );
 
     let config = OwnedOperationConfig {
@@ -114,6 +119,10 @@ pub fn render_operation(
         variables,
         data_selection_set: data_ss,
         is_local_cache_mutation: op.is_local_cache_mutation,
+        include_definition,
+        operation_identifier: operation_identifier.map(|s| s.to_string()),
+        query_string_format,
+        api_target_name: api_target_name.to_string(),
     };
 
     render_owned_operation(&config)
@@ -127,6 +136,8 @@ pub fn render_fragment(
     generate_initializers: bool,
     type_kinds: &HashMap<String, TypeKind>,
     customizer: &SchemaCustomizer,
+    query_string_format: crate::templates::operation::QueryStringFormat,
+    api_target_name: &str,
 ) -> String {
     let frag_conformance = if frag.is_local_cache_mutation {
         SelectionSetConformance::MutableFragment
@@ -154,6 +165,7 @@ pub fn render_fragment(
         &[],  // no ancestor fragments for fragment root
         None, // no parent scope DS for fragment root
         None, // no scope conditions for fragment root
+        api_target_name,
     );
 
     let config = OwnedFragmentConfig {
@@ -163,6 +175,8 @@ pub fn render_fragment(
         access_modifier: access_modifier.to_string(),
         selection_set: ss,
         is_mutable: frag.is_local_cache_mutation,
+        query_string_format,
+        api_target_name: api_target_name.to_string(),
     };
 
     render_owned_fragment(&config)
@@ -181,6 +195,10 @@ struct OwnedOperationConfig {
     variables: Vec<OwnedVariableConfig>,
     data_selection_set: OwnedSelectionSetConfig,
     is_local_cache_mutation: bool,
+    include_definition: bool,
+    operation_identifier: Option<String>,
+    query_string_format: crate::templates::operation::QueryStringFormat,
+    api_target_name: String,
 }
 
 struct OwnedFragmentConfig {
@@ -190,6 +208,8 @@ struct OwnedFragmentConfig {
     access_modifier: String,
     selection_set: OwnedSelectionSetConfig,
     is_mutable: bool,
+    query_string_format: crate::templates::operation::QueryStringFormat,
+    api_target_name: String,
 }
 
 struct OwnedVariableConfig {
@@ -222,6 +242,8 @@ struct OwnedSelectionSetConfig {
     is_mutable: bool,
     /// Type names that were absorbed (e.g., "AsAnimal" absorbed into AsPet)
     absorbed_type_names: Vec<String>,
+    /// The API target name for fully-qualified type references.
+    api_target_name: String,
 }
 
 #[derive(Clone)]
@@ -324,6 +346,7 @@ fn build_selection_set_config_owned(
     ancestor_fragments: &[String],
     parent_scope_ds: Option<&DirectSelections>,
     scope_conditions: Option<&InclusionConditions>,
+    api_target_name: &str,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -828,6 +851,7 @@ fn build_selection_set_config_owned(
                 &[],  // entity fields start a new entity scope
                 None, // entity fields start a new scope
                 None, // no scope conditions for entity fields
+                api_target_name,
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -1133,6 +1157,7 @@ fn build_selection_set_config_owned(
                 &child_ancestor_frags,
                 Some(ds), // pass parent scope's direct selections
                 inline.inclusion_conditions.as_ref(), // pass inline fragment's conditions to strip from children
+                api_target_name,
             );
 
             // Propagate absorbed type names from parent to child
@@ -1632,6 +1657,7 @@ fn build_selection_set_config_owned(
                             inline_has_field, // pass inline's entity field for __selections
                             root_entity_type,
                             parent_has_this_entity,
+                            api_target_name,
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -2460,6 +2486,7 @@ fn build_selection_set_config_owned(
                                 None,
                                 root_entity_type,
                                 parent_has,
+                                api_target_name,
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -2505,7 +2532,7 @@ fn build_selection_set_config_owned(
                     field_accessors: pfa, inline_fragment_accessors: vec![],
                     fragment_spreads: pfs, initializer: pinit,
                     nested_types: pnt, type_aliases: pta, type_alias_insert_index: pnt_len,
-                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
+                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
                 };
                 let dc = if is_root {
                     format!("/// {}", type_name)
@@ -2751,6 +2778,7 @@ fn build_selection_set_config_owned(
                                 None,
                                 root_entity_type,
                                 parent_has,
+                                api_target_name,
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -2833,7 +2861,7 @@ fn build_selection_set_config_owned(
                         field_accessors: pfa, inline_fragment_accessors: vec![],
                         fragment_spreads: pfs, initializer: pinit,
                         nested_types: case2_nested, type_aliases: case2_aliases, type_alias_insert_index: case2_nested_len,
-                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![],
+                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
                     };
                     let dc = if is_root {
                         format!("/// {}", type_name)
@@ -3053,6 +3081,7 @@ fn build_selection_set_config_owned(
                                 None,
                                 root_entity_type,
                                 true,
+                                api_target_name,
                             );
                             cond_nested.push(merged);
                         }
@@ -3111,6 +3140,7 @@ fn build_selection_set_config_owned(
                                             None, // Fragment fields come via applicable_fragments, preserving parent-first ordering
                                             root_entity_type,
                                             true,
+                                            api_target_name,
                                         );
                                         cond_nested.push(merged);
                                     } else {
@@ -3154,6 +3184,7 @@ fn build_selection_set_config_owned(
                 access_modifier: access_modifier.to_string(),
                 is_mutable,
                 absorbed_type_names: vec![],
+                api_target_name: api_target_name.to_string(),
             };
 
             let parent_type_name = if needs_narrowing { ftc.as_str() } else { ir_ss.scope.parent_type.name() };
@@ -3232,6 +3263,7 @@ fn build_selection_set_config_owned(
         access_modifier: access_modifier.to_string(),
         is_mutable,
         absorbed_type_names,
+        api_target_name: api_target_name.to_string(),
     }
 }
 
@@ -3416,6 +3448,7 @@ fn build_inline_fragment_entity_type(
     inline_entity_field: Option<&EntityField>,  // The inline fragment's own entity field (for __selections)
     root_entity_qualified: Option<&str>,  // Root entity qualified name for fulfilled fragments
     parent_has_entity_field: bool,  // Whether the parent scope actually has this entity field
+    api_target_name: &str,
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -3707,7 +3740,7 @@ fn build_inline_fragment_entity_type(
         type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable, absorbed_type_names: vec![],
+        is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
     };
 
     // Use full entity-relative path for doc comment (e.g., "AllAnimal.AsWarmBlooded.Height")
@@ -3746,6 +3779,7 @@ fn build_merged_entity_nested_type(
     type_kinds: &HashMap<String, TypeKind>,
     is_mutable: bool,
     customizer: &SchemaCustomizer,
+    api_target_name: &str,
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -3885,7 +3919,7 @@ fn build_merged_entity_nested_type(
         type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable, absorbed_type_names: vec![],
+        is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
     };
 
     let doc_path = if let Some(pos) = qualified_name.find(".Data.") {
@@ -4387,6 +4421,10 @@ fn render_owned_operation(config: &OwnedOperationConfig) -> String {
         variables: var_refs,
         data_selection_set: data_ss,
         is_local_cache_mutation: config.is_local_cache_mutation,
+        include_definition: config.include_definition,
+        operation_identifier: config.operation_identifier.as_deref(),
+        query_string_format: config.query_string_format,
+        api_target_name: &config.api_target_name,
     };
 
     crate::templates::operation::render(&template_config)
@@ -4402,6 +4440,8 @@ fn render_owned_fragment(config: &OwnedFragmentConfig) -> String {
         access_modifier: &config.access_modifier,
         selection_set: ss,
         is_mutable: config.is_mutable,
+        query_string_format: config.query_string_format,
+        api_target_name: &config.api_target_name,
     };
 
     crate::templates::fragment::render(&template_config)
@@ -4663,5 +4703,6 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
         indent: owned.indent,
         access_modifier: &owned.access_modifier,
         is_mutable: owned.is_mutable,
+        api_target_name: &owned.api_target_name,
     }
 }

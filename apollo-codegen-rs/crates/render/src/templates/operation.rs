@@ -51,6 +51,15 @@ pub struct VariableConfig<'a> {
     pub default_value: Option<&'a str>,
 }
 
+/// Controls how the query string literal is formatted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryStringFormat {
+    /// Single-line raw string: `#"query { ... }"#`
+    SingleLine,
+    /// Multi-line raw string with indentation.
+    Multiline,
+}
+
 /// Configuration for rendering an operation file.
 #[derive(Debug)]
 pub struct OperationConfig<'a> {
@@ -74,6 +83,14 @@ pub struct OperationConfig<'a> {
     pub data_selection_set: selection_set::SelectionSetConfig<'a>,
     /// Whether this is a local cache mutation.
     pub is_local_cache_mutation: bool,
+    /// Whether to include the definition in operationDocument (default: true).
+    pub include_definition: bool,
+    /// Operation identifier (SHA256 hash) if configured, None otherwise.
+    pub operation_identifier: Option<&'a str>,
+    /// How to format the query string literal (default: SingleLine).
+    pub query_string_format: QueryStringFormat,
+    /// The API target name for import statements (default: "ApolloAPI").
+    pub api_target_name: &'a str,
 }
 
 /// Render a complete operation file.
@@ -92,7 +109,7 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
     // Header
     result.push_str(header::HEADER);
     result.push_str("\n\n");
-    result.push_str("@_exported import ApolloAPI\n\n");
+    result.push_str(&format!("@_exported import {}\n\n", config.api_target_name));
 
     // Class declaration: uses LocalCacheMutation instead of GraphQLQuery/Mutation/Subscription
     result.push_str(&format!(
@@ -206,7 +223,7 @@ fn render_regular_operation(config: &OperationConfig) -> String {
     // Header
     result.push_str(header::HEADER);
     result.push_str("\n\n");
-    result.push_str("@_exported import ApolloAPI\n\n");
+    result.push_str(&format!("@_exported import {}\n\n", config.api_target_name));
 
     // Class declaration
     result.push_str(&format!(
@@ -222,27 +239,58 @@ fn render_regular_operation(config: &OperationConfig) -> String {
 
     // operationDocument
     result.push_str(&format!(
-        "  {}static let operationDocument: ApolloAPI.OperationDocument = .init(\n",
-        config.access_modifier
-    ));
-    result.push_str("    definition: .init(\n");
-    result.push_str(&format!(
-        "      #\"{}\"#",
-        config.source
+        "  {}static let operationDocument: {}.OperationDocument = .init(\n",
+        config.access_modifier, config.api_target_name
     ));
 
-    if config.fragment_names.is_empty() {
-        result.push('\n');
-    } else {
-        result.push_str(",\n");
-        let fragments: Vec<String> = config
-            .fragment_names
-            .iter()
-            .map(|name| format!("{}.self", name))
-            .collect();
-        result.push_str(&format!("      fragments: [{}]\n", fragments.join(", ")));
+    // operationIdentifier (before definition if present)
+    if let Some(op_id) = config.operation_identifier {
+        result.push_str(&format!("    operationIdentifier: \"{}\"{}\n",
+            op_id,
+            if config.include_definition { "," } else { "" }
+        ));
     }
-    result.push_str("    ))\n");
+
+    // definition (only if include_definition is true)
+    if config.include_definition {
+        result.push_str("    definition: .init(\n");
+
+        // Render the query string based on format
+        match config.query_string_format {
+            QueryStringFormat::SingleLine => {
+                result.push_str(&format!(
+                    "      #\"{}\"#",
+                    config.source
+                ));
+            }
+            QueryStringFormat::Multiline => {
+                result.push_str("      #\"\n");
+                // Indent each line of the source with 6 spaces
+                for line in config.source.lines() {
+                    if line.is_empty() {
+                        result.push('\n');
+                    } else {
+                        result.push_str(&format!("      {}\n", line));
+                    }
+                }
+                result.push_str("      \"#");
+            }
+        }
+
+        if config.fragment_names.is_empty() {
+            result.push('\n');
+        } else {
+            result.push_str(",\n");
+            let fragments: Vec<String> = config
+                .fragment_names
+                .iter()
+                .map(|name| format!("{}.self", name))
+                .collect();
+            result.push_str(&format!("      fragments: [{}]\n", fragments.join(", ")));
+        }
+        result.push_str("    )");
+    }
+    result.push_str(")\n");
 
     // Variables or init
     if config.variables.is_empty() {

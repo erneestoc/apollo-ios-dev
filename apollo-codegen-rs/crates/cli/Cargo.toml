@@ -19,6 +19,8 @@ apollo-codegen-cache.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 indexmap.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
