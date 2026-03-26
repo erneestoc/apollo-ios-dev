@@ -29,6 +29,8 @@ pub struct FragmentConfig<'a> {
     pub access_modifier: &'a str,
     /// The root selection set config.
     pub selection_set: SelectionSetConfig<'a>,
+    /// Whether this is a mutable fragment (for local cache mutations).
+    pub is_mutable: bool,
 }
 
 /// Render a complete fragment file.
@@ -54,7 +56,11 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
     let mut result = String::new();
 
     // Struct declaration with Fragment conformance
-    let conformance = format!("{}.SelectionSet, Fragment", config.schema_namespace);
+    let conformance = if config.is_mutable {
+        format!("{}.MutableSelectionSet, Fragment", config.schema_namespace)
+    } else {
+        format!("{}.SelectionSet, Fragment", config.schema_namespace)
+    };
     result.push_str(&format!(
         "{}{}struct {}: {} {{\n",
         indent, config.access_modifier, config.name, conformance
@@ -73,9 +79,10 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
 
     // __data and init
     result.push('\n');
+    let data_keyword = if config.is_mutable { "var" } else { "let" };
     result.push_str(&format!(
-        "{}{}let __data: DataDict\n",
-        inner_indent, config.access_modifier
+        "{}{}{} __data: DataDict\n",
+        inner_indent, config.access_modifier, data_keyword
     ));
     result.push_str(&format!(
         "{}{}init(_dataDict: DataDict) {{ __data = _dataDict }}\n",
@@ -116,14 +123,33 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
     if !ss.field_accessors.is_empty() {
         result.push('\n');
         for accessor in &ss.field_accessors {
-            result.push_str(&format!(
-                "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
-                inner_indent,
-                config.access_modifier,
-                crate::naming::escape_swift_name(accessor.name),
-                accessor.swift_type,
-                accessor.name
-            ));
+            if config.is_mutable {
+                result.push_str(&format!(
+                    "{}{}var {}: {} {{\n",
+                    inner_indent,
+                    config.access_modifier,
+                    crate::naming::escape_swift_name(accessor.name),
+                    accessor.swift_type,
+                ));
+                result.push_str(&format!(
+                    "{}  get {{ __data[\"{}\"] }}\n",
+                    inner_indent, accessor.name
+                ));
+                result.push_str(&format!(
+                    "{}  set {{ __data[\"{}\"] = newValue }}\n",
+                    inner_indent, accessor.name
+                ));
+                result.push_str(&format!("{}}}\n", inner_indent));
+            } else {
+                result.push_str(&format!(
+                    "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
+                    inner_indent,
+                    config.access_modifier,
+                    crate::naming::escape_swift_name(accessor.name),
+                    accessor.swift_type,
+                    accessor.name
+                ));
+            }
         }
     }
 
@@ -131,13 +157,32 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
     if !ss.inline_fragment_accessors.is_empty() {
         result.push('\n');
         for accessor in &ss.inline_fragment_accessors {
-            result.push_str(&format!(
-                "{}{}var {}: {}? {{ _asInlineFragment() }}\n",
-                inner_indent,
-                config.access_modifier,
-                accessor.property_name,
-                accessor.type_name
-            ));
+            if config.is_mutable {
+                result.push_str(&format!(
+                    "{}{}var {}: {}? {{\n",
+                    inner_indent,
+                    config.access_modifier,
+                    accessor.property_name,
+                    accessor.type_name
+                ));
+                result.push_str(&format!(
+                    "{}  get {{ _asInlineFragment() }}\n",
+                    inner_indent
+                ));
+                result.push_str(&format!(
+                    "{}  set {{ if let newData = newValue?.__data._data {{ __data._data = newData }}}}\n",
+                    inner_indent
+                ));
+                result.push_str(&format!("{}}}\n", inner_indent));
+            } else {
+                result.push_str(&format!(
+                    "{}{}var {}: {}? {{ _asInlineFragment() }}\n",
+                    inner_indent,
+                    config.access_modifier,
+                    accessor.property_name,
+                    accessor.type_name
+                ));
+            }
         }
     }
 

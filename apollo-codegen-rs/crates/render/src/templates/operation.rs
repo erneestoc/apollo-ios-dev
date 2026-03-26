@@ -72,10 +72,126 @@ pub struct OperationConfig<'a> {
     pub variables: Vec<VariableConfig<'a>>,
     /// The Data selection set config.
     pub data_selection_set: selection_set::SelectionSetConfig<'a>,
+    /// Whether this is a local cache mutation.
+    pub is_local_cache_mutation: bool,
 }
 
 /// Render a complete operation file.
 pub fn render(config: &OperationConfig) -> String {
+    if config.is_local_cache_mutation {
+        render_local_cache_mutation(config)
+    } else {
+        render_regular_operation(config)
+    }
+}
+
+/// Render a local cache mutation operation.
+fn render_local_cache_mutation(config: &OperationConfig) -> String {
+    let mut result = String::new();
+
+    // Header
+    result.push_str(header::HEADER);
+    result.push_str("\n\n");
+    result.push_str("@_exported import ApolloAPI\n\n");
+
+    // Class declaration: uses LocalCacheMutation instead of GraphQLQuery/Mutation/Subscription
+    result.push_str(&format!(
+        "{}class {}: LocalCacheMutation {{\n",
+        config.access_modifier, config.class_name
+    ));
+
+    // operationType (instead of operationName + operationDocument)
+    let op_type_value = match config.operation_type {
+        OperationType::Query => ".query",
+        OperationType::Mutation => ".mutation",
+        OperationType::Subscription => ".subscription",
+    };
+    result.push_str(&format!(
+        "  {}static let operationType: GraphQLOperationType = {}\n",
+        config.access_modifier, op_type_value
+    ));
+
+    // Variables or init
+    if config.variables.is_empty() {
+        result.push('\n');
+        result.push_str(&format!("  {}init() {{}}\n", config.access_modifier));
+    } else {
+        result.push('\n');
+        // Variable properties
+        for var in &config.variables {
+            result.push_str(&format!(
+                "  {}var {}: {}\n",
+                config.access_modifier, var.name, var.swift_type
+            ));
+        }
+        result.push('\n');
+
+        // init with variables - multi-line when more than 1 param
+        if config.variables.len() == 1 && config.variables[0].default_value.is_none() {
+            let var = &config.variables[0];
+            result.push_str(&format!(
+                "  {}init({}: {}) {{\n",
+                config.access_modifier, var.name, var.swift_type
+            ));
+        } else {
+            result.push_str(&format!("  {}init(\n", config.access_modifier));
+            for (i, var) in config.variables.iter().enumerate() {
+                let comma = if i < config.variables.len() - 1 { "," } else { "" };
+                if let Some(default) = var.default_value {
+                    result.push_str(&format!(
+                        "    {}: {} = {}{}\n",
+                        var.name, var.swift_type, default, comma
+                    ));
+                } else {
+                    result.push_str(&format!(
+                        "    {}: {}{}\n",
+                        var.name, var.swift_type, comma
+                    ));
+                }
+            }
+            result.push_str("  ) {\n");
+        }
+        for var in &config.variables {
+            result.push_str(&format!("    self.{} = {}\n", var.name, var.name));
+        }
+        result.push_str("  }\n");
+
+        // __variables - uses GraphQLOperation.Variables for local cache mutations
+        result.push('\n');
+        if config.variables.len() == 1 {
+            let v = &config.variables[0];
+            result.push_str(&format!(
+                "  {}var __variables: GraphQLOperation.Variables? {{ [\"{}\": {}] }}\n",
+                config.access_modifier, v.name, v.name
+            ));
+        } else {
+            result.push_str(&format!(
+                "  {}var __variables: GraphQLOperation.Variables? {{ [\n",
+                config.access_modifier,
+            ));
+            for (i, v) in config.variables.iter().enumerate() {
+                let comma = if i < config.variables.len() - 1 { "," } else { "" };
+                result.push_str(&format!(
+                    "    \"{}\": {}{}\n",
+                    v.name, v.name, comma
+                ));
+            }
+            result.push_str("  ] }\n");
+        }
+    }
+
+    // Data selection set
+    result.push('\n');
+    result.push_str(&selection_set::render(&config.data_selection_set));
+
+    // Close class
+    result.push_str("}\n");
+
+    result
+}
+
+/// Render a regular (non-local-cache-mutation) operation.
+fn render_regular_operation(config: &OperationConfig) -> String {
     let mut result = String::new();
 
     // Header
@@ -134,42 +250,58 @@ pub fn render(config: &OperationConfig) -> String {
         }
         result.push('\n');
 
-        // init with variables
-        result.push_str(&format!("  {}init(", config.access_modifier));
+        // init with variables - multi-line when more than 1 param
         if config.variables.len() == 1 && config.variables[0].default_value.is_none() {
             let var = &config.variables[0];
-            result.push_str(&format!("{}: {}", var.name, var.swift_type));
-            result.push_str(") {\n");
+            result.push_str(&format!(
+                "  {}init({}: {}) {{\n",
+                config.access_modifier, var.name, var.swift_type
+            ));
         } else {
-            // Multi-line or default-valued init
+            result.push_str(&format!("  {}init(\n", config.access_modifier));
             for (i, var) in config.variables.iter().enumerate() {
-                if i > 0 {
-                    result.push_str(", ");
-                }
-                result.push_str(&format!("{}: {}", var.name, var.swift_type));
+                let comma = if i < config.variables.len() - 1 { "," } else { "" };
                 if let Some(default) = var.default_value {
-                    result.push_str(&format!(" = {}", default));
+                    result.push_str(&format!(
+                        "    {}: {} = {}{}\n",
+                        var.name, var.swift_type, default, comma
+                    ));
+                } else {
+                    result.push_str(&format!(
+                        "    {}: {}{}\n",
+                        var.name, var.swift_type, comma
+                    ));
                 }
             }
-            result.push_str(") {\n");
+            result.push_str("  ) {\n");
         }
         for var in &config.variables {
             result.push_str(&format!("    self.{} = {}\n", var.name, var.name));
         }
         result.push_str("  }\n");
 
-        // __variables
+        // __variables - multi-line when more than 1 entry
         result.push('\n');
-        let var_entries: Vec<String> = config
-            .variables
-            .iter()
-            .map(|v| format!("\"{}\": {}", v.name, v.name))
-            .collect();
-        result.push_str(&format!(
-            "  {}var __variables: Variables? {{ [{}] }}\n",
-            config.access_modifier,
-            var_entries.join(", ")
-        ));
+        if config.variables.len() == 1 {
+            let v = &config.variables[0];
+            result.push_str(&format!(
+                "  {}var __variables: Variables? {{ [\"{}\": {}] }}\n",
+                config.access_modifier, v.name, v.name
+            ));
+        } else {
+            result.push_str(&format!(
+                "  {}var __variables: Variables? {{ [\n",
+                config.access_modifier,
+            ));
+            for (i, v) in config.variables.iter().enumerate() {
+                let comma = if i < config.variables.len() - 1 { "," } else { "" };
+                result.push_str(&format!(
+                    "    \"{}\": {}{}\n",
+                    v.name, v.name, comma
+                ));
+            }
+            result.push_str("  ] }\n");
+        }
     }
 
     // Data selection set

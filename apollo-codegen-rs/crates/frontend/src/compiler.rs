@@ -734,12 +734,14 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     /// graphql-js's transformToNetworkRequestSourceDefinition.
     fn print_operation(&self, op: &executable::Operation) -> String {
         let raw = op.serialize().no_indent().to_string();
+        let raw = strip_local_cache_mutation_directive(&raw);
         add_typename_to_selection_sets(&raw)
     }
 
     /// Print a fragment to its source text.
     fn print_fragment(&self, frag: &executable::Fragment) -> String {
         let raw = frag.serialize().no_indent().to_string();
+        let raw = strip_local_cache_mutation_directive(&raw);
         add_typename_to_selection_sets(&raw)
     }
 
@@ -860,6 +862,15 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
 /// This matches the behavior of graphql-js's `transformToNetworkRequestSourceDefinition`:
 /// - Add `__typename` in field selection sets (e.g., `allAnimals { __typename id }`)
 /// - Do NOT add `__typename` at the root operation level (e.g., `query Foo { field }`)
+/// Strip the `@apollo_client_ios_localCacheMutation` directive from a source string.
+/// This directive is used for code generation purposes but should not appear in the
+/// emitted fragment definition source.
+fn strip_local_cache_mutation_directive(source: &str) -> String {
+    source.replace(" @apollo_client_ios_localCacheMutation", "")
+          .replace("@apollo_client_ios_localCacheMutation ", "")
+          .replace("@apollo_client_ios_localCacheMutation", "")
+}
+
 /// - Do NOT add `__typename` inside inline fragments (e.g., `... on Dog { species }`)
 /// - DO add `__typename` in fragment definition root selection sets
 fn add_typename_to_selection_sets(source: &str) -> String {

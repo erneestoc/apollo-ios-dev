@@ -60,6 +60,7 @@ fn fragment_template_dog_fragment() {
         fragment_definition: "fragment DogFragment on Dog { __typename species }",
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "DogFragment",
             schema_namespace: "AnimalKingdomAPI",
@@ -114,6 +115,7 @@ fn fragment_template_dog_fragment() {
             type_aliases: vec![],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -131,6 +133,7 @@ fn fragment_template_height_in_meters() {
         fragment_definition: "fragment HeightInMeters on Animal { __typename height { __typename meters } }",
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "HeightInMeters",
             schema_namespace: "AnimalKingdomAPI",
@@ -244,12 +247,14 @@ fn fragment_template_height_in_meters() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
             ],
             type_aliases: vec![],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -266,6 +271,7 @@ fn fragment_template_pet_details() {
         fragment_definition: "fragment PetDetails on Pet { __typename humanName favoriteToy owner { __typename firstName } }",
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "PetDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -415,12 +421,14 @@ fn fragment_template_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
             ],
             type_aliases: vec![],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -437,6 +445,7 @@ fn fragment_template_crocodile_fragment() {
         fragment_definition: r#"fragment CrocodileFragment on Crocodile { __typename species age tag(id: "albino") }"#,
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "CrocodileFragment",
             schema_namespace: "AnimalKingdomAPI",
@@ -527,6 +536,7 @@ fn fragment_template_crocodile_fragment() {
             type_aliases: vec![],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -543,6 +553,7 @@ fn fragment_template_warm_blooded_details() {
         fragment_definition: "fragment WarmBloodedDetails on WarmBlooded { __typename bodyTemperature ...HeightInMeters }",
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "WarmBloodedDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -629,6 +640,7 @@ fn fragment_template_warm_blooded_details() {
             ],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -645,6 +657,7 @@ fn fragment_template_classroom_pet_details() {
         fragment_definition: r#"fragment ClassroomPetDetails on ClassroomPet { __typename ... on Animal { species } ... on Pet { humanName } ... on WarmBlooded { laysEggs } ... on Cat { bodyTemperature isJellicle } ... on Bird { wingspan } ... on PetRock { favoriteToy } }"#,
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_mutable: false,
         selection_set: SelectionSetConfig {
             struct_name: "ClassroomPetDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -732,6 +745,7 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
                 // AsPet
@@ -778,6 +792,7 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
                 // AsWarmBlooded
@@ -828,6 +843,7 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
                 // AsCat
@@ -893,6 +909,7 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
                 // AsBird
@@ -950,6 +967,7 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
                 // AsPetRock
@@ -999,12 +1017,14 @@ fn fragment_template_classroom_pet_details() {
                         type_aliases: vec![],
                         indent: 2,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
             ],
             type_aliases: vec![],
             indent: 0,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -1026,6 +1046,7 @@ fn operation_template_dog_query() {
         operation_type: OperationType::Query,
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_local_cache_mutation: false,
         source: "query DogQuery { allAnimals { __typename id skinCovering ... on Dog { ...DogFragment houseDetails } } }",
         fragment_names: vec!["DogFragment"],
         variables: vec![],
@@ -1259,18 +1280,21 @@ fn operation_template_dog_query() {
                                     type_aliases: vec![],
                                     indent: 6,
                                     access_modifier: "public ",
+                                    is_mutable: false,
                                 },
                             },
                         ],
                         type_aliases: vec![],
                         indent: 4,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
             ],
             type_aliases: vec![],
             indent: 2,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 
@@ -1288,6 +1312,7 @@ fn operation_template_pet_adoption_mutation() {
         operation_type: OperationType::Mutation,
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
+        is_local_cache_mutation: false,
         source: "mutation PetAdoptionMutation($input: PetAdoptionInput!) { adoptPet(input: $input) { __typename id humanName } }",
         fragment_names: vec![],
         variables: vec![
@@ -1423,12 +1448,14 @@ fn operation_template_pet_adoption_mutation() {
                         type_aliases: vec![],
                         indent: 4,
                         access_modifier: "public ",
+                        is_mutable: false,
                     },
                 },
             ],
             type_aliases: vec![],
             indent: 2,
             access_modifier: "public ",
+            is_mutable: false,
         },
     };
 

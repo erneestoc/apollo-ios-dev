@@ -53,19 +53,29 @@ pub fn render_operation(
         })
         .collect();
 
-    // Class name includes the operation type suffix if not already present
-    let type_suffix = match op.operation_type {
-        OperationType::Query => "Query",
-        OperationType::Mutation => "Mutation",
-        OperationType::Subscription => "Subscription",
-    };
-    let class_name = if op.name.ends_with(type_suffix) {
+    // Class name: local cache mutations use the operation name as-is,
+    // regular operations include the operation type suffix if not already present.
+    let class_name = if op.is_local_cache_mutation {
         op.name.clone()
     } else {
-        format!("{}{}", op.name, type_suffix)
+        let type_suffix = match op.operation_type {
+            OperationType::Query => "Query",
+            OperationType::Mutation => "Mutation",
+            OperationType::Subscription => "Subscription",
+        };
+        if op.name.ends_with(type_suffix) {
+            op.name.clone()
+        } else {
+            format!("{}{}", op.name, type_suffix)
+        }
     };
 
     // Build the Data selection set config
+    let data_conformance = if op.is_local_cache_mutation {
+        SelectionSetConformance::MutableSelectionSet
+    } else {
+        SelectionSetConformance::SelectionSet
+    };
     let data_ss = build_selection_set_config_owned(
         "Data",
         &op.root_field.selection_set,
@@ -73,7 +83,7 @@ pub fn render_operation(
         access_modifier,
         true,  // is_root
         false, // is_inline_fragment
-        SelectionSetConformance::SelectionSet,
+        data_conformance,
         None,  // root_entity_type
         2,     // indent (inside class)
         &format!("{}.Data", class_name),
@@ -81,6 +91,7 @@ pub fn render_operation(
         &op.referenced_fragments,
         type_kinds,
         None,  // no parent fields for root
+        op.is_local_cache_mutation,
     );
 
     let config = OwnedOperationConfig {
@@ -93,6 +104,7 @@ pub fn render_operation(
         fragment_names,
         variables,
         data_selection_set: data_ss,
+        is_local_cache_mutation: op.is_local_cache_mutation,
     };
 
     render_owned_operation(&config)
@@ -106,6 +118,11 @@ pub fn render_fragment(
     generate_initializers: bool,
     type_kinds: &HashMap<String, TypeKind>,
 ) -> String {
+    let frag_conformance = if frag.is_local_cache_mutation {
+        SelectionSetConformance::MutableFragment
+    } else {
+        SelectionSetConformance::Fragment
+    };
     let ss = build_selection_set_config_owned(
         &frag.name,
         &frag.root_field.selection_set,
@@ -113,7 +130,7 @@ pub fn render_fragment(
         access_modifier,
         true,
         false,
-        SelectionSetConformance::Fragment,
+        frag_conformance,
         None,
         0, // top-level
         &frag.name,
@@ -121,6 +138,7 @@ pub fn render_fragment(
         &frag.referenced_fragments,
         type_kinds,
         None, // no parent fields for fragment root
+        frag.is_local_cache_mutation,
     );
 
     let config = OwnedFragmentConfig {
@@ -129,6 +147,7 @@ pub fn render_fragment(
         schema_namespace: schema_namespace.to_string(),
         access_modifier: access_modifier.to_string(),
         selection_set: ss,
+        is_mutable: frag.is_local_cache_mutation,
     };
 
     render_owned_fragment(&config)
@@ -146,6 +165,7 @@ struct OwnedOperationConfig {
     fragment_names: Vec<String>,
     variables: Vec<OwnedVariableConfig>,
     data_selection_set: OwnedSelectionSetConfig,
+    is_local_cache_mutation: bool,
 }
 
 struct OwnedFragmentConfig {
@@ -154,6 +174,7 @@ struct OwnedFragmentConfig {
     schema_namespace: String,
     access_modifier: String,
     selection_set: OwnedSelectionSetConfig,
+    is_mutable: bool,
 }
 
 struct OwnedVariableConfig {
@@ -180,6 +201,7 @@ struct OwnedSelectionSetConfig {
     type_aliases: Vec<OwnedTypeAlias>,
     indent: usize,
     access_modifier: String,
+    is_mutable: bool,
 }
 
 enum OwnedParentTypeRef {
@@ -271,6 +293,7 @@ fn build_selection_set_config_owned(
     referenced_fragments: &[Arc<NamedFragment>],
     type_kinds: &HashMap<String, TypeKind>,
     parent_fields: Option<&[OwnedFieldAccessor]>,
+    is_mutable: bool,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
@@ -284,7 +307,7 @@ fn build_selection_set_config_owned(
     // It is added for all selection sets EXCEPT:
     //   - Inline fragments (they inherit __typename from the parent entity)
     //   - Root operation Data structs (is_root && conformance == SelectionSet)
-    let is_root_operation_data = is_root && matches!(conformance, SelectionSetConformance::SelectionSet);
+    let is_root_operation_data = is_root && matches!(conformance, SelectionSetConformance::SelectionSet | SelectionSetConformance::MutableSelectionSet);
     let should_add_typename = !is_inline_fragment && !is_root_operation_data;
 
     // Build selections
@@ -364,8 +387,8 @@ fn build_selection_set_config_owned(
         }
     }
 
-    // Build inline fragment accessors
-    let inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = ds
+    // Build inline fragment accessors (start with direct, add promoted later)
+    let mut inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = ds
         .inline_fragments
         .iter()
         .filter_map(|inline| {
@@ -399,6 +422,11 @@ fn build_selection_set_config_owned(
             let singularized_key = naming::singularize(key);
             let child_name = naming::first_uppercased(&singularized_key);
             let child_qualified = format!("{}.{}", qualified_name, child_name);
+            let child_conformance = if is_mutable {
+                SelectionSetConformance::MutableSelectionSet
+            } else {
+                SelectionSetConformance::SelectionSet
+            };
             let child_ss = build_selection_set_config_owned(
                 &child_name,
                 &ef.selection_set,
@@ -406,7 +434,7 @@ fn build_selection_set_config_owned(
                 access_modifier,
                 false,
                 false,
-                SelectionSetConformance::SelectionSet,
+                child_conformance,
                 None,
                 indent + 2,
                 &child_qualified,
@@ -414,6 +442,7 @@ fn build_selection_set_config_owned(
                 referenced_fragments,
                 type_kinds,
                 None, // entity fields don't inherit parent fields
+                is_mutable,
             );
             let parent_type_name = ef.selection_set.scope.parent_type.name();
             nested_types.push(OwnedNestedSelectionSet {
@@ -437,6 +466,11 @@ fn build_selection_set_config_owned(
             } else {
                 root_entity_type.unwrap_or(qualified_name).to_string()
             };
+            let inline_conformance = if is_mutable {
+                SelectionSetConformance::MutableInlineFragment
+            } else {
+                SelectionSetConformance::InlineFragment
+            };
             let child_ss = build_selection_set_config_owned(
                 &type_name,
                 &inline.selection_set,
@@ -444,7 +478,7 @@ fn build_selection_set_config_owned(
                 access_modifier,
                 false,
                 true,
-                SelectionSetConformance::InlineFragment,
+                inline_conformance,
                 Some(&child_root_entity),
                 indent + 2,
                 &child_qualified,
@@ -452,13 +486,15 @@ fn build_selection_set_config_owned(
                 referenced_fragments,
                 type_kinds,
                 Some(&field_accessors), // pass parent field accessors for merging
+                is_mutable,
             );
+            let doc_comment = if is_root {
+                format!("/// {}", type_name)
+            } else {
+                format!("/// {}.{}", struct_name, type_name)
+            };
             nested_types.push(OwnedNestedSelectionSet {
-                doc_comment: format!(
-                    "/// {}.{}",
-                    struct_name,
-                    type_name
-                ),
+                doc_comment,
                 parent_type_comment: format!(
                     "///\n{}/// Parent Type: `{}`",
                     " ".repeat(indent + 2),
@@ -466,6 +502,215 @@ fn build_selection_set_config_owned(
                 ),
                 config: child_ss,
             });
+        }
+    }
+
+    // Promote inline fragments from spread fragments.
+    // When a selection set spreads a fragment, we check for two cases:
+    //
+    // Case 1 - Type-narrowing: If the fragment's type condition differs from the current
+    //   parent type, create a synthetic InlineFragment wrapping the fragment spread.
+    //   E.g., spreading `...WarmBloodedDetails` (on WarmBlooded) in an Animal scope creates
+    //   an `AsWarmBlooded` with `__selections: [.fragment(WarmBloodedDetails.self)]`.
+    //
+    // Case 2 - Fragment inline fragments: If the fragment contains inline fragments,
+    //   promote each as a CompositeInlineFragment with `__mergedSources`.
+    //   E.g., spreading `...ClassroomPetDetails` which has `... on Animal` creates an
+    //   `AsAnimal` CompositeInlineFragment in the operation scope.
+    let current_parent_type_name = ir_ss.scope.parent_type.name().to_string();
+    let direct_inline_type_names: Vec<String> = ds
+        .inline_fragments
+        .iter()
+        .filter_map(|inline| inline.type_condition.as_ref().map(|tc| tc.name().to_string()))
+        .collect();
+
+    for spread in &ds.named_fragments {
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            let frag_type_condition = &frag_arc.type_condition_name;
+            let frag_ds = &frag_arc.root_field.selection_set.direct_selections;
+
+            // Case 1: Fragment type condition differs from parent type
+            if *frag_type_condition != current_parent_type_name
+                && !direct_inline_type_names.contains(frag_type_condition)
+                && !inline_fragment_accessors.iter().any(|a| {
+                    a.type_name == format!("As{}", naming::first_uppercased(frag_type_condition))
+                })
+            {
+                let type_name = format!("As{}", naming::first_uppercased(frag_type_condition));
+                let child_qualified = format!("{}.{}", qualified_name, type_name);
+                let child_root_entity = if is_root {
+                    qualified_name.to_string()
+                } else {
+                    root_entity_type.unwrap_or(qualified_name).to_string()
+                };
+
+                // Add inline fragment selection entry
+                selections.push(OwnedSelectionItem {
+                    kind: OwnedSelectionKind::InlineFragment(type_name.clone()),
+                });
+                // Add inline fragment accessor
+                inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                    property_name: format!("as{}", naming::first_uppercased(frag_type_condition)),
+                    type_name: type_name.clone(),
+                });
+
+                // Build field accessors: parent + fragment + transitive
+                let mut pfa = Vec::new();
+                for fa in &field_accessors { pfa.push(fa.clone()); }
+                for (key, field) in &frag_ds.fields {
+                    if !pfa.iter().any(|f| f.name == *key) {
+                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                    }
+                }
+                for fs in &frag_ds.named_fragments {
+                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                        for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
+                            if !pfa.iter().any(|f| f.name == *key) {
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            }
+                        }
+                    }
+                }
+
+                // Fragment spread accessors
+                let mut pfs = vec![OwnedFragmentSpreadAccessor {
+                    property_name: naming::first_lowercased(&spread.fragment_name),
+                    fragment_type: spread.fragment_name.clone(),
+                }];
+                for fs in &frag_ds.named_fragments {
+                    pfs.push(OwnedFragmentSpreadAccessor {
+                        property_name: naming::first_lowercased(&fs.fragment_name),
+                        fragment_type: fs.fragment_name.clone(),
+                    });
+                }
+
+                // Initializer
+                let pinit = if generate_initializers {
+                    Some(build_promoted_initializer(
+                        &frag_arc.root_field.selection_set.scope.parent_type,
+                        &pfa, schema_namespace, &child_qualified, &child_root_entity,
+                        &spread.fragment_name, &frag_ds.named_fragments, referenced_fragments,
+                    ))
+                } else { None };
+
+                // Type aliases
+                let mut pta = Vec::new();
+                for (key, field) in &frag_ds.fields {
+                    if matches!(field, FieldSelection::Entity(_)) {
+                        let n = naming::first_uppercased(key);
+                        pta.push(OwnedTypeAlias { name: n.clone(), target: format!("{}.{}", spread.fragment_name, n) });
+                    }
+                }
+                for fs in &frag_ds.named_fragments {
+                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                        for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
+                            if matches!(field, FieldSelection::Entity(_)) {
+                                let n = naming::first_uppercased(key);
+                                if !pta.iter().any(|a| a.name == n) {
+                                    pta.push(OwnedTypeAlias { name: n.clone(), target: format!("{}.{}", fs.fragment_name, n) });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let frag_parent_type = match &frag_arc.root_field.selection_set.scope.parent_type {
+                    GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
+                    GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
+                    GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+                };
+                let ic = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::InlineFragment };
+
+                let pss = OwnedSelectionSetConfig {
+                    struct_name: type_name.clone(),
+                    schema_namespace: schema_namespace.to_string(),
+                    parent_type: frag_parent_type,
+                    is_root: false, is_inline_fragment: true,
+                    conformance: ic,
+                    root_entity_type: Some(child_root_entity.clone()),
+                    merged_sources: vec![],
+                    selections: vec![OwnedSelectionItem { kind: OwnedSelectionKind::Fragment(spread.fragment_name.clone()) }],
+                    field_accessors: pfa, inline_fragment_accessors: vec![],
+                    fragment_spreads: pfs, initializer: pinit,
+                    nested_types: vec![], type_aliases: pta,
+                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable,
+                };
+                let dc = if is_root { format!("/// {}", type_name) } else { format!("/// {}.{}", struct_name, type_name) };
+                nested_types.push(OwnedNestedSelectionSet {
+                    doc_comment: dc,
+                    parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), frag_type_condition),
+                    config: pss,
+                });
+            }
+
+            // Case 2: Fragment contains inline fragments - promote them
+            for frag_inline in &frag_ds.inline_fragments {
+                if let Some(ref tc) = frag_inline.type_condition {
+                    let tc_name = tc.name().to_string();
+                    if direct_inline_type_names.contains(&tc_name) { continue; }
+                    if inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(&tc_name))) { continue; }
+
+                    let type_name = format!("As{}", naming::first_uppercased(&tc_name));
+                    let child_qualified = format!("{}.{}", qualified_name, type_name);
+                    let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
+
+                    inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                        property_name: format!("as{}", naming::first_uppercased(&tc_name)),
+                        type_name: type_name.clone(),
+                    });
+
+                    let ppt = match tc {
+                        GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
+                        GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(i.name.clone()),
+                        GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(u.name.clone()),
+                    };
+                    let ms = vec![qualified_name.to_string(), format!("{}.{}", spread.fragment_name, type_name)];
+
+                    // Field accessors: fragment inline fragment fields + parent fields
+                    let mut pfa = Vec::new();
+                    for (key, field) in &frag_inline.selection_set.direct_selections.fields {
+                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                    }
+                    for fa in &field_accessors {
+                        if !pfa.iter().any(|f| f.name == fa.name) { pfa.push(fa.clone()); }
+                    }
+
+                    let pfs = vec![OwnedFragmentSpreadAccessor {
+                        property_name: naming::first_lowercased(&spread.fragment_name),
+                        fragment_type: spread.fragment_name.clone(),
+                    }];
+
+                    let pinit = if generate_initializers {
+                        Some(build_promoted_composite_initializer(
+                            tc, &pfa, schema_namespace, &child_qualified, &child_root_entity,
+                            &spread.fragment_name, referenced_fragments,
+                        ))
+                    } else { None };
+
+                    let pc = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::CompositeInlineFragment };
+                    let pss = OwnedSelectionSetConfig {
+                        struct_name: type_name.clone(),
+                        schema_namespace: schema_namespace.to_string(),
+                        parent_type: ppt, is_root: false, is_inline_fragment: true,
+                        conformance: pc,
+                        root_entity_type: Some(child_root_entity),
+                        merged_sources: ms, selections: vec![],
+                        field_accessors: pfa, inline_fragment_accessors: vec![],
+                        fragment_spreads: pfs, initializer: pinit,
+                        nested_types: vec![], type_aliases: vec![],
+                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable,
+                    };
+                    let dc = if is_root { format!("/// {}", type_name) } else { format!("/// {}.{}", struct_name, type_name) };
+                    nested_types.push(OwnedNestedSelectionSet {
+                        doc_comment: dc,
+                        parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), tc.name()),
+                        config: pss,
+                    });
+                }
+            }
         }
     }
 
@@ -504,6 +749,7 @@ fn build_selection_set_config_owned(
         type_aliases: build_type_aliases(ds, referenced_fragments),
         indent,
         access_modifier: access_modifier.to_string(),
+        is_mutable,
     }
 }
 
@@ -831,6 +1077,7 @@ fn render_owned_operation(config: &OwnedOperationConfig) -> String {
         fragment_names: frag_refs,
         variables: var_refs,
         data_selection_set: data_ss,
+        is_local_cache_mutation: config.is_local_cache_mutation,
     };
 
     crate::templates::operation::render(&template_config)
@@ -845,6 +1092,7 @@ fn render_owned_fragment(config: &OwnedFragmentConfig) -> String {
         schema_namespace: &config.schema_namespace,
         access_modifier: &config.access_modifier,
         selection_set: ss,
+        is_mutable: config.is_mutable,
     };
 
     crate::templates::fragment::render(&template_config)
@@ -976,5 +1224,6 @@ fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetCo
         type_aliases,
         indent: owned.indent,
         access_modifier: &owned.access_modifier,
+        is_mutable: owned.is_mutable,
     }
 }

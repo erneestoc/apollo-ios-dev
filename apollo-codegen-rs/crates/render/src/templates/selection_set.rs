@@ -42,6 +42,10 @@ pub struct SelectionSetConfig<'a> {
     pub indent: usize,
     /// The access modifier (e.g. "public ").
     pub access_modifier: &'a str,
+    /// Whether this is a mutable selection set (for local cache mutations).
+    /// When true, uses `var __data` instead of `let __data`, get/set field accessors,
+    /// and MutableSelectionSet/MutableInlineFragment conformances.
+    pub is_mutable: bool,
 }
 
 /// Parent type reference, mapping to Objects, Interfaces, or Unions namespace.
@@ -79,6 +83,12 @@ pub enum SelectionSetConformance<'a> {
     InlineFragment,
     /// Composite inline fragment: `SchemaNamespace.InlineFragment, ApolloAPI.CompositeInlineFragment`
     CompositeInlineFragment,
+    /// Mutable selection set (local cache mutation): `SchemaNamespace.MutableSelectionSet`
+    MutableSelectionSet,
+    /// Mutable fragment: `SchemaNamespace.MutableSelectionSet, Fragment`
+    MutableFragment,
+    /// Mutable inline fragment (local cache mutation): `SchemaNamespace.MutableInlineFragment`
+    MutableInlineFragment,
     /// Custom conformance string.
     Custom(&'a str),
 }
@@ -203,7 +213,8 @@ pub fn render(config: &SelectionSetConfig) -> String {
     ));
 
     // __data and init
-    result.push_str(&format!("{}{}let __data: DataDict\n", inner_indent, config.access_modifier));
+    let data_keyword = if config.is_mutable { "var" } else { "let" };
+    result.push_str(&format!("{}{}{} __data: DataDict\n", inner_indent, config.access_modifier, data_keyword));
     result.push_str(&format!(
         "{}{}init(_dataDict: DataDict) {{ __data = _dataDict }}\n",
         inner_indent, config.access_modifier
@@ -290,14 +301,33 @@ pub fn render(config: &SelectionSetConfig) -> String {
     if !config.field_accessors.is_empty() {
         result.push('\n');
         for accessor in &config.field_accessors {
-            result.push_str(&format!(
-                "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
-                inner_indent,
-                config.access_modifier,
-                naming::escape_swift_name(accessor.name),
-                accessor.swift_type,
-                accessor.name
-            ));
+            if config.is_mutable {
+                result.push_str(&format!(
+                    "{}{}var {}: {} {{\n",
+                    inner_indent,
+                    config.access_modifier,
+                    naming::escape_swift_name(accessor.name),
+                    accessor.swift_type,
+                ));
+                result.push_str(&format!(
+                    "{}  get {{ __data[\"{}\"] }}\n",
+                    inner_indent, accessor.name
+                ));
+                result.push_str(&format!(
+                    "{}  set {{ __data[\"{}\"] = newValue }}\n",
+                    inner_indent, accessor.name
+                ));
+                result.push_str(&format!("{}}}\n", inner_indent));
+            } else {
+                result.push_str(&format!(
+                    "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
+                    inner_indent,
+                    config.access_modifier,
+                    naming::escape_swift_name(accessor.name),
+                    accessor.swift_type,
+                    accessor.name
+                ));
+            }
         }
     }
 
@@ -305,13 +335,32 @@ pub fn render(config: &SelectionSetConfig) -> String {
     if !config.inline_fragment_accessors.is_empty() {
         result.push('\n');
         for accessor in &config.inline_fragment_accessors {
-            result.push_str(&format!(
-                "{}{}var {}: {}? {{ _asInlineFragment() }}\n",
-                inner_indent,
-                config.access_modifier,
-                accessor.property_name,
-                accessor.type_name
-            ));
+            if config.is_mutable {
+                result.push_str(&format!(
+                    "{}{}var {}: {}? {{\n",
+                    inner_indent,
+                    config.access_modifier,
+                    accessor.property_name,
+                    accessor.type_name
+                ));
+                result.push_str(&format!(
+                    "{}  get {{ _asInlineFragment() }}\n",
+                    inner_indent
+                ));
+                result.push_str(&format!(
+                    "{}  set {{ if let newData = newValue?.__data._data {{ __data._data = newData }}}}\n",
+                    inner_indent
+                ));
+                result.push_str(&format!("{}}}\n", inner_indent));
+            } else {
+                result.push_str(&format!(
+                    "{}{}var {}: {}? {{ _asInlineFragment() }}\n",
+                    inner_indent,
+                    config.access_modifier,
+                    accessor.property_name,
+                    accessor.type_name
+                ));
+            }
         }
     }
 
@@ -395,6 +444,15 @@ fn render_conformance(config: &SelectionSetConfig) -> String {
                 "{}.InlineFragment, ApolloAPI.CompositeInlineFragment",
                 config.schema_namespace
             )
+        }
+        SelectionSetConformance::MutableSelectionSet => {
+            format!("{}.MutableSelectionSet", config.schema_namespace)
+        }
+        SelectionSetConformance::MutableFragment => {
+            format!("{}.MutableSelectionSet, Fragment", config.schema_namespace)
+        }
+        SelectionSetConformance::MutableInlineFragment => {
+            format!("{}.MutableInlineFragment", config.schema_namespace)
         }
         SelectionSetConformance::Custom(s) => s.to_string(),
     }
