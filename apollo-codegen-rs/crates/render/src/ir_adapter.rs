@@ -68,6 +68,7 @@ pub fn render_operation(
         generate_initializers,
         &op.referenced_fragments,
         type_kinds,
+        None,  // no parent fields for root
     );
 
     let config = OwnedOperationConfig {
@@ -107,6 +108,7 @@ pub fn render_fragment(
         generate_initializers,
         &frag.referenced_fragments,
         type_kinds,
+        None, // no parent fields for fragment root
     );
 
     let config = OwnedFragmentConfig {
@@ -184,6 +186,7 @@ enum OwnedSelectionKind {
     Fragment(String),
 }
 
+#[derive(Clone)]
 struct OwnedFieldAccessor {
     name: String,
     swift_type: String,
@@ -255,6 +258,7 @@ fn build_selection_set_config_owned(
     generate_initializers: bool,
     referenced_fragments: &[Arc<NamedFragment>],
     type_kinds: &HashMap<String, TypeKind>,
+    parent_fields: Option<&[OwnedFieldAccessor]>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(o.name.clone()),
@@ -308,7 +312,7 @@ fn build_selection_set_config_owned(
     }
 
     // Build field accessors (skip __typename)
-    let field_accessors: Vec<OwnedFieldAccessor> = ds
+    let mut field_accessors: Vec<OwnedFieldAccessor> = ds
         .fields
         .iter()
         .map(|(key, field)| {
@@ -319,6 +323,32 @@ fn build_selection_set_config_owned(
             }
         })
         .collect();
+
+    // For inline fragments, add merged field accessors from parent scope
+    if is_inline_fragment {
+        if let Some(parent) = parent_fields {
+            for pf in parent {
+                // Don't duplicate fields already directly selected
+                if !field_accessors.iter().any(|f| f.name == pf.name) {
+                    field_accessors.push(pf.clone());
+                }
+            }
+        }
+        // Also add fields from spread fragments
+        for spread in &ds.named_fragments {
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                    if !field_accessors.iter().any(|f| f.name == *key) {
+                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
+                        field_accessors.push(OwnedFieldAccessor {
+                            name: key.clone(),
+                            swift_type,
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     // Build inline fragment accessors
     let inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = ds
@@ -369,6 +399,7 @@ fn build_selection_set_config_owned(
                 generate_initializers,
                 referenced_fragments,
                 type_kinds,
+                None, // entity fields don't inherit parent fields
             );
             let parent_type_name = ef.selection_set.scope.parent_type.name();
             nested_types.push(OwnedNestedSelectionSet {
@@ -406,6 +437,7 @@ fn build_selection_set_config_owned(
                 generate_initializers,
                 referenced_fragments,
                 type_kinds,
+                Some(&field_accessors), // pass parent field accessors for merging
             );
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment: format!(
@@ -434,6 +466,7 @@ fn build_selection_set_config_owned(
             root_entity_type,
             referenced_fragments,
             type_kinds,
+            &field_accessors, // includes merged fields for inline fragments
         ))
     } else {
         None
@@ -479,6 +512,7 @@ fn build_initializer_config(
     root_entity_type: Option<&str>,
     referenced_fragments: &[Arc<NamedFragment>],
     type_kinds: &HashMap<String, TypeKind>,
+    all_field_accessors: &[OwnedFieldAccessor],
 ) -> OwnedInitializerConfig {
     // Determine typename handling based on parent type
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
@@ -506,17 +540,16 @@ fn build_initializer_config(
         });
     }
 
-    // Add a parameter for each direct field
-    for (key, field) in &ds.fields {
-        let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds);
-        let default_value = if swift_type.ends_with('?') {
+    // Add a parameter for each field accessor (includes merged fields for inline fragments)
+    for accessor in all_field_accessors {
+        let default_value = if accessor.swift_type.ends_with('?') {
             Some("nil".to_string())
         } else {
             None
         };
         parameters.push(OwnedInitParam {
-            name: key.clone(),
-            swift_type,
+            name: accessor.name.clone(),
+            swift_type: accessor.swift_type.clone(),
             default_value,
         });
     }
@@ -539,14 +572,19 @@ fn build_initializer_config(
         },
     });
 
-    // Add each direct field
-    for (key, field) in &ds.fields {
-        let value = match field {
-            FieldSelection::Entity(_) => OwnedDataEntryValue::FieldData(key.clone()),
-            FieldSelection::Scalar(_) => OwnedDataEntryValue::Variable(key.clone()),
+    // Add each field accessor to data entries (includes merged fields)
+    for accessor in all_field_accessors {
+        // Check if this is an entity or scalar field
+        let is_entity = ds.fields.get(&accessor.name)
+            .map(|f| matches!(f, FieldSelection::Entity(_)))
+            .unwrap_or(false);
+        let value = if is_entity {
+            OwnedDataEntryValue::FieldData(accessor.name.clone())
+        } else {
+            OwnedDataEntryValue::Variable(accessor.name.clone())
         };
         data_entries.push(OwnedDataEntry {
-            key: key.clone(),
+            key: accessor.name.clone(),
             value,
         });
     }

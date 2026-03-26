@@ -113,6 +113,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         is_in_module,
         camel_case_enums,
         config,
+        &type_kinds,
     );
 
     // Package.swift (for SPM module type)
@@ -187,6 +188,7 @@ fn generate_schema_files(
     is_in_module: bool,
     camel_case_enums: bool,
     config: &ApolloCodegenConfiguration,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
 ) {
     let sources_path = schema_path.join("Sources");
 
@@ -280,12 +282,12 @@ fn generate_schema_files(
                 .fields
                 .iter()
                 .map(|(fname, fdef)| {
-                    let mut swift_type = render_input_field_type(&fdef.field_type, ns);
+                    let mut swift_type = render_input_field_type(&fdef.field_type, ns, &type_kinds);
                     // Non-null fields with default values become optional
                     if matches!(fdef.field_type, GraphQLType::NonNull(_)) && fdef.default_value.is_some() {
                         swift_type = format!("{}?", swift_type);
                     }
-                    let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value);
+                    let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds);
                     templates::input_object::InputField {
                         schema_name: fname.clone(),
                         rendered_name: fname.clone(),
@@ -658,38 +660,46 @@ impl GenerationResult {
 
 use apollo_codegen_frontend::types::{GraphQLType, GraphQLValue};
 
-fn render_input_field_type(ty: &GraphQLType, ns: &str) -> String {
+fn render_input_field_type(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+) -> String {
     match ty {
         GraphQLType::Named(name) => {
-            let base = render_scalar_swift(name, ns);
-            // In input objects, nullable types use GraphQLNullable<T> wrapper
+            let base = render_scalar_swift(name, ns, type_kinds);
             format!("GraphQLNullable<{}>", base)
         }
         GraphQLType::NonNull(inner) => match inner.as_ref() {
-            GraphQLType::Named(name) => render_scalar_swift(name, ns),
+            GraphQLType::Named(name) => render_scalar_swift(name, ns, type_kinds),
             GraphQLType::List(list_inner) => {
-                format!("[{}]", render_input_field_type(list_inner, ns))
+                format!("[{}]", render_input_field_type(list_inner, ns, type_kinds))
             }
-            _ => render_input_field_type(inner, ns),
+            _ => render_input_field_type(inner, ns, type_kinds),
         },
         GraphQLType::List(inner) => {
-            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns))
+            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns, type_kinds))
         }
     }
 }
 
 /// Render init parameter type - nullable gets default = nil
-fn render_input_field_property_type(ty: &GraphQLType, ns: &str) -> String {
+fn render_input_field_property_type(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+) -> String {
     // Property type same as field type for input objects
-    render_input_field_type(ty, ns)
+    render_input_field_type(ty, ns, type_kinds)
 }
 
 fn render_input_field_init_type(
     ty: &GraphQLType,
     ns: &str,
     default_value: &Option<GraphQLValue>,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
 ) -> String {
-    let base = render_input_field_type(ty, ns);
+    let base = render_input_field_type(ty, ns, type_kinds);
     match ty {
         GraphQLType::Named(_) | GraphQLType::List(_) => {
             // Nullable fields get default = nil
@@ -706,13 +716,24 @@ fn render_input_field_init_type(
     }
 }
 
-fn render_scalar_swift(name: &str, _ns: &str) -> String {
+fn render_scalar_swift(
+    name: &str,
+    _ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+) -> String {
+    use apollo_codegen_ir::field_collector::TypeKind;
     match name {
         "String" => "String".to_string(),
         "Int" => "Int".to_string(),
         "Float" => "Double".to_string(),
         "Boolean" => "Bool".to_string(),
         "ID" => "ID".to_string(),
-        _ => name.to_string(),
+        _ => {
+            let kind = type_kinds.get(name).copied().unwrap_or(TypeKind::Scalar);
+            match kind {
+                TypeKind::Enum => format!("GraphQLEnum<{}>", name),
+                _ => name.to_string(),
+            }
+        }
     }
 }
