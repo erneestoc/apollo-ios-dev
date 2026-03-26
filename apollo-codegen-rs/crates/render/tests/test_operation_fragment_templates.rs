@@ -591,6 +591,7 @@ fn fragment_template_warm_blooded_details() {
                 FragmentSpreadAccessor {
                     property_name: "heightInMeters",
                     fragment_type: "HeightInMeters",
+                    is_optional: false,
                 },
             ],
             initializer: Some(InitializerConfig {
@@ -1222,6 +1223,7 @@ fn operation_template_dog_query() {
                                         FragmentSpreadAccessor {
                                             property_name: "dogFragment",
                                             fragment_type: "DogFragment",
+                                            is_optional: false,
                                         },
                                     ],
                                     initializer: Some(InitializerConfig {

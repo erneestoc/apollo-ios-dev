@@ -289,6 +289,61 @@ fn render_selections(
                     item_indent, name
                 ));
             }
+            selection_set::SelectionItem::ConditionalField(cond, f) => {
+                let cond_str = if cond.is_inverted {
+                    format!("!\"{}\"", cond.variable)
+                } else {
+                    format!("\"{}\"", cond.variable)
+                };
+                if let Some(args) = f.arguments {
+                    result.push_str(&format!(
+                        "{}.include(if: {}, .field(\"{}\", {}.self, arguments: {})),\n",
+                        item_indent, cond_str, f.name, f.swift_type, args
+                    ));
+                } else {
+                    result.push_str(&format!(
+                        "{}.include(if: {}, .field(\"{}\", {}.self)),\n",
+                        item_indent, cond_str, f.name, f.swift_type
+                    ));
+                }
+            }
+            selection_set::SelectionItem::ConditionalInlineFragment(cond, name) => {
+                let cond_str = if cond.is_inverted {
+                    format!("!\"{}\"", cond.variable)
+                } else {
+                    format!("\"{}\"", cond.variable)
+                };
+                result.push_str(&format!(
+                    "{}.include(if: {}, .inlineFragment({}.self)),\n",
+                    item_indent, cond_str, name
+                ));
+            }
+            selection_set::SelectionItem::ConditionalFieldGroup(cond, fields) => {
+                let cond_str = if cond.is_inverted {
+                    format!("!\"{}\"", cond.variable)
+                } else {
+                    format!("\"{}\"", cond.variable)
+                };
+                result.push_str(&format!(
+                    "{}.include(if: {}, [\n",
+                    item_indent, cond_str
+                ));
+                let group_indent = format!("{}  ", item_indent);
+                for f in fields {
+                    if let Some(args) = f.arguments {
+                        result.push_str(&format!(
+                            "{}.field(\"{}\", {}.self, arguments: {}),\n",
+                            group_indent, f.name, f.swift_type, args
+                        ));
+                    } else {
+                        result.push_str(&format!(
+                            "{}.field(\"{}\", {}.self),\n",
+                            group_indent, f.name, f.swift_type
+                        ));
+                    }
+                }
+                result.push_str(&format!("{}]),\n", item_indent));
+            }
         }
     }
     result.push_str(&format!("{}] }}\n", indent));

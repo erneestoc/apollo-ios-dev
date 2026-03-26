@@ -105,6 +105,19 @@ pub enum SelectionItem<'a> {
     InlineFragment(&'a str),
     /// `.fragment(FragmentName.self)`
     Fragment(&'a str),
+    /// `.include(if: "var", .field(...))` or `.include(if: !"var", .field(...))`
+    ConditionalField(InclusionConditionRef<'a>, FieldSelectionItem<'a>),
+    /// `.include(if: "var", .inlineFragment(...))` or `.include(if: !"var", .inlineFragment(...))`
+    ConditionalInlineFragment(InclusionConditionRef<'a>, &'a str),
+    /// `.include(if: "var", [.field(...), .field(...)])` - grouped conditional fields
+    ConditionalFieldGroup(InclusionConditionRef<'a>, Vec<FieldSelectionItem<'a>>),
+}
+
+/// A reference to an inclusion condition for rendering.
+#[derive(Debug, Clone)]
+pub struct InclusionConditionRef<'a> {
+    pub variable: &'a str,
+    pub is_inverted: bool,
 }
 
 /// A field in the __selections array.
@@ -134,6 +147,8 @@ pub struct InlineFragmentAccessor<'a> {
 pub struct FragmentSpreadAccessor<'a> {
     pub property_name: &'a str,
     pub fragment_type: &'a str,
+    /// Whether this fragment accessor is optional (e.g., due to @skip/@include conditions).
+    pub is_optional: bool,
 }
 
 /// Configuration for the memberwise initializer.
@@ -295,6 +310,49 @@ pub fn render(config: &SelectionSetConfig) -> String {
                         item_indent, name
                     ));
                 }
+                SelectionItem::ConditionalField(cond, f) => {
+                    let cond_str = render_inclusion_condition(cond);
+                    if let Some(args) = f.arguments {
+                        result.push_str(&format!(
+                            "{}.include(if: {}, .field(\"{}\", {}.self, arguments: {})),\n",
+                            item_indent, cond_str, f.name, f.swift_type, args
+                        ));
+                    } else {
+                        result.push_str(&format!(
+                            "{}.include(if: {}, .field(\"{}\", {}.self)),\n",
+                            item_indent, cond_str, f.name, f.swift_type
+                        ));
+                    }
+                }
+                SelectionItem::ConditionalInlineFragment(cond, name) => {
+                    let cond_str = render_inclusion_condition(cond);
+                    result.push_str(&format!(
+                        "{}.include(if: {}, .inlineFragment({}.self)),\n",
+                        item_indent, cond_str, name
+                    ));
+                }
+                SelectionItem::ConditionalFieldGroup(cond, fields) => {
+                    let cond_str = render_inclusion_condition(cond);
+                    result.push_str(&format!(
+                        "{}.include(if: {}, [\n",
+                        item_indent, cond_str
+                    ));
+                    let group_indent = format!("{}  ", item_indent);
+                    for f in fields {
+                        if let Some(args) = f.arguments {
+                            result.push_str(&format!(
+                                "{}.field(\"{}\", {}.self, arguments: {}),\n",
+                                group_indent, f.name, f.swift_type, args
+                            ));
+                        } else {
+                            result.push_str(&format!(
+                                "{}.field(\"{}\", {}.self),\n",
+                                group_indent, f.name, f.swift_type
+                            ));
+                        }
+                    }
+                    result.push_str(&format!("{}]),\n", item_indent));
+                }
             }
         }
         result.push_str(&format!("{}] }}\n", inner_indent));
@@ -385,12 +443,14 @@ pub fn render(config: &SelectionSetConfig) -> String {
         ));
         result.push('\n');
         for spread in &config.fragment_spreads {
+            let optional_suffix = if spread.is_optional { "?" } else { "" };
             result.push_str(&format!(
-                "{}{}var {}: {} {{ _toFragment() }}\n",
+                "{}{}var {}: {}{} {{ _toFragment() }}\n",
                 frag_inner,
                 config.access_modifier,
                 spread.property_name,
-                spread.fragment_type
+                spread.fragment_type,
+                optional_suffix
             ));
         }
         result.push_str(&format!("{}}}\n", inner_indent));
@@ -548,4 +608,13 @@ fn render_initializer(
     result.push_str(&format!("{}]\n", inner2));
     result.push_str(&format!("{}))\n", inner));
     result.push_str(&format!("{}}}\n", indent));
+}
+
+/// Render an inclusion condition for `.include(if: ...)`.
+fn render_inclusion_condition(cond: &InclusionConditionRef) -> String {
+    if cond.is_inverted {
+        format!("!\"{}\"", cond.variable)
+    } else {
+        format!("\"{}\"", cond.variable)
+    }
 }

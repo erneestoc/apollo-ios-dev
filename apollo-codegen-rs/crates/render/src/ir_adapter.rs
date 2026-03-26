@@ -15,6 +15,7 @@ use apollo_codegen_ir::field_collector::TypeKind;
 use apollo_codegen_ir::fields::EntityField;
 use apollo_codegen_ir::named_fragment::NamedFragment;
 use apollo_codegen_ir::operation::Operation;
+use apollo_codegen_ir::inclusion::InclusionConditions;
 use apollo_codegen_ir::selection_set::{
     DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread,
     SelectionSet as IrSelectionSet,
@@ -99,6 +100,7 @@ pub fn render_operation(
         None,  // entity_root_graphql_type (set per-entity below)
         &[],   // no ancestor fragments for root
         None,  // no parent scope DS for root
+        None,  // no scope conditions for root
     );
 
     let config = OwnedOperationConfig {
@@ -151,6 +153,7 @@ pub fn render_fragment(
         None, // entity_root_graphql_type
         &[],  // no ancestor fragments for fragment root
         None, // no parent scope DS for fragment root
+        None, // no scope conditions for fragment root
     );
 
     let config = OwnedFragmentConfig {
@@ -221,6 +224,7 @@ struct OwnedSelectionSetConfig {
     absorbed_type_names: Vec<String>,
 }
 
+#[derive(Clone)]
 enum OwnedParentTypeRef {
     Object(String),
     Interface(String),
@@ -235,6 +239,9 @@ enum OwnedSelectionKind {
     Field { name: String, swift_type: String, arguments: Option<String> },
     InlineFragment(String),
     Fragment(String),
+    ConditionalField { variable: String, is_inverted: bool, name: String, swift_type: String, arguments: Option<String> },
+    ConditionalInlineFragment { variable: String, is_inverted: bool, type_name: String },
+    ConditionalFieldGroup { variable: String, is_inverted: bool, fields: Vec<(String, String, Option<String>)> }, // (name, swift_type, arguments)
 }
 
 #[derive(Clone)]
@@ -251,6 +258,7 @@ struct OwnedInlineFragmentAccessor {
 struct OwnedFragmentSpreadAccessor {
     property_name: String,
     fragment_type: String,
+    is_optional: bool,
 }
 
 struct OwnedInitializerConfig {
@@ -315,6 +323,7 @@ fn build_selection_set_config_owned(
     entity_root_graphql_type: Option<&str>,
     ancestor_fragments: &[String],
     parent_scope_ds: Option<&DirectSelections>,
+    scope_conditions: Option<&InclusionConditions>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -361,6 +370,8 @@ fn build_selection_set_config_owned(
     {
         let mut seen_promoted_types: Vec<String> = Vec::new();
         for spread in &ds.named_fragments {
+            // Skip conditional fragment spreads - they get their own conditional inline fragment
+            if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
             if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
@@ -395,18 +406,45 @@ fn build_selection_set_config_owned(
             },
         });
     }
+    // Track conditional fields to add after unconditional selections.
+    // Key: condition variable + inverted, Value: vec of (name, swift_type, arguments)
+    let mut conditional_field_groups: Vec<(String, bool, Vec<(String, String, Option<String>)>)> = Vec::new();
     for (key, field) in &ds.fields {
         // Skip __typename since it's added explicitly above when needed
         if key == "__typename" { continue; }
         let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         let arguments = render_field_arguments(field);
-        selections.push(OwnedSelectionItem {
-            kind: OwnedSelectionKind::Field {
-                name: key.clone(),
-                swift_type,
-                arguments,
-            },
-        });
+        let conds = field_inclusion_conditions(field);
+        // Check if the field's conditions are already satisfied by the enclosing scope.
+        // If so, treat it as unconditional within this scope.
+        let effective_conditions = if has_inclusion_conditions(conds) {
+            let ic = conds.unwrap();
+            if conditions_satisfied_by_scope(ic, scope_conditions) {
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if effective_conditions {
+            let ic = conds.unwrap();
+            // For now, use the first condition (most common case is a single condition)
+            let cond = &ic.conditions[0];
+            if let Some(group) = conditional_field_groups.iter_mut().find(|(v, inv, _)| v == &cond.variable && *inv == cond.is_inverted) {
+                group.2.push((key.clone(), swift_type, arguments));
+            } else {
+                conditional_field_groups.push((cond.variable.clone(), cond.is_inverted, vec![(key.clone(), swift_type, arguments)]));
+            }
+        } else {
+            selections.push(OwnedSelectionItem {
+                kind: OwnedSelectionKind::Field {
+                    name: key.clone(),
+                    swift_type,
+                    arguments,
+                },
+            });
+        }
     }
     // Add absorbed field selections (from absorbed inline fragments)
     for &idx in &absorbed_inline_indices {
@@ -439,31 +477,107 @@ fn build_selection_set_config_owned(
             kind: OwnedSelectionKind::InlineFragment(type_name),
         });
     }
+    // Track conditional fragment spreads and direct inline fragments separately for ordering:
+    // fragment spreads come before direct inline fragments in the output.
+    let mut conditional_frag_spread_selections: Vec<OwnedSelectionItem> = Vec::new();
+    let mut conditional_inline_selections: Vec<OwnedSelectionItem> = Vec::new();
     for (idx, inline) in ds.inline_fragments.iter().enumerate() {
         // Skip absorbed inline fragments
         if absorbed_inline_indices.contains(&idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
-            let type_name = format!("As{}", naming::first_uppercased(tc.name()));
-            selections.push(OwnedSelectionItem {
-                kind: OwnedSelectionKind::InlineFragment(type_name),
-            });
+            if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
+                let ic = inline.inclusion_conditions.as_ref().unwrap();
+                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic);
+                let cond = &ic.conditions[0];
+                conditional_inline_selections.push(OwnedSelectionItem {
+                    kind: OwnedSelectionKind::ConditionalInlineFragment {
+                        variable: cond.variable.clone(),
+                        is_inverted: cond.is_inverted,
+                        type_name,
+                    },
+                });
+            } else {
+                let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+                selections.push(OwnedSelectionItem {
+                    kind: OwnedSelectionKind::InlineFragment(type_name),
+                });
+            }
         }
     }
     for frag_spread in &ds.named_fragments {
         // Skip fragments that were promoted to inline fragments
         if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
-        selections.push(OwnedSelectionItem {
-            kind: OwnedSelectionKind::Fragment(frag_spread.fragment_name.clone()),
-        });
+        if has_inclusion_conditions(frag_spread.inclusion_conditions.as_ref()) {
+            // Conditional fragment spread -> wrapped in .include() as inline fragment
+            let ic = frag_spread.inclusion_conditions.as_ref().unwrap();
+            // Check if the fragment needs type narrowing (type condition differs from parent)
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
+                let ftc = &frag_arc.type_condition_name;
+                let needs_narrowing = *ftc != current_parent_type_name_early
+                    && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
+                let type_name = if needs_narrowing {
+                    conditional_inline_fragment_name(Some(ftc), ic)
+                } else {
+                    conditional_inline_fragment_name(None, ic)
+                };
+                let cond = &ic.conditions[0];
+                conditional_frag_spread_selections.push(OwnedSelectionItem {
+                    kind: OwnedSelectionKind::ConditionalInlineFragment {
+                        variable: cond.variable.clone(),
+                        is_inverted: cond.is_inverted,
+                        type_name,
+                    },
+                });
+            }
+        } else {
+            selections.push(OwnedSelectionItem {
+                kind: OwnedSelectionKind::Fragment(frag_spread.fragment_name.clone()),
+            });
+        }
     }
+    // Add conditional fields after unconditional selections
+    for (variable, is_inverted, fields) in &conditional_field_groups {
+        if fields.len() == 1 {
+            let (name, swift_type, arguments) = &fields[0];
+            selections.push(OwnedSelectionItem {
+                kind: OwnedSelectionKind::ConditionalField {
+                    variable: variable.clone(),
+                    is_inverted: *is_inverted,
+                    name: name.clone(),
+                    swift_type: swift_type.clone(),
+                    arguments: arguments.clone(),
+                },
+            });
+        } else {
+            selections.push(OwnedSelectionItem {
+                kind: OwnedSelectionKind::ConditionalFieldGroup {
+                    variable: variable.clone(),
+                    is_inverted: *is_inverted,
+                    fields: fields.clone(),
+                },
+            });
+        }
+    }
+    // Add conditional selections in order: fragment spread wrappers, then direct inline fragments
+    selections.extend(conditional_frag_spread_selections);
+    selections.extend(conditional_inline_selections);
 
     // Build field accessors (skip __typename)
+    // Fields with inclusion conditions become optional types, unless the condition
+    // is already satisfied by the enclosing scope's conditions.
     let mut field_accessors: Vec<OwnedFieldAccessor> = ds
         .fields
         .iter()
         .filter(|(key, _)| key.as_str() != "__typename") // __typename handled separately
         .map(|(key, field)| {
-            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+            let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+            // If the field has inclusion conditions not satisfied by the enclosing scope, make its type optional
+            let conds = field_inclusion_conditions(field);
+            if has_inclusion_conditions(conds) && !conditions_satisfied_by_scope(conds.unwrap(), scope_conditions) {
+                if !swift_type.ends_with('?') {
+                    swift_type.push('?');
+                }
+            }
             OwnedFieldAccessor {
                 name: key.clone(),
                 swift_type,
@@ -500,9 +614,11 @@ fn build_selection_set_config_owned(
     // For ALL selection sets with named fragment spreads, include the spread
     // fragment's fields as merged accessors (e.g., WarmBloodedDetails spreading
     // HeightInMeters gets a `height` accessor from HeightInMeters).
-    // Skip promoted fragments - their fields go inside the promoted inline fragment, not the parent.
+    // Skip promoted fragments and conditional fragments - their fields go inside the
+    // promoted/conditional inline fragment, not the parent.
     for spread in &ds.named_fragments {
         if early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
+        if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                 if !field_accessors.iter().any(|f| f.name == *key) {
@@ -552,30 +668,92 @@ fn build_selection_set_config_owned(
     for (idx, inline) in ds.inline_fragments.iter().enumerate() {
         if absorbed_inline_indices.contains(&idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
-            let type_name = format!("As{}", naming::first_uppercased(tc.name()));
-            inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
-                property_name: format!("as{}", naming::first_uppercased(tc.name())),
-                type_name,
-            });
+            if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
+                let ic = inline.inclusion_conditions.as_ref().unwrap();
+                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic);
+                let property_name = conditional_inline_fragment_property(Some(tc.name()), ic);
+                inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                    property_name,
+                    type_name,
+                });
+            } else {
+                let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+                inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                    property_name: format!("as{}", naming::first_uppercased(tc.name())),
+                    type_name,
+                });
+            }
+        }
+    }
+    // Add conditional fragment spread accessors as inline fragment accessors
+    for frag_spread in &ds.named_fragments {
+        if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
+        if has_inclusion_conditions(frag_spread.inclusion_conditions.as_ref()) {
+            let ic = frag_spread.inclusion_conditions.as_ref().unwrap();
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
+                let ftc = &frag_arc.type_condition_name;
+                let needs_narrowing = *ftc != current_parent_type_name_early
+                    && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
+                let type_name = if needs_narrowing {
+                    conditional_inline_fragment_name(Some(ftc), ic)
+                } else {
+                    conditional_inline_fragment_name(None, ic)
+                };
+                let property_name = if needs_narrowing {
+                    conditional_inline_fragment_property(Some(ftc), ic)
+                } else {
+                    conditional_inline_fragment_property(None, ic)
+                };
+                inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                    property_name,
+                    type_name,
+                });
+            }
         }
     }
 
-    // Build fragment spread accessors (skip promoted fragments)
+    // Build fragment spread accessors (skip promoted fragments and conditional spreads for selections,
+    // but add conditional spreads as optional in the Fragments container)
     let mut fragment_spreads: Vec<OwnedFragmentSpreadAccessor> = ds
         .named_fragments
         .iter()
         .filter(|spread| !early_promoted_fragment_names.contains(&spread.fragment_name))
+        .filter(|spread| !has_inclusion_conditions(spread.inclusion_conditions.as_ref()))
         .map(|spread| OwnedFragmentSpreadAccessor {
             property_name: naming::first_lowercased(&spread.fragment_name),
             fragment_type: spread.fragment_name.clone(),
+            is_optional: false,
         })
         .collect();
+    // Add conditional fragment spreads as optional accessors in the Fragments container,
+    // but ONLY if they don't need type narrowing. When type narrowing is needed, the fragment
+    // accessor belongs inside the conditional inline fragment struct, not the parent.
+    for spread in &ds.named_fragments {
+        if !early_promoted_fragment_names.contains(&spread.fragment_name)
+            && has_inclusion_conditions(spread.inclusion_conditions.as_ref())
+        {
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                let ftc = &frag_arc.type_condition_name;
+                let needs_narrowing = *ftc != current_parent_type_name_early
+                    && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
+                if !needs_narrowing {
+                    fragment_spreads.push(OwnedFragmentSpreadAccessor {
+                        property_name: naming::first_lowercased(&spread.fragment_name),
+                        fragment_type: spread.fragment_name.clone(),
+                        is_optional: true,
+                    });
+                }
+            }
+        }
+    }
 
     // Add sub-fragment spreads from directly-spread fragments.
     // E.g., if WarmBloodedDetails spreads HeightInMeters, add HeightInMeters as a fragment accessor
     // if its type condition is satisfied by the current scope's type.
+    // Skip conditional spreads - their sub-fragments go inside the conditional inline fragment.
     for spread in &ds.named_fragments {
         if early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
+        if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                 if !fragment_spreads.iter().any(|fs| fs.fragment_type == sub_spread.fragment_name) {
@@ -588,6 +766,7 @@ fn build_selection_set_config_owned(
                             fragment_spreads.push(OwnedFragmentSpreadAccessor {
                                 property_name: naming::first_lowercased(&sub_spread.fragment_name),
                                 fragment_type: sub_spread.fragment_name.clone(),
+                                is_optional: false,
                             });
                         }
                     }
@@ -631,10 +810,13 @@ fn build_selection_set_config_owned(
                 None, // entity_root_graphql_type: entity fields start a new entity
                 &[],  // entity fields start a new entity scope
                 None, // entity fields start a new scope
+                None, // no scope conditions for entity fields
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
+            // Skip conditional spreads - their entity fields belong inside the conditional inline fragment.
             for spread in &ds.named_fragments {
+                if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
                 if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
                     if let Some(FieldSelection::Entity(frag_ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(key) {
                         for (frag_key, frag_field) in &frag_ef.selection_set.direct_selections.fields {
@@ -809,6 +991,8 @@ fn build_selection_set_config_owned(
     {
         let mut seen_promoted_types: Vec<String> = Vec::new();
         for spread in &ds.named_fragments {
+            // Skip conditional fragment spreads - they get their own conditional inline fragment
+            if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
             if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_pre
@@ -860,7 +1044,11 @@ fn build_selection_set_config_owned(
     for (inline_idx, inline) in ds.inline_fragments.iter().enumerate() {
         if absorbed_inline_indices.contains(&inline_idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
-            let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+            let type_name = if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
+                conditional_inline_fragment_name(Some(tc.name()), inline.inclusion_conditions.as_ref().unwrap())
+            } else {
+                format!("As{}", naming::first_uppercased(tc.name()))
+            };
             let child_qualified = format!("{}.{}", qualified_name, type_name);
             let child_root_entity = if is_root {
                 qualified_name.to_string()
@@ -892,6 +1080,8 @@ fn build_selection_set_config_owned(
             // spreads from sibling inline fragments.
             let mut child_ancestor_frags: Vec<String> = ancestor_fragments.to_vec();
             for spread in &ds.named_fragments {
+                // Skip conditional spreads - they have their own scope
+                if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
                 if !child_ancestor_frags.contains(&spread.fragment_name) {
                     child_ancestor_frags.push(spread.fragment_name.clone());
                 }
@@ -925,6 +1115,7 @@ fn build_selection_set_config_owned(
                 Some(entity_root_for_inline),
                 &child_ancestor_frags,
                 Some(ds), // pass parent scope's direct selections
+                inline.inclusion_conditions.as_ref(), // pass inline fragment's conditions to strip from children
             );
 
             // Propagate absorbed type names from parent to child
@@ -953,6 +1144,7 @@ fn build_selection_set_config_owned(
                     child_ss.fragment_spreads.push(OwnedFragmentSpreadAccessor {
                         property_name: naming::first_lowercased(frag_name),
                         fragment_type: frag_name.clone(),
+                        is_optional: false,
                     });
                 }
             }
@@ -1556,9 +1748,27 @@ fn build_selection_set_config_owned(
                                 // Skip if this fragment's type is the root entity type itself
                                 if *ftc == root_entity_type_name { continue; }
                                 // Add root-level scope OID (e.g., AllAnimal.AsWarmBlooded)
-                                // Insert BEFORE the fragment name for correct ordering
+                                // Insert BEFORE the fragment name for correct ordering.
+                                // BUT skip if the root scope doesn't have a promoted inline
+                                // fragment for this type (e.g., WarmBlooded is conditional at root).
+                                // Check: does the root scope have an unconditional promoted fragment
+                                // for this type condition? It does if there's an entry in early_promoted_types
+                                // matching ftc. If not (because the spread is conditional), skip.
+                                let root_has_promoted = early_promoted_types.iter().any(|t| t == ftc);
+                                // Also check if there's a direct (non-conditional) inline fragment at the root
+                                let root_has_direct = if let Some(pds) = parent_scope_ds {
+                                    pds.inline_fragments.iter().any(|inf| {
+                                        inf.type_condition.as_ref().map(|tc2| tc2.name() == ftc.as_str()).unwrap_or(false)
+                                            && !has_inclusion_conditions(inf.inclusion_conditions.as_ref())
+                                    })
+                                } else {
+                                    ds.inline_fragments.iter().any(|inf| {
+                                        inf.type_condition.as_ref().map(|tc2| tc2.name() == ftc.as_str()).unwrap_or(false)
+                                            && !has_inclusion_conditions(inf.inclusion_conditions.as_ref())
+                                    })
+                                };
                                 let root_scope = format!("{}.As{}", root_str, naming::first_uppercased(ftc));
-                                if !init.fulfilled_fragments.contains(&root_scope) && type_satisfies_condition(tc, ftc) {
+                                if (root_has_promoted || root_has_direct) && !init.fulfilled_fragments.contains(&root_scope) && type_satisfies_condition(tc, ftc) {
                                     let insert_pos = init.fulfilled_fragments.iter()
                                         .position(|f| f == frag_name)
                                         .unwrap_or(init.fulfilled_fragments.len());
@@ -1790,11 +2000,13 @@ fn build_selection_set_config_owned(
                 let mut pfs = vec![OwnedFragmentSpreadAccessor {
                     property_name: naming::first_lowercased(&spread.fragment_name),
                     fragment_type: spread.fragment_name.clone(),
+                    is_optional: false,
                 }];
                 for fs in &frag_ds.named_fragments {
                     pfs.push(OwnedFragmentSpreadAccessor {
                         property_name: naming::first_lowercased(&fs.fragment_name),
                         fragment_type: fs.fragment_name.clone(),
+                        is_optional: false,
                     });
                 }
 
@@ -1809,6 +2021,7 @@ fn build_selection_set_config_owned(
                     pfs.push(OwnedFragmentSpreadAccessor {
                         property_name: naming::first_lowercased(&parent_spread.fragment_name),
                         fragment_type: parent_spread.fragment_name.clone(),
+                        is_optional: false,
                     });
                     // Also add fields from this parent fragment
                     if let Some(parent_frag) = referenced_fragments.iter().find(|f| f.name == parent_spread.fragment_name) {
@@ -2131,6 +2344,7 @@ fn build_selection_set_config_owned(
                     let mut pfs = vec![OwnedFragmentSpreadAccessor {
                         property_name: naming::first_lowercased(&spread.fragment_name),
                         fragment_type: spread.fragment_name.clone(),
+                        is_optional: false,
                     }];
 
                     // Build fulfilled fragments for the initializer, including supertype inline fragment OIDs
@@ -2163,6 +2377,7 @@ fn build_selection_set_config_owned(
                             pfs.push(OwnedFragmentSpreadAccessor {
                                 property_name: naming::first_lowercased(frag_name),
                                 fragment_type: frag_name.clone(),
+                                is_optional: false,
                             });
                         }
                     }
@@ -2436,6 +2651,235 @@ fn build_selection_set_config_owned(
         field_accessors.retain(|fa| fields_from_nonpromoted.contains(&fa.name));
     }
 
+    // Build nested types for conditional fragment spreads.
+    // E.g., `...HeightInMeters @skip(if: $skipHeightInMeters)` creates:
+    //   struct IfNotSkipHeightInMeters: InlineFragment { ... .fragment(HeightInMeters.self) ... }
+    // And `...WarmBloodedDetails @include(if: $getWarmBlooded)` creates:
+    //   struct AsWarmBloodedIfGetWarmBlooded: InlineFragment { ... .fragment(WarmBloodedDetails.self) ... }
+    for spread in &ds.named_fragments {
+        if !has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            let ic = spread.inclusion_conditions.as_ref().unwrap();
+            let ftc = &frag_arc.type_condition_name;
+            let needs_narrowing = *ftc != ir_ss.scope.parent_type.name()
+                && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
+            let type_name = if needs_narrowing {
+                conditional_inline_fragment_name(Some(ftc), ic)
+            } else {
+                conditional_inline_fragment_name(None, ic)
+            };
+            let child_qualified = format!("{}.{}", qualified_name, type_name);
+            let child_root_entity = if is_root {
+                qualified_name.to_string()
+            } else {
+                root_entity_type.unwrap_or(qualified_name).to_string()
+            };
+
+            // Build the parent type for the conditional inline fragment
+            let cond_parent_type = if needs_narrowing {
+                match &frag_arc.root_field.selection_set.scope.parent_type {
+                    GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
+                    GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
+                    GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
+                }
+            } else {
+                parent_type.clone()
+            };
+
+            // Build field accessors: fragment's fields + parent inherited fields
+            let mut cond_fa = Vec::new();
+            // Add fragment's fields
+            for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                if key == "__typename" { continue; }
+                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                if !cond_fa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
+                    cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                }
+            }
+            // Add sub-fragment fields
+            for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                    for (key, field) in &sub_frag.root_field.selection_set.direct_selections.fields {
+                        if key == "__typename" { continue; }
+                        if !cond_fa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
+                            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                            cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                        }
+                    }
+                }
+            }
+            // Add parent inherited fields
+            for fa in &field_accessors {
+                if !cond_fa.iter().any(|f| f.name == fa.name) {
+                    cond_fa.push(fa.clone());
+                }
+            }
+
+            // Build fragment spread accessors
+            let mut cond_fs = vec![OwnedFragmentSpreadAccessor {
+                property_name: naming::first_lowercased(&spread.fragment_name),
+                fragment_type: spread.fragment_name.clone(),
+                is_optional: false,
+            }];
+            // Add sub-fragments
+            for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                if !cond_fs.iter().any(|fs| fs.fragment_type == sub_spread.fragment_name) {
+                    cond_fs.push(OwnedFragmentSpreadAccessor {
+                        property_name: naming::first_lowercased(&sub_spread.fragment_name),
+                        fragment_type: sub_spread.fragment_name.clone(),
+                        is_optional: false,
+                    });
+                }
+            }
+
+            // Build selections: just the fragment spread
+            let cond_selections = vec![OwnedSelectionItem {
+                kind: OwnedSelectionKind::Fragment(spread.fragment_name.clone()),
+            }];
+
+            // Build initializer
+            let cond_init = if generate_initializers {
+                // Collect fragment names for fulfilled fragments
+                let mut extra_fulfilled = vec![spread.fragment_name.clone()];
+                for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                    extra_fulfilled.push(sub_spread.fragment_name.clone());
+                }
+                Some(build_initializer_config(
+                    &if needs_narrowing {
+                        frag_arc.root_field.selection_set.scope.parent_type.clone()
+                    } else {
+                        ir_ss.scope.parent_type.clone()
+                    },
+                    &frag_arc.root_field.selection_set.direct_selections,
+                    schema_namespace,
+                    &child_qualified,
+                    true, // is_inline_fragment
+                    Some(&child_root_entity),
+                    referenced_fragments,
+                    type_kinds,
+                    &cond_fa,
+                    &extra_fulfilled,
+                    customizer,
+                    false,
+                ))
+            } else {
+                None
+            };
+
+            // Build nested entity types (like Height from HeightInMeters)
+            let mut cond_nested = Vec::new();
+            let mut cond_aliases = Vec::new();
+            // Check for entity fields from the fragment
+            for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                if matches!(field, FieldSelection::Entity(_)) {
+                    let entity_name = naming::first_uppercased(key);
+                    // Check if parent also has this entity field
+                    let parent_has = ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false);
+                    if parent_has {
+                        // Need a merged nested type - build it similarly to promoted fragments
+                        if let Some(FieldSelection::Entity(parent_ef)) = ds.fields.get(key) {
+                            let entity_qualified = format!("{}.{}", child_qualified, entity_name);
+                            let merged = build_inline_fragment_entity_type(
+                                &entity_name,
+                                key,
+                                parent_ef,
+                                &[spread.fragment_name.clone()],
+                                &[],
+                                schema_namespace,
+                                access_modifier,
+                                indent + 4,
+                                &entity_qualified,
+                                qualified_name,
+                                referenced_fragments,
+                                type_kinds,
+                                is_mutable,
+                                false,
+                                customizer,
+                                None,
+                                root_entity_type,
+                                true,
+                            );
+                            cond_nested.push(merged);
+                        }
+                    } else {
+                        // Use typealias to the fragment's entity
+                        cond_aliases.push(OwnedTypeAlias {
+                            name: entity_name.clone(),
+                            target: format!("{}.{}", spread.fragment_name, entity_name),
+                        });
+                    }
+                }
+            }
+            // Also check sub-fragments for entity fields
+            for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                    for (key, field) in &sub_frag.root_field.selection_set.direct_selections.fields {
+                        if matches!(field, FieldSelection::Entity(_)) {
+                            let entity_name = naming::first_uppercased(key);
+                            if !cond_nested.iter().any(|nt: &OwnedNestedSelectionSet| nt.config.struct_name == entity_name)
+                                && !cond_aliases.iter().any(|ta| ta.name == entity_name)
+                            {
+                                cond_aliases.push(OwnedTypeAlias {
+                                    name: entity_name.clone(),
+                                    target: format!("{}.{}", sub_spread.fragment_name, entity_name),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            let cond_nested_len = cond_nested.len();
+            let ic = if is_mutable { SelectionSetConformance::MutableInlineFragment } else { SelectionSetConformance::InlineFragment };
+            let cond_ss = OwnedSelectionSetConfig {
+                struct_name: type_name.clone(),
+                schema_namespace: schema_namespace.to_string(),
+                parent_type: cond_parent_type,
+                is_root: false,
+                is_inline_fragment: true,
+                conformance: ic,
+                root_entity_type: Some(child_root_entity.clone()),
+                merged_sources: vec![],
+                selections: cond_selections,
+                field_accessors: cond_fa,
+                inline_fragment_accessors: vec![],
+                fragment_spreads: cond_fs,
+                initializer: cond_init,
+                nested_types: cond_nested,
+                type_aliases: cond_aliases,
+                type_alias_insert_index: cond_nested_len,
+                indent: indent + 2,
+                access_modifier: access_modifier.to_string(),
+                is_mutable,
+                absorbed_type_names: vec![],
+            };
+
+            let parent_type_name = if needs_narrowing { ftc.as_str() } else { ir_ss.scope.parent_type.name() };
+            let dc = if is_root {
+                format!("/// {}", type_name)
+            } else {
+                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                    &qualified_name[pos + 6..]
+                } else {
+                    struct_name
+                };
+                format!("/// {}.{}", doc_prefix, type_name)
+            };
+            // Insert conditional fragment spread nested types at the promoted_insert_index
+            // (after entity types and promoted fragments, before unconditional inline fragments)
+            nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
+                doc_comment: dc,
+                parent_type_comment: format!(
+                    "///\n{}/// Parent Type: `{}`",
+                    " ".repeat(indent + 2),
+                    parent_type_name
+                ),
+                config: cond_ss,
+            });
+            promoted_insert_index += 1;
+        }
+    }
+
     // Build initializer when requested
     let initializer = if generate_initializers {
         let extra_fulfilled: Vec<String> = vec![];
@@ -2555,8 +2999,10 @@ fn collect_applicable_fragments(
     let mut applicable = Vec::new();
 
     // 1. Non-promoted parent-scope fragments are always applicable to child inline fragments
-    //    (the parent scope already guarantees the fragment's type condition)
+    //    (the parent scope already guarantees the fragment's type condition).
+    //    Skip conditional fragment spreads - they have their own inline fragment scope.
     for spread in &ds.named_fragments {
+        if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
         if promoted_fragment_names.contains(&spread.fragment_name) {
             // This fragment was promoted to an inline fragment because its type condition
             // differs from the parent - check if the current type satisfies it
@@ -3582,6 +4028,70 @@ fn render_owned_fragment(config: &OwnedFragmentConfig) -> String {
     crate::templates::fragment::render(&template_config)
 }
 
+/// Get inclusion conditions from a FieldSelection.
+fn field_inclusion_conditions(field: &FieldSelection) -> Option<&InclusionConditions> {
+    match field {
+        FieldSelection::Scalar(f) => f.inclusion_conditions.as_ref(),
+        FieldSelection::Entity(f) => f.inclusion_conditions.as_ref(),
+    }
+}
+
+/// Check if inclusion conditions are non-trivial (non-empty and present).
+fn has_inclusion_conditions(conds: Option<&InclusionConditions>) -> bool {
+    conds.map(|c| !c.is_empty()).unwrap_or(false)
+}
+
+/// Build a conditional struct name suffix from inclusion conditions.
+/// E.g., `@include(if: $getCat)` on `... on Cat` -> "IfGetCat"
+/// E.g., `@skip(if: $skipHeightInMeters)` on fragment spread -> "IfNotSkipHeightInMeters"
+fn inclusion_condition_suffix(conds: &InclusionConditions) -> String {
+    let mut parts = Vec::new();
+    for cond in &conds.conditions {
+        if cond.is_inverted {
+            parts.push(format!("IfNot{}", naming::first_uppercased(&cond.variable)));
+        } else {
+            parts.push(format!("If{}", naming::first_uppercased(&cond.variable)));
+        }
+    }
+    parts.join("")
+}
+
+/// Build a conditional struct name for an inline fragment with inclusion conditions.
+/// E.g., `... on Cat @include(if: $getCat)` -> "AsCatIfGetCat"
+/// For fragment spreads with conditions (no type condition): "IfNotSkipHeightInMeters"
+fn conditional_inline_fragment_name(type_condition: Option<&str>, conds: &InclusionConditions) -> String {
+    let suffix = inclusion_condition_suffix(conds);
+    if let Some(tc) = type_condition {
+        format!("As{}{}", naming::first_uppercased(tc), suffix)
+    } else {
+        suffix
+    }
+}
+
+/// Build a conditional property name (camelCase) for an inline fragment accessor.
+/// E.g., "AsWarmBloodedIfGetWarmBlooded" -> "asWarmBloodedIfGetWarmBlooded"
+/// E.g., "IfNotSkipHeightInMeters" -> "ifNotSkipHeightInMeters"
+fn conditional_inline_fragment_property(type_condition: Option<&str>, conds: &InclusionConditions) -> String {
+    let suffix = inclusion_condition_suffix(conds);
+    if let Some(tc) = type_condition {
+        format!("as{}{}", naming::first_uppercased(tc), suffix)
+    } else {
+        naming::first_lowercased(&suffix)
+    }
+}
+
+/// Check if all conditions in `field_conds` are satisfied by `scope_conds`.
+/// A field condition is satisfied if the scope already requires the same condition.
+fn conditions_satisfied_by_scope(field_conds: &InclusionConditions, scope_conds: Option<&InclusionConditions>) -> bool {
+    if let Some(scope) = scope_conds {
+        field_conds.conditions.iter().all(|fc| {
+            scope.conditions.iter().any(|sc| sc.variable == fc.variable && sc.is_inverted == fc.is_inverted)
+        })
+    } else {
+        false
+    }
+}
+
 /// Collect ALL absorbed type names from the entire nested tree.
 fn collect_all_absorbed_types(config: &OwnedSelectionSetConfig) -> Vec<String> {
     let mut all = config.absorbed_type_names.clone();
@@ -3623,6 +4133,32 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
             }
             OwnedSelectionKind::InlineFragment(name) => SelectionItem::InlineFragment(name.as_str()),
             OwnedSelectionKind::Fragment(name) => SelectionItem::Fragment(name.as_str()),
+            OwnedSelectionKind::ConditionalField { variable, is_inverted, name, swift_type, arguments } => {
+                SelectionItem::ConditionalField(
+                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    FieldSelectionItem {
+                        name: name.as_str(),
+                        swift_type: swift_type.as_str(),
+                        arguments: arguments.as_deref(),
+                    },
+                )
+            }
+            OwnedSelectionKind::ConditionalInlineFragment { variable, is_inverted, type_name } => {
+                SelectionItem::ConditionalInlineFragment(
+                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    type_name.as_str(),
+                )
+            }
+            OwnedSelectionKind::ConditionalFieldGroup { variable, is_inverted, fields } => {
+                SelectionItem::ConditionalFieldGroup(
+                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    fields.iter().map(|(n, st, args)| FieldSelectionItem {
+                        name: n.as_str(),
+                        swift_type: st.as_str(),
+                        arguments: args.as_deref(),
+                    }).collect(),
+                )
+            }
         })
         .collect();
 
@@ -3650,6 +4186,7 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
         .map(|a| FragmentSpreadAccessor {
             property_name: &a.property_name,
             fragment_type: &a.fragment_type,
+            is_optional: a.is_optional,
         })
         .collect();
 
