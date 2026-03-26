@@ -91,6 +91,9 @@ pub struct OperationConfig<'a> {
     pub query_string_format: QueryStringFormat,
     /// The API target name for import statements (default: "ApolloAPI").
     pub api_target_name: &'a str,
+    /// Class definition keyword prefix (e.g. "class" or "final class").
+    /// When `markOperationDefinitionsAsFinal` is true, this is "final class".
+    pub class_keyword: &'a str,
 }
 
 /// Render a complete operation file.
@@ -113,8 +116,8 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
 
     // Class declaration: uses LocalCacheMutation instead of GraphQLQuery/Mutation/Subscription
     result.push_str(&format!(
-        "{}class {}: LocalCacheMutation {{\n",
-        config.access_modifier, config.class_name
+        "{}{} {}: LocalCacheMutation {{\n",
+        config.access_modifier, config.class_keyword, config.class_name
     ));
 
     // operationType (instead of operationName + operationDocument)
@@ -227,8 +230,8 @@ fn render_regular_operation(config: &OperationConfig) -> String {
 
     // Class declaration
     result.push_str(&format!(
-        "{}class {}: {} {{\n",
-        config.access_modifier, config.class_name, config.operation_type.swift_protocol()
+        "{}{} {}: {} {{\n",
+        config.access_modifier, config.class_keyword, config.class_name, config.operation_type.swift_protocol()
     ));
 
     // operationName

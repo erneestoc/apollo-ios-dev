@@ -154,8 +154,10 @@ pub struct OutputOptions {
     pub schema_customization: SchemaCustomization,
     #[serde(default)]
     pub reduce_generated_schema_types: bool,
+    /// When true, generated operation and local cache mutation classes are marked `final`.
+    /// Maps to JSON key `markOperationDefinitionsAsFinal`.
     #[serde(default)]
-    pub mark_operations_as_public: bool,
+    pub mark_operation_definitions_as_final: bool,
     #[serde(default)]
     pub conversion_strategies: ConversionStrategies,
     // Legacy field, ignored
@@ -167,7 +169,7 @@ pub struct OutputOptions {
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentalFeatures {
     #[serde(default)]
-    pub field_merging: FieldMergingBehavior,
+    pub field_merging: FieldMerging,
     #[serde(default)]
     pub legacy_safelisting_compatible_operations: bool,
     #[serde(default)]
@@ -497,11 +499,38 @@ pub enum InputObjectConversionStrategy {
 
 // --- Inflection Rules ---
 
+/// Custom inflection rules for pluralization/singularization.
+///
+/// Mirrors Swift's `InflectionRule` enum with Codable serialization.
+/// JSON format uses externally-tagged enum encoding:
+/// - `{"pluralization": {"singularRegex": "...", "replacementRegex": "..."}}`
+/// - `{"singularization": {"pluralRegex": "...", "replacementRegex": "..."}}`
+/// - `{"irregular": {"singular": "...", "plural": "..."}}`
+/// - `{"uncountable": {"word": "..."}}`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InflectionRule {
-    pub pluralization: String,
-    pub singularization: String,
+pub enum InflectionRule {
+    /// A pluralization rule using regex.
+    #[serde(rename_all = "camelCase")]
+    Pluralization {
+        singular_regex: String,
+        replacement_regex: String,
+    },
+    /// A singularization rule using regex.
+    #[serde(rename_all = "camelCase")]
+    Singularization {
+        plural_regex: String,
+        replacement_regex: String,
+    },
+    /// An irregular word pair (e.g., "person" / "people").
+    Irregular {
+        singular: String,
+        plural: String,
+    },
+    /// A word that is the same in singular and plural form (e.g., "fish").
+    Uncountable {
+        word: String,
+    },
 }
 
 // --- Schema Download Configuration ---

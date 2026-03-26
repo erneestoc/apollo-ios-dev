@@ -35,6 +35,7 @@ pub fn render_operation(
     operation_identifier: Option<&str>,
     query_string_format: crate::templates::operation::QueryStringFormat,
     api_target_name: &str,
+    mark_definitions_as_final: bool,
 ) -> String {
     // Build owned strings we'll reference
     let op_type = match op.operation_type {
@@ -108,6 +109,12 @@ pub fn render_operation(
         api_target_name,
     );
 
+    let class_keyword = if mark_definitions_as_final {
+        "final class".to_string()
+    } else {
+        "class".to_string()
+    };
+
     let config = OwnedOperationConfig {
         class_name: class_name.clone(),
         operation_name: op.name.clone(),
@@ -123,6 +130,7 @@ pub fn render_operation(
         operation_identifier: operation_identifier.map(|s| s.to_string()),
         query_string_format,
         api_target_name: api_target_name.to_string(),
+        class_keyword,
     };
 
     render_owned_operation(&config)
@@ -199,6 +207,7 @@ struct OwnedOperationConfig {
     operation_identifier: Option<String>,
     query_string_format: crate::templates::operation::QueryStringFormat,
     api_target_name: String,
+    class_keyword: String,
 }
 
 struct OwnedFragmentConfig {
@@ -4425,6 +4434,7 @@ fn render_owned_operation(config: &OwnedOperationConfig) -> String {
         operation_identifier: config.operation_identifier.as_deref(),
         query_string_format: config.query_string_format,
         api_target_name: &config.api_target_name,
+        class_keyword: &config.class_keyword,
     };
 
     crate::templates::operation::render(&template_config)

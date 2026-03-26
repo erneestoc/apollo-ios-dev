@@ -674,6 +674,7 @@ fn generate_operation_files(
             op_id.as_deref(),
             query_string_format,
             api_target,
+            false, // markOperationDefinitionsAsFinal
         );
 
         let subdir = match op_def.operation_type {
