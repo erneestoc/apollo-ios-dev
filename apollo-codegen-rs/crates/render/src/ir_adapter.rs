@@ -509,7 +509,7 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
-            let child_ss = build_selection_set_config_owned(
+            let mut child_ss = build_selection_set_config_owned(
                 &type_name,
                 &inline.selection_set,
                 schema_namespace,
@@ -526,6 +526,19 @@ fn build_selection_set_config_owned(
                 Some(&merged_parent), // pass parent + sibling field accessors
                 is_mutable,
             );
+
+            // Add sibling supertype fulfilled fragments to the initializer
+            if let Some(ref mut init) = child_ss.initializer {
+                for (other_name, _) in &sibling_inline_fields {
+                    if *other_name != tc.name() && is_supertype_of_current(tc, other_name) {
+                        let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(other_name));
+                        if !init.fulfilled_fragments.contains(&sibling_qualified) {
+                            init.fulfilled_fragments.push(sibling_qualified);
+                        }
+                    }
+                }
+            }
+
             let doc_comment = if is_root {
                 format!("/// {}", type_name)
             } else {
@@ -726,6 +739,8 @@ fn build_selection_set_config_owned(
 
     // Build initializer when requested
     let initializer = if generate_initializers {
+        let extra_fulfilled: Vec<String> = vec![];
+
         Some(build_initializer_config(
             &ir_ss.scope.parent_type,
             ds,
@@ -735,7 +750,8 @@ fn build_selection_set_config_owned(
             root_entity_type,
             referenced_fragments,
             type_kinds,
-            &field_accessors, // includes merged fields for inline fragments
+            &field_accessors,
+            &extra_fulfilled,
         ))
     } else {
         None
@@ -826,6 +842,7 @@ fn build_initializer_config(
     referenced_fragments: &[Arc<NamedFragment>],
     type_kinds: &HashMap<String, TypeKind>,
     all_field_accessors: &[OwnedFieldAccessor],
+    extra_fulfilled: &[String],
 ) -> OwnedInitializerConfig {
     // Determine typename handling based on parent type
     let parent_is_object = matches!(parent_type, GraphQLCompositeType::Object(_));
@@ -933,6 +950,13 @@ fn build_initializer_config(
     // Add directly spread named fragments to fulfilled fragments
     for spread in &ds.named_fragments {
         fulfilled_fragments.push(spread.fragment_name.clone());
+    }
+
+    // Add extra fulfilled fragments from sibling type merging
+    for extra in extra_fulfilled {
+        if !fulfilled_fragments.contains(extra) {
+            fulfilled_fragments.push(extra.clone());
+        }
     }
 
     OwnedInitializerConfig {
