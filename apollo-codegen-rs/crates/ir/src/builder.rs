@@ -72,7 +72,13 @@ impl IRBuilder {
             .map(|v| VariableDefinition {
                 name: v.name.clone(),
                 type_str: render_graphql_type(&v.variable_type),
-                default_value: v.default_value.as_ref().map(|dv| render_graphql_value(dv)),
+                default_value: v.default_value.as_ref().and_then(|dv| {
+                    // Skip complex default values (objects) that can't be trivially rendered as Swift
+                    match dv {
+                        GraphQLValue::Object(_) => None,
+                        _ => Some(render_graphql_value(dv)),
+                    }
+                }),
             })
             .collect();
 

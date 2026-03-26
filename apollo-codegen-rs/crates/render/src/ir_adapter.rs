@@ -322,6 +322,8 @@ fn build_selection_set_config_owned(
         });
     }
     for (key, field) in &ds.fields {
+        // Skip __typename since it's added explicitly above when needed
+        if key == "__typename" { continue; }
         let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds);
         let arguments = render_field_arguments(field);
         selections.push(OwnedSelectionItem {
@@ -350,6 +352,7 @@ fn build_selection_set_config_owned(
     let mut field_accessors: Vec<OwnedFieldAccessor> = ds
         .fields
         .iter()
+        .filter(|(key, _)| key.as_str() != "__typename") // __typename handled separately
         .map(|(key, field)| {
             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds);
             OwnedFieldAccessor {
@@ -363,7 +366,7 @@ fn build_selection_set_config_owned(
     if is_inline_fragment {
         if let Some(parent) = parent_fields {
             for pf in parent {
-                if !field_accessors.iter().any(|f| f.name == pf.name) {
+                if pf.name != "__typename" && !field_accessors.iter().any(|f| f.name == pf.name) {
                     field_accessors.push(pf.clone());
                 }
             }
