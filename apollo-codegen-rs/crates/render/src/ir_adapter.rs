@@ -705,6 +705,10 @@ fn build_selection_set_config_owned(
                         }
                     }
                 }
+                // Note: when the absorbed inline introduces an entity field that is NOT
+                // in ds.fields, we don't create it here. Instead, it will be handled by
+                // the inline fragment entity processing (lines below) which has access
+                // to the parent scope's entity field data.
             }
         }
     }
@@ -934,17 +938,31 @@ fn build_selection_set_config_owned(
             }
 
             // Build nested entity types and type aliases from applicable fragments.
-            // For each entity field from the parent scope that this inline fragment inherits,
+            // For each entity field that this inline fragment INTRODUCES new selections for
+            // (via applicable fragments, sibling inline fragments, or direct selections),
             // create a merged Height-style struct or type alias.
+            // Entity fields that are ONLY inherited from the parent scope without any new
+            // selections are NOT given nested types here (e.g., predators).
             if !applicable_frags.is_empty() || !sibling_inline_fields.is_empty() {
-                // Collect entity fields from parent scope that need nested types
+                // Collect entity fields that have new selections in this scope.
+                // Start from applicable fragments, siblings, and inline's own selections.
+                // DO NOT include parent entity fields that aren't also referenced by the above.
                 let mut entity_field_keys: Vec<String> = Vec::new();
-                for (key, field) in &ds.fields {
-                    if matches!(field, FieldSelection::Entity(_)) {
+                // Collect entity fields from the inline fragment's own direct selections
+                for (key, field) in &inline.selection_set.direct_selections.fields {
+                    if matches!(field, FieldSelection::Entity(_)) && !entity_field_keys.contains(key) {
                         entity_field_keys.push(key.clone());
                     }
                 }
-                // Also collect entity fields from applicable fragments
+                // Also check absorbed inline fragments within this inline fragment
+                for nested_inline in &inline.selection_set.direct_selections.inline_fragments {
+                    for (key, field) in &nested_inline.selection_set.direct_selections.fields {
+                        if matches!(field, FieldSelection::Entity(_)) && !entity_field_keys.contains(key) {
+                            entity_field_keys.push(key.clone());
+                        }
+                    }
+                }
+                // Collect entity fields from applicable fragments
                 for frag_name in &applicable_frags {
                     if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
@@ -990,8 +1008,17 @@ fn build_selection_set_config_owned(
                     });
 
                     // Check if the inline fragment itself has direct selections on this field
+                    // Also check absorbed inline fragments within the inline
                     let inline_has_field = inline.selection_set.direct_selections.fields.get(field_key).and_then(|f| {
                         if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
+                    }).or_else(|| {
+                        // Check absorbed inline fragments within this inline fragment
+                        for nested_inline in &inline.selection_set.direct_selections.inline_fragments {
+                            if let Some(FieldSelection::Entity(ef)) = nested_inline.selection_set.direct_selections.fields.get(field_key) {
+                                return Some(ef);
+                            }
+                        }
+                        None
                     });
 
                     // Collect entity fields from sibling inline fragments that are supertypes
@@ -1076,6 +1103,7 @@ fn build_selection_set_config_owned(
                             is_mutable,
                             has_direct,
                             customizer,
+                            inline_has_field, // pass inline's entity field for __selections
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -1098,7 +1126,11 @@ fn build_selection_set_config_owned(
                                 }
                             }
                         }
-                        child_ss.nested_types.push(merged_config);
+                        // Insert entity types BEFORE inline fragment nested types
+                        // to match the golden file ordering (entity fields before inline fragments)
+                        child_ss.nested_types.insert(0, merged_config);
+                        // Remove any type alias that conflicts with this nested type
+                        child_ss.type_aliases.retain(|ta| ta.name != entity_struct_name);
                     } else if !sibling_entity.is_empty() {
                         // Entity comes from sibling only - use typealias
                         // (This shouldn't normally happen for Height but handle it)
@@ -1455,6 +1487,7 @@ fn build_selection_set_config_owned(
                                 is_mutable,
                                 false,
                                 customizer,
+                                None,
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -1714,6 +1747,7 @@ fn build_selection_set_config_owned(
                                 is_mutable,
                                 false,
                                 customizer,
+                                None,
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -2050,6 +2084,7 @@ fn build_inline_fragment_entity_type(
     is_mutable: bool,
     has_direct_selections: bool,
     customizer: &SchemaCustomizer,
+    inline_entity_field: Option<&EntityField>,  // The inline fragment's own entity field (for __selections)
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -2058,8 +2093,20 @@ fn build_inline_fragment_entity_type(
         GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
     };
 
-    // Collect fields from parent entity field - always include parent scope's fields
+    // Collect fields - inline entity field's selections first (if present),
+    // then parent entity field's selections, then fragment fields
     let mut merged_fields: Vec<OwnedFieldAccessor> = Vec::new();
+    // Add inline entity field's selections first (these are the NEW fields)
+    if let Some(ief) = inline_entity_field {
+        for (key, field) in &ief.selection_set.direct_selections.fields {
+            if key == "__typename" { continue; }
+            let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+            if !merged_fields.iter().any(|f| f.name == *key) {
+                merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+            }
+        }
+    }
+    // Then add parent entity field's selections
     for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
         if key == "__typename" { continue; }
         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
@@ -2191,7 +2238,10 @@ fn build_inline_fragment_entity_type(
                 arguments: None,
             },
         });
-        for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
+        // Use inline_entity_field for __selections if available (absorbed inline case),
+        // otherwise use parent_entity_field (direct selection case)
+        let sel_source = inline_entity_field.unwrap_or(parent_entity_field);
+        for (key, field) in &sel_source.selection_set.direct_selections.fields {
             if key == "__typename" { continue; }
             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
             sels.push(OwnedSelectionItem {
@@ -2432,10 +2482,30 @@ fn build_type_aliases(
                     let type_name = naming::first_uppercased(key);
                     // Only add alias if we don't have a direct entity field with the same name
                     if !ds.fields.contains_key(key) || !matches!(ds.fields.get(key), Some(FieldSelection::Entity(_))) {
-                        aliases.push(OwnedTypeAlias {
-                            name: type_name.clone(),
-                            target: format!("{}.{}", spread.fragment_name, type_name),
-                        });
+                        if !aliases.iter().any(|a: &OwnedTypeAlias| a.name == type_name) {
+                            aliases.push(OwnedTypeAlias {
+                                name: type_name.clone(),
+                                target: format!("{}.{}", spread.fragment_name, type_name),
+                            });
+                        }
+                    }
+                }
+            }
+            // Also check sub-fragments for entity fields
+            for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                    for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
+                        if let FieldSelection::Entity(_) = field {
+                            let type_name = naming::first_uppercased(key);
+                            if !ds.fields.contains_key(key) || !matches!(ds.fields.get(key), Some(FieldSelection::Entity(_))) {
+                                if !aliases.iter().any(|a: &OwnedTypeAlias| a.name == type_name) {
+                                    aliases.push(OwnedTypeAlias {
+                                        name: type_name.clone(),
+                                        target: format!("{}.{}", sub.fragment_name, type_name),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
