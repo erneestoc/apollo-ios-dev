@@ -258,27 +258,12 @@ fn render_regular_operation(config: &OperationConfig) -> String {
     if config.include_definition {
         result.push_str("    definition: .init(\n");
 
-        // Render the query string based on format
-        match config.query_string_format {
-            QueryStringFormat::SingleLine => {
-                result.push_str(&format!(
-                    "      #\"{}\"#",
-                    config.source
-                ));
-            }
-            QueryStringFormat::Multiline => {
-                result.push_str("      #\"\"\"\n");
-                // Indent each line of the source with 6 spaces
-                for line in config.source.lines() {
-                    if line.is_empty() {
-                        result.push('\n');
-                    } else {
-                        result.push_str(&format!("      {}\n", line));
-                    }
-                }
-                result.push_str("      \"\"\"#");
-            }
-        }
+        // Operation definitions always use single-line format (matching Swift CLI behavior
+        // which ignores queryStringLiteralFormat for definition strings)
+        result.push_str(&format!(
+            "      #\"{}\"#",
+            config.source
+        ));
 
         if config.fragment_names.is_empty() {
             result.push('\n');

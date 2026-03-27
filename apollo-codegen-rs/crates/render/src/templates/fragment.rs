@@ -75,25 +75,12 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
         "{}{}static var fragmentDefinition: StaticString {{\n",
         inner_indent, config.access_modifier
     ));
-    match config.query_string_format {
-        super::operation::QueryStringFormat::SingleLine => {
-            result.push_str(&format!(
-                "{}  #\"{}\"#\n",
-                inner_indent, config.fragment_definition
-            ));
-        }
-        super::operation::QueryStringFormat::Multiline => {
-            result.push_str(&format!("{}  #\"\"\"\n", inner_indent));
-            for line in config.fragment_definition.lines() {
-                if line.is_empty() {
-                    result.push('\n');
-                } else {
-                    result.push_str(&format!("{}  {}\n", inner_indent, line));
-                }
-            }
-            result.push_str(&format!("{}  \"\"\"#\n", inner_indent));
-        }
-    }
+    // Fragment definitions always use single-line format (matching Swift CLI behavior
+    // which ignores queryStringLiteralFormat for fragmentDefinition)
+    result.push_str(&format!(
+        "{}  #\"{}\"#\n",
+        inner_indent, config.fragment_definition
+    ));
     result.push_str(&format!("{}}}\n", inner_indent));
 
     // __data and init
