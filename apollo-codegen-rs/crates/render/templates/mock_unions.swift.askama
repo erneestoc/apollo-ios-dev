@@ -1,0 +1,11 @@
+// @generated
+// This file was automatically generated and should not be edited.
+
+import ApolloTestSupport
+import {{ import_module }}
+
+{{ access_modifier }}extension MockObject {
+{%- for name in union_names %}
+  typealias {{ name }} = Union
+{%- endfor %}
+}

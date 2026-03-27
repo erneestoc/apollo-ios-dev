@@ -7,7 +7,19 @@
 //! }
 //! ```
 
-use super::header;
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "interface.swift.askama", escape = "none")]
+struct InterfaceTemplate<'a> {
+    api_target_name: &'a str,
+    access_modifier: &'a str,
+    ns_prefix: String,
+    swift_name: String,
+    type_name: &'a str,
+    schema_name: &'a str,
+    description: Option<&'a str>,
+}
 
 pub fn render(
     type_name: &str,
@@ -18,19 +30,6 @@ pub fn render(
     schema_namespace: &str,
     is_in_module: bool,
 ) -> String {
-    let renamed_comment = if type_name != schema_name {
-        format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
-    } else {
-        String::new()
-    };
-    let body = format!(
-        "{}static let {} = {}.Interface(name: \"{}\")",
-        renamed_comment,
-        crate::naming::first_uppercased(type_name),
-        api_target_name,
-        schema_name,
-    );
-
     // For embeddedInTarget (is_in_module=false), use full namespace prefix
     let ns_prefix = if !is_in_module {
         format!("{}.Interfaces", crate::naming::first_uppercased(schema_namespace))
@@ -38,5 +37,22 @@ pub fn render(
         "Interfaces".to_string()
     };
 
-    header::render_schema_file_with_doc(access_modifier, api_target_name, Some(&ns_prefix), &body, description)
+    let swift_name = crate::naming::first_uppercased(type_name);
+
+    let template = InterfaceTemplate {
+        api_target_name,
+        access_modifier,
+        ns_prefix,
+        swift_name,
+        type_name,
+        schema_name,
+        description,
+    };
+
+    let mut output = template.render().expect("interface template render failed");
+    // Match Swift codegen: no trailing newline
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    output
 }

@@ -1,0 +1,41 @@
+// swift-tools-version:5.7
+
+import PackageDescription
+
+let package = Package(
+  name: "{{ ns }}",
+  platforms: [
+    .iOS(.v12),
+    .macOS(.v10_14),
+    .tvOS(.v12),
+    .watchOS(.v5),
+  ],
+  products: [
+    .library(name: "{{ ns }}", targets: ["{{ ns }}"]),
+{%- if let Some((target_name, _path)) = test_mock_target %}
+    .library(name: "{{ target_name }}", targets: ["{{ target_name }}"]),
+{%- endif %}
+  ],
+  dependencies: [
+    .package(url: "https://github.com/apollographql/apollo-ios.git", from: "1.0.0"),
+  ],
+  targets: [
+    .target(
+      name: "{{ ns }}",
+      dependencies: [
+        .product(name: "ApolloAPI", package: "apollo-ios"),
+      ],
+      path: "./Sources"
+    ),
+{%- if let Some((target_name, path)) = test_mock_target %}
+    .target(
+      name: "{{ target_name }}",
+      dependencies: [
+        .product(name: "ApolloTestSupport", package: "apollo-ios"),
+        .target(name: "{{ ns }}"),
+      ],
+      path: "{{ path }}"
+    ),
+{%- endif %}
+  ]
+)

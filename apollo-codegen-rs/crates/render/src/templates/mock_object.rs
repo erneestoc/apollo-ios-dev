@@ -3,7 +3,7 @@
 //! Generates files like Dog+Mock.graphql.swift with MockObject class,
 //! MockFields struct, and convenience initializer.
 
-use super::header;
+use askama::Template;
 
 /// A field on a mock object.
 pub struct MockField {
@@ -16,6 +16,29 @@ pub struct MockField {
     pub deprecation_reason: Option<String>,
 }
 
+/// Pre-processed field data for the Askama template.
+struct TemplateField {
+    response_key: String,
+    property_name: String,
+    field_type_str: String,
+    mock_type_str: String,
+    set_function: String,
+    escaped_deprecation_reason: Option<String>,
+    init_param_str: String,
+    init_arg_name: String,
+}
+
+#[derive(Template)]
+#[template(path = "mock_object.swift.askama", escape = "none")]
+struct MockObjectTemplate<'a> {
+    access_modifier: &'a str,
+    api_target_name: &'a str,
+    import_module: &'a str,
+    swift_name: String,
+    ns: String,
+    fields: Vec<TemplateField>,
+}
+
 pub fn render(
     object_name: &str,
     fields: &[MockField],
@@ -24,90 +47,51 @@ pub fn render(
     api_target_name: &str,
     import_module: &str,
 ) -> String {
-    let mut result = String::new();
-    result.push_str(header::HEADER);
-    result.push_str("\n\n");
-    result.push_str("import ApolloTestSupport\n");
-    result.push_str(&format!("import {}\n\n", import_module));
-
     let swift_name = crate::naming::first_uppercased(object_name);
     let ns = crate::naming::first_uppercased(schema_namespace);
 
-    // Class definition
-    result.push_str(&format!(
-        "{}class {}: MockObject {{\n",
-        access_modifier, swift_name,
-    ));
-    result.push_str(&format!(
-        "  {}static let objectType: {}.Object = {}.Objects.{}\n",
-        access_modifier, api_target_name, ns, swift_name,
-    ));
-    result.push_str(&format!(
-        "  {}static let _mockFields = MockFields()\n",
-        access_modifier,
-    ));
-    result.push_str(&format!(
-        "  {}typealias MockValueCollectionType = Array<Mock<{}>>\n",
-        access_modifier, swift_name,
-    ));
-
-    // MockFields struct
-    result.push('\n');
-    result.push_str(&format!(
-        "  {}struct MockFields {{\n",
-        access_modifier,
-    ));
-    for field in fields {
-        if let Some(ref reason) = field.deprecation_reason {
-            result.push_str(&format!(
-                "    @available(*, deprecated, message: \"{}\")\n",
-                reason.replace('\"', "\\\"")
-            ));
-        }
-        result.push_str(&format!(
-            "    @Field<{}>(\"{}\")",
-            field.field_type_str, field.response_key,
-        ));
-        result.push_str(&format!(" public var {}\n", field.property_name));
-    }
-    result.push_str("  }\n");
-    result.push_str("}\n");
-
-    // Extension with convenience init (only if there are fields)
-    if !fields.is_empty() {
-        result.push('\n');
-        result.push_str(&format!(
-            "{}extension Mock where O == {} {{\n",
-            access_modifier, swift_name,
-        ));
-        result.push_str("  convenience init(\n");
-        for (i, field) in fields.iter().enumerate() {
-            let param = if let Some(ref init_name) = field.initializer_param_name {
-                format!("{} {}", field.property_name, init_name)
+    let template_fields: Vec<TemplateField> = fields
+        .iter()
+        .map(|f| {
+            let init_param_str = if let Some(ref init_name) = f.initializer_param_name {
+                format!("{} {}", f.property_name, init_name)
             } else {
-                field.property_name.clone()
+                f.property_name.clone()
             };
-            let comma = if i < fields.len() - 1 { "," } else { "" };
-            result.push_str(&format!(
-                "    {}: {}? = nil{}\n",
-                param, field.mock_type_str, comma,
-            ));
-        }
-        result.push_str("  ) {\n");
-        result.push_str("    self.init()\n");
-        for field in fields {
-            let arg_name = field
+            let init_arg_name = f
                 .initializer_param_name
                 .as_deref()
-                .unwrap_or(&field.property_name);
-            result.push_str(&format!(
-                "    {}({}, for: \\.{})\n",
-                field.set_function, arg_name, field.property_name,
-            ));
-        }
-        result.push_str("  }\n");
-        result.push_str("}\n");
-    }
+                .unwrap_or(&f.property_name)
+                .to_string();
+            let escaped_deprecation_reason = f
+                .deprecation_reason
+                .as_ref()
+                .map(|r| r.replace('\"', "\\\""));
+            TemplateField {
+                response_key: f.response_key.clone(),
+                property_name: f.property_name.clone(),
+                field_type_str: f.field_type_str.clone(),
+                mock_type_str: f.mock_type_str.clone(),
+                set_function: f.set_function.clone(),
+                escaped_deprecation_reason,
+                init_param_str,
+                init_arg_name,
+            }
+        })
+        .collect();
 
-    result
+    let template = MockObjectTemplate {
+        access_modifier,
+        api_target_name,
+        import_module,
+        swift_name,
+        ns,
+        fields: template_fields,
+    };
+
+    let mut output = template.render().expect("mock_object template render failed");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
 }

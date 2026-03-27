@@ -1,0 +1,23 @@
+// @generated
+// This file was automatically generated and should not be edited.
+
+import {{ api_target_name }}
+
+{{ access_modifier }}extension {{ ns_prefix }} {
+{%- if let Some(desc) = description %}
+{%- for line in desc.lines() %}
+{%- if line.is_empty() %}
+  ///
+{%- else %}
+  /// {{ line }}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if type_name != schema_name %}
+  // Renamed from GraphQL schema value: '{{ schema_name }}'
+{%- endif %}
+  static let {{ swift_name }} = {{ api_target_name }}.Object(
+    typename: "{{ schema_name }}",
+    implementedInterfaces: {{ interfaces_str }}
+  )
+}

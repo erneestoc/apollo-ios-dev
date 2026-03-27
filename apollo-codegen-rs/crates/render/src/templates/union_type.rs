@@ -13,7 +13,20 @@
 //! }
 //! ```
 
-use super::header;
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "union_type.swift.askama", escape = "none")]
+struct UnionTypeTemplate<'a> {
+    api_target_name: &'a str,
+    access_modifier: &'a str,
+    ns_prefix: String,
+    swift_name: String,
+    type_name: &'a str,
+    schema_name: &'a str,
+    description: Option<&'a str>,
+    members_str: String,
+}
 
 pub fn render(
     type_name: &str,
@@ -25,8 +38,6 @@ pub fn render(
     is_in_module: bool,
     description: Option<&str>,
 ) -> String {
-    let body = render_body(type_name, schema_name, member_types, schema_namespace, is_in_module);
-
     // For embeddedInTarget (is_in_module=false), use full namespace prefix
     let ns_prefix = if !is_in_module {
         format!("{}.Unions", crate::naming::first_uppercased(schema_namespace))
@@ -34,48 +45,55 @@ pub fn render(
         "Unions".to_string()
     };
 
-    header::render_schema_file_with_doc(access_modifier, api_target_name, Some(&ns_prefix), &body, description)
+    let swift_name = crate::naming::first_uppercased(type_name);
+    let members_str = build_members_str(member_types, schema_namespace, is_in_module);
+
+    let template = UnionTypeTemplate {
+        api_target_name,
+        access_modifier,
+        ns_prefix,
+        swift_name,
+        type_name,
+        schema_name,
+        description,
+        members_str,
+    };
+
+    let mut output = template.render().expect("union_type template render failed");
+    // Match Swift codegen: no trailing newline
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    output
 }
 
-fn render_body(
-    type_name: &str,
-    schema_name: &str,
+fn build_members_str(
     member_types: &[String],
     schema_namespace: &str,
     is_in_module: bool,
 ) -> String {
-    let renamed_comment = if type_name != schema_name {
-        format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
-    } else {
-        String::new()
-    };
+    if member_types.is_empty() {
+        return "[]".to_string();
+    }
+
     let prefix = if !is_in_module {
         format!("{}.", crate::naming::first_uppercased(schema_namespace))
     } else {
         String::new()
     };
 
-    let members_str = if member_types.is_empty() {
-        "[]".to_string()
-    } else {
-        let items: Vec<String> = member_types
-            .iter()
-            .map(|m| {
-                format!(
-                    "    {}Objects.{}.self",
-                    prefix,
-                    crate::naming::first_uppercased(m)
-                )
-            })
-            .collect();
-        format!("[\n{}\n  ]", items.join(",\n"))
-    };
+    let items: Vec<String> = member_types
+        .iter()
+        .map(|m| {
+            format!(
+                "{}Objects.{}.self",
+                prefix,
+                crate::naming::first_uppercased(m)
+            )
+        })
+        .collect();
 
-    format!(
-        "{}static let {} = Union(\n  name: \"{}\",\n  possibleTypes: {}\n)",
-        renamed_comment,
-        crate::naming::first_uppercased(type_name),
-        schema_name,
-        members_str,
-    )
+    // Always multi-line format: 6 spaces for items (2 extension + 4 body), 4 spaces for closing bracket
+    let indented: Vec<String> = items.iter().map(|i| format!("      {}", i)).collect();
+    format!("[\n{}\n    ]", indented.join(",\n"))
 }

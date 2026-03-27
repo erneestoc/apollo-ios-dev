@@ -1,0 +1,15 @@
+// @generated
+// This file was automatically generated and can be edited to
+// provide custom configuration for a generated GraphQL schema.
+//
+// Any changes to this file will not be overwritten by future
+// code generation execution.
+
+import {{ api_target_name }}
+
+{{ enum_access_modifier }}enum SchemaConfiguration: {{ api_target_name }}.SchemaConfiguration {
+  {{ access_modifier }}static func cacheKeyInfo(for type: {{ api_target_name }}.Object, object: {{ api_target_name }}.ObjectData) -> CacheKeyInfo? {
+    // Implement this function to configure cache key resolution for your schema types.
+    return nil
+  }
+}

@@ -8,29 +8,36 @@
 //! }
 //! ```
 
-use super::header;
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "mock_interfaces.swift.askama", escape = "none")]
+struct MockInterfacesTemplate<'a> {
+    access_modifier: &'a str,
+    import_module: &'a str,
+    interface_names: Vec<String>,
+}
 
 pub fn render(
     interfaces: &[String],
     access_modifier: &str,
-    schema_module_name: &str,
+    _schema_module_name: &str,
     import_module: &str,
 ) -> String {
-    let mut result = String::new();
-    result.push_str(header::HEADER);
-    result.push_str("\n\n");
-    result.push_str("import ApolloTestSupport\n");
-    result.push_str(&format!("import {}\n\n", import_module));
+    let interface_names: Vec<String> = interfaces
+        .iter()
+        .map(|i| crate::naming::first_uppercased(i))
+        .collect();
 
-    result.push_str(&format!("{}extension MockObject {{\n", access_modifier));
-    for iface in interfaces {
-        result.push_str(&format!(
-            "  typealias {} = Interface\n",
-            crate::naming::first_uppercased(iface),
-        ));
+    let template = MockInterfacesTemplate {
+        access_modifier,
+        import_module,
+        interface_names,
+    };
+
+    let mut output = template.render().expect("mock_interfaces template render failed");
+    if !output.ends_with('\n') {
+        output.push('\n');
     }
-    result.push('}');
-    result.push('\n');
-
-    result
+    output
 }

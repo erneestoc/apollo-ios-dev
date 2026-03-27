@@ -1,0 +1,35 @@
+// @generated
+// This file was automatically generated and should not be edited.
+
+import ApolloTestSupport
+import {{ import_module }}
+
+{{ access_modifier }}class {{ swift_name }}: MockObject {
+  {{ access_modifier }}static let objectType: {{ api_target_name }}.Object = {{ ns }}.Objects.{{ swift_name }}
+  {{ access_modifier }}static let _mockFields = MockFields()
+  {{ access_modifier }}typealias MockValueCollectionType = Array<Mock<{{ swift_name }}>>
+
+  {{ access_modifier }}struct MockFields {
+{%- for field in fields %}
+{%- if let Some(reason) = field.escaped_deprecation_reason %}
+    @available(*, deprecated, message: "{{ reason }}")
+{%- endif %}
+    @Field<{{ field.field_type_str }}>("{{ field.response_key }}") public var {{ field.property_name }}
+{%- endfor %}
+  }
+}
+{%- if !fields.is_empty() %}
+
+{{ access_modifier }}extension Mock where O == {{ swift_name }} {
+  convenience init(
+{%- for field in fields %}
+    {{ field.init_param_str }}: {{ field.mock_type_str }}? = nil{% if !loop.last %},{% endif %}
+{%- endfor %}
+  ) {
+    self.init()
+{%- for field in fields %}
+    {{ field.set_function }}({{ field.init_arg_name }}, for: \.{{ field.property_name }})
+{%- endfor %}
+  }
+}
+{%- endif %}

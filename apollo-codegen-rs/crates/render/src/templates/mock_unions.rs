@@ -7,29 +7,36 @@
 //! }
 //! ```
 
-use super::header;
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "mock_unions.swift.askama", escape = "none")]
+struct MockUnionsTemplate<'a> {
+    access_modifier: &'a str,
+    import_module: &'a str,
+    union_names: Vec<String>,
+}
 
 pub fn render(
     unions: &[String],
     access_modifier: &str,
-    schema_module_name: &str,
+    _schema_module_name: &str,
     import_module: &str,
 ) -> String {
-    let mut result = String::new();
-    result.push_str(header::HEADER);
-    result.push_str("\n\n");
-    result.push_str("import ApolloTestSupport\n");
-    result.push_str(&format!("import {}\n\n", import_module));
+    let union_names: Vec<String> = unions
+        .iter()
+        .map(|u| crate::naming::first_uppercased(u))
+        .collect();
 
-    result.push_str(&format!("{}extension MockObject {{\n", access_modifier));
-    for union_name in unions {
-        result.push_str(&format!(
-            "  typealias {} = Union\n",
-            crate::naming::first_uppercased(union_name),
-        ));
+    let template = MockUnionsTemplate {
+        access_modifier,
+        import_module,
+        union_names,
+    };
+
+    let mut output = template.render().expect("mock_unions template render failed");
+    if !output.ends_with('\n') {
+        output.push('\n');
     }
-    result.push('}');
-    result.push('\n');
-
-    result
+    output
 }
