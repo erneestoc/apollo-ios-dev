@@ -8,8 +8,9 @@
 //! }
 //! ```
 
-use super::header;
+use askama::Template;
 
+/// Pre-computed enum value for the template.
 pub struct EnumValue {
     pub name: String,
     pub raw_value: String,
@@ -18,6 +19,27 @@ pub struct EnumValue {
     pub deprecation_reason: Option<String>,
     /// Whether this case was explicitly renamed via schema customization.
     pub is_renamed: bool,
+}
+
+/// Template-ready enum value with pre-computed case name and escaped deprecation reason.
+struct TemplateEnumValue {
+    case_name: String,
+    raw_value: String,
+    description: Option<String>,
+    is_deprecated: bool,
+    deprecation_reason: Option<String>,
+    is_renamed: bool,
+}
+
+#[derive(Template)]
+#[template(path = "enum_type.swift.askama", escape = "none")]
+struct EnumTypeTemplate<'a> {
+    api_target_name: &'a str,
+    access_modifier: &'a str,
+    swift_type_name: String,
+    /// Pre-rendered type header: doc comments + renamed comment, with trailing newline.
+    type_header: String,
+    values: Vec<TemplateEnumValue>,
 }
 
 pub fn render(
@@ -29,97 +51,82 @@ pub fn render(
     camel_case_conversion: bool,
     description: Option<&str>,
 ) -> String {
-    let mut body = String::new();
+    let swift_type_name = crate::naming::first_uppercased(type_name);
 
-    // Type-level documentation comment
+    // Pre-render type-level header (doc comments + rename comment)
+    let type_header = render_type_header(type_name, schema_name, description);
+
+    let template_values: Vec<TemplateEnumValue> = values
+        .iter()
+        .map(|v| {
+            // When a case is explicitly renamed, do NOT apply camelCase conversion
+            let case_name = if v.is_renamed {
+                v.name.clone()
+            } else if camel_case_conversion {
+                crate::naming::to_camel_case(&v.name)
+            } else {
+                v.name.clone()
+            };
+
+            let escaped_name = crate::naming::escape_swift_name(&case_name);
+
+            // Escape quotes in deprecation reason for the template
+            let deprecation_reason = v
+                .deprecation_reason
+                .as_ref()
+                .map(|r| r.replace('"', "\\\""));
+
+            TemplateEnumValue {
+                case_name: escaped_name,
+                raw_value: v.raw_value.clone(),
+                description: v.description.clone(),
+                is_deprecated: v.is_deprecated,
+                deprecation_reason,
+                is_renamed: v.is_renamed,
+            }
+        })
+        .collect();
+
+    let template = EnumTypeTemplate {
+        api_target_name,
+        access_modifier,
+        swift_type_name,
+        type_header,
+        values: template_values,
+    };
+
+    let mut output = template.render().expect("enum_type template render failed");
+    // Askama strips the final newline from the template file; add it back
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+/// Render the type-level header: doc comments and "renamed from" comment.
+fn render_type_header(type_name: &str, schema_name: &str, description: Option<&str>) -> String {
+    let mut header = String::new();
+
+    // Documentation comments
     if let Some(desc) = description {
         if !desc.is_empty() {
             for line in desc.lines() {
                 if line.is_empty() {
-                    body.push_str("///\n");
+                    header.push_str("///\n");
                 } else {
-                    body.push_str(&format!("/// {}\n", line));
+                    header.push_str(&format!("/// {}\n", line));
                 }
             }
         }
     }
 
-    // "Renamed from" comment for the enum type
+    // "Renamed from" comment
     if type_name != schema_name {
-        body.push_str(&format!(
+        header.push_str(&format!(
             "// Renamed from GraphQL schema value: '{}'\n",
             schema_name
         ));
     }
 
-    body.push_str(&format!(
-        "{}enum {}: String, EnumType {{\n",
-        access_modifier,
-        crate::naming::first_uppercased(type_name),
-    ));
-
-    for value in values {
-        // When a case is explicitly renamed, do NOT apply camelCase conversion
-        let case_name = if value.is_renamed {
-            value.name.clone()
-        } else if camel_case_conversion {
-            crate::naming::to_camel_case(&value.name)
-        } else {
-            value.name.clone()
-        };
-
-        let escaped_name = crate::naming::escape_swift_name(&case_name);
-
-        // Value-level documentation comment
-        if let Some(ref desc) = value.description {
-            if !desc.is_empty() {
-                for line in desc.lines() {
-                    if line.is_empty() {
-                        body.push_str("  ///\n");
-                    } else {
-                        body.push_str(&format!("  /// {}\n", line));
-                    }
-                }
-            }
-        }
-
-        if value.is_deprecated {
-            if let Some(ref reason) = value.deprecation_reason {
-                body.push_str(&format!(
-                    "  @available(*, deprecated, message: \"{}\")\n",
-                    reason.replace('\"', "\\\"")
-                ));
-            } else {
-                body.push_str("  @available(*, deprecated)\n");
-            }
-        }
-
-        // "Renamed from" comment for renamed cases
-        if value.is_renamed {
-            body.push_str(&format!(
-                "  // Renamed from GraphQL schema value: '{}'\n",
-                value.raw_value
-            ));
-        }
-
-        // Omit raw value when case name matches (Swift enum optimization)
-        if escaped_name == value.raw_value {
-            body.push_str(&format!("  case {}\n", escaped_name));
-        } else {
-            body.push_str(&format!(
-                "  case {} = \"{}\"\n",
-                escaped_name, value.raw_value
-            ));
-        }
-    }
-
-    body.push_str("}\n");
-
-    let mut result = String::new();
-    result.push_str(header::HEADER);
-    result.push_str("\n\n");
-    result.push_str(&format!("import {}\n\n", api_target_name));
-    result.push_str(&body);
-
-    result
+    header
 }

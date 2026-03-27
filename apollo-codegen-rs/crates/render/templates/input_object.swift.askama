@@ -1,0 +1,52 @@
+// @generated
+// This file was automatically generated and should not be edited.
+
+import {{ api_target_name }}
+
+{{ type_header -}}
+{{ access_modifier }}struct {{ swift_name }}: InputObject {
+  {{ access_modifier }}private(set) var __data: InputDict
+
+  {{ access_modifier }}init(_ data: InputDict) {
+    __data = data
+  }
+
+{%- if let Some(init) = valid_fields_initializer %}
+
+  {{ access_modifier }}init(
+{%- for f in init.params %}
+    {{ f.rendered_name }}: {{ f.rendered_init_type }}{% if !loop.last %},{% endif %}
+
+{%- endfor %}
+  ) {
+    __data = InputDict([
+{%- for f in init.params %}
+      "{{ f.schema_name }}": {{ f.rendered_name }}{% if !loop.last %},{% endif %}
+
+{%- endfor %}
+    ])
+  }
+{%- endif %}
+{%- if let Some(msg) = deprecated_initializer_message %}
+
+  @available(*, deprecated, message: "{{ msg }}")
+  {{ access_modifier }}init(
+{%- else %}
+
+  {{ access_modifier }}init(
+{%- endif %}
+{%- for f in all_init_fields %}
+    {{ f.rendered_name }}: {{ f.rendered_init_type }}{% if !loop.last %},{% endif %}
+
+{%- endfor %}
+  ) {
+    __data = InputDict([
+{%- for f in all_init_fields %}
+      "{{ f.schema_name }}": {{ f.rendered_name }}{% if !loop.last %},{% endif %}
+
+{%- endfor %}
+    ])
+  }
+
+{{ field_properties -}}
+}

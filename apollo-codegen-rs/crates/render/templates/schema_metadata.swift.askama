@@ -1,0 +1,77 @@
+// @generated
+// This file was automatically generated and should not be edited.
+
+import {{ api_target_name }}
+
+{%- if is_embedded %}
+
+{{ access_modifier }}protocol {{ ns }}_SelectionSet: {{ api_target_name }}.SelectionSet & {{ api_target_name }}.RootSelectionSet
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol {{ ns }}_InlineFragment: {{ api_target_name }}.SelectionSet & {{ api_target_name }}.InlineFragment
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol {{ ns }}_MutableSelectionSet: {{ api_target_name }}.MutableRootSelectionSet
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol {{ ns }}_MutableInlineFragment: {{ api_target_name }}.MutableSelectionSet & {{ api_target_name }}.InlineFragment
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}extension {{ ns }} {
+  typealias SelectionSet = {{ ns }}_SelectionSet
+
+  typealias InlineFragment = {{ ns }}_InlineFragment
+
+  typealias MutableSelectionSet = {{ ns }}_MutableSelectionSet
+
+  typealias MutableInlineFragment = {{ ns }}_MutableInlineFragment
+
+  enum SchemaMetadata: {{ api_target_name }}.SchemaMetadata {
+    {{ access_modifier }}static let configuration: any {{ api_target_name }}.SchemaConfiguration.Type = SchemaConfiguration.self
+
+    {{ access_modifier }}static func objectType(forTypename typename: String) -> {{ api_target_name }}.Object? {
+      switch typename {
+{%- for ot in object_types %}
+      case "{{ ot.typename }}": return {{ ns }}.Objects.{{ ot.swift_name }}
+{%- endfor %}
+      default: return nil
+      }
+    }
+  }
+
+  enum Objects {}
+  enum Interfaces {}
+  enum Unions {}
+
+}
+{%- else %}
+
+{{ access_modifier }}protocol SelectionSet: {{ api_target_name }}.SelectionSet & {{ api_target_name }}.RootSelectionSet
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol InlineFragment: {{ api_target_name }}.SelectionSet & {{ api_target_name }}.InlineFragment
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol MutableSelectionSet: {{ api_target_name }}.MutableRootSelectionSet
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}protocol MutableInlineFragment: {{ api_target_name }}.MutableSelectionSet & {{ api_target_name }}.InlineFragment
+where Schema == {{ ns }}.SchemaMetadata {}
+
+{{ access_modifier }}enum SchemaMetadata: {{ api_target_name }}.SchemaMetadata {
+  {{ access_modifier }}static let configuration: any {{ api_target_name }}.SchemaConfiguration.Type = SchemaConfiguration.self
+
+  {{ access_modifier }}static func objectType(forTypename typename: String) -> {{ api_target_name }}.Object? {
+    switch typename {
+{%- for ot in object_types %}
+    case "{{ ot.typename }}": return {{ ns }}.Objects.{{ ot.swift_name }}
+{%- endfor %}
+    default: return nil
+    }
+  }
+}
+
+{{ access_modifier }}enum Objects {}
+{{ access_modifier }}enum Interfaces {}
+{{ access_modifier }}enum Unions {}
+{%- endif %}
