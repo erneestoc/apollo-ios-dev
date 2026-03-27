@@ -794,9 +794,13 @@ fn generate_operation_files(
         schema_path.to_path_buf()
     };
 
-    // Check if operations output mode is "relative"
+    // Check if operations output mode is "relative" or "absolute"
     let relative_subpath = match &config.output.operations {
         OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
+    };
+    let absolute_ops_path = match &config.output.operations {
+        OperationsFileOutput::Absolute(c) => Some(resolve_path(root_url, &c.path)),
         _ => None,
     };
 
@@ -902,6 +906,11 @@ fn generate_operation_files(
                     source_dir.join(format!("{}.graphql.swift", operation.name))
                 };
                 result.add_file(file_path, content);
+            } else if let Some(ref abs_path) = absolute_ops_path {
+                let file_path = abs_path
+                    .join("LocalCacheMutations")
+                    .join(format!("{}.graphql.swift", operation.name));
+                result.add_file(file_path, content);
             } else {
                 let file_path = sources_path
                     .join("LocalCacheMutations")
@@ -917,6 +926,11 @@ fn generate_operation_files(
                 } else {
                     source_dir.join(format!("{}.graphql.swift", file_name))
                 };
+                result.add_file(file_path, content);
+            } else if let Some(ref abs_path) = absolute_ops_path {
+                let file_path = abs_path
+                    .join(subdir)
+                    .join(format!("{}.graphql.swift", file_name));
                 result.add_file(file_path, content);
             } else {
                 let file_path = sources_path
@@ -951,9 +965,13 @@ fn generate_fragment_files(
         schema_path.to_path_buf()
     };
 
-    // Check if operations output mode is "relative"
+    // Check if operations output mode is "relative" or "absolute"
     let relative_subpath = match &config.output.operations {
         OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
+    };
+    let absolute_ops_path = match &config.output.operations {
+        OperationsFileOutput::Absolute(c) => Some(resolve_path(root_url, &c.path)),
         _ => None,
     };
 
@@ -1008,6 +1026,11 @@ fn generate_fragment_files(
                         source_dir.join(format!("{}.graphql.swift", frag_file_name))
                     };
                     result.add_file(file_path, content);
+                } else if let Some(ref abs_path) = absolute_ops_path {
+                    let file_path = abs_path
+                        .join("LocalCacheMutations")
+                        .join(format!("{}.graphql.swift", frag_file_name));
+                    result.add_file(file_path, content);
                 } else {
                     let file_path = sources_path
                         .join("LocalCacheMutations")
@@ -1022,6 +1045,11 @@ fn generate_fragment_files(
                     } else {
                         source_dir.join(format!("{}.graphql.swift", frag_file_name))
                     };
+                    result.add_file(file_path, content);
+                } else if let Some(ref abs_path) = absolute_ops_path {
+                    let file_path = abs_path
+                        .join("Fragments")
+                        .join(format!("{}.graphql.swift", frag_file_name));
                     result.add_file(file_path, content);
                 } else {
                     let file_path = sources_path
