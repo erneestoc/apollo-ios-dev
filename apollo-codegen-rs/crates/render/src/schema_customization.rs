@@ -110,6 +110,16 @@ impl SchemaCustomizer {
             .unwrap_or(field_graphql_name)
     }
 
+    /// Reverse lookup: given a Swift name, find the original GraphQL name.
+    pub fn reverse_lookup(&self, swift_name: &str) -> Option<&str> {
+        for (graphql_name, custom_name) in &self.type_names {
+            if custom_name == swift_name {
+                return Some(graphql_name.as_str());
+            }
+        }
+        None
+    }
+
     /// Check if there is any type name customization at all.
     pub fn has_customizations(&self) -> bool {
         !self.type_names.is_empty()

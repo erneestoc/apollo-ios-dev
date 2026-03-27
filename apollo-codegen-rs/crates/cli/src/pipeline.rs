@@ -175,6 +175,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &customizer,
         include_schema_docs,
         is_embedded,
+        ops_in_schema_module,
     );
 
     // Package.swift (for SPM module type)
@@ -408,6 +409,16 @@ fn resolve_path(root: &Path, relative: &str) -> PathBuf {
     }
 }
 
+/// Convert a source string to a single line, matching Swift's `convertedToSingleLine()`.
+/// Splits by newlines, trims whitespace from each line, and joins with spaces.
+fn convert_to_single_line(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Add a module import line after the existing import lines in a generated file.
 fn add_module_import(content: &str, module_name: &str) -> String {
     let import_line = format!("import {}", module_name);
@@ -442,6 +453,7 @@ fn generate_schema_files(
     customizer: &SchemaCustomizer,
     include_schema_docs: bool,
     is_embedded: bool,
+    ops_in_schema_module: bool,
 ) {
     // Only swiftPackageManager adds a Sources/ subdirectory
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
@@ -603,7 +615,13 @@ fn generate_schema_files(
                     if matches!(fdef.field_type, GraphQLType::NonNull(_)) && fdef.default_value.is_some() {
                         swift_type = format!("{}?", swift_type);
                     }
-                    let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds, customizer);
+                    let mut init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds, customizer);
+                    // Add namespace prefix when operations are outside the schema module
+                    if is_embedded && !ops_in_schema_module {
+                        let prefix = format!("{}.", ns);
+                        swift_type = ir_adapter::add_namespace_to_variable_type(&swift_type, &prefix, type_kinds, customizer);
+                        init_type = ir_adapter::add_namespace_to_variable_type(&init_type, &prefix, type_kinds, customizer);
+                    }
                     templates::input_object::InputField {
                         schema_name: fname.clone(), // GraphQL field name for __data access
                         rendered_name,
@@ -802,15 +820,28 @@ fn generate_operation_files(
         // Compute operation identifier (SHA256 hash of source) when configured
         let op_id = if config.options.operation_document_format.operation_identifier {
             let mut hasher = Sha256::new();
-            // Hash the operation source + all referenced fragment sources (matching Swift's rawSource format)
-            hasher.update(operation.source.as_bytes());
-            for frag in &operation.referenced_fragments {
+            // Hash the operation source + all referenced fragment sources (matching Swift's rawSource format).
+            // Swift's convertedToSingleLine() splits by newlines, trims whitespace, joins with spaces.
+            let single_line = convert_to_single_line(&operation.source);
+            hasher.update(single_line.as_bytes());
+            // Sort referenced fragments alphabetically by name (matching Swift's allReferencedFragments)
+            let mut sorted_frags: Vec<_> = operation.referenced_fragments.iter().collect();
+            sorted_frags.sort_by(|a, b| a.name.cmp(&b.name));
+            for frag in &sorted_frags {
                 hasher.update(b"\n");
-                hasher.update(frag.source.as_bytes());
+                let frag_single_line = convert_to_single_line(&frag.source);
+                hasher.update(frag_single_line.as_bytes());
             }
             Some(format!("{:x}", hasher.finalize()))
         } else {
             None
+        };
+        // When operations are not in the schema module (relative/absolute with embeddedInTarget),
+        // variable types need the schema namespace prefix (e.g., "MySchemaModule.ID")
+        let var_prefix = if is_embedded && !ops_in_schema_module {
+            format!("{}.", ns)
+        } else {
+            String::new()
         };
         let mut content = ir_adapter::render_operation(
             &operation,
@@ -824,6 +855,7 @@ fn generate_operation_files(
             query_string_format,
             api_target,
             false, // markOperationDefinitionsAsFinal
+            &var_prefix,
         );
 
         // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
@@ -962,34 +994,35 @@ fn generate_fragment_files(
                 }
             }
 
+            let frag_file_name = naming::first_uppercased(&frag.name);
             if frag.is_local_cache_mutation {
                 if let Some(ref subpath_opt) = relative_subpath {
                     let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
                     let file_path = if let Some(subpath) = subpath_opt {
-                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag.name))
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
                     } else {
-                        source_dir.join(format!("{}.graphql.swift", frag.name))
+                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
                     };
                     result.add_file(file_path, content);
                 } else {
                     let file_path = sources_path
                         .join("LocalCacheMutations")
-                        .join(format!("{}.graphql.swift", frag.name));
+                        .join(format!("{}.graphql.swift", frag_file_name));
                     result.add_file(file_path, content);
                 }
             } else {
                 if let Some(ref subpath_opt) = relative_subpath {
                     let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
                     let file_path = if let Some(subpath) = subpath_opt {
-                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag.name))
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
                     } else {
-                        source_dir.join(format!("{}.graphql.swift", frag.name))
+                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
                     };
                     result.add_file(file_path, content);
                 } else {
                     let file_path = sources_path
                         .join("Fragments")
-                        .join(format!("{}.graphql.swift", frag.name));
+                        .join(format!("{}.graphql.swift", frag_file_name));
                     result.add_file(file_path, content);
                 }
             }
