@@ -18,6 +18,7 @@ apollo-codegen-render.workspace = true
 apollo-codegen-cache.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+glob.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
 indexmap.workspace = true

@@ -105,6 +105,7 @@ dependencies = [
  "apollo-codegen-ir",
  "apollo-codegen-render",
  "clap",
+ "glob",
  "indexmap",
  "reqwest",
  "serde_json",

@@ -15,9 +15,50 @@ use apollo_codegen_render::templates;
 use sha2::{Sha256, Digest};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+/// Timing data for pipeline phases, printed to stderr when --timing is set.
+struct PipelineTimer {
+    enabled: bool,
+    entries: Vec<(&'static str, std::time::Duration)>,
+    start: Instant,
+}
+
+impl PipelineTimer {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            entries: Vec::new(),
+            start: Instant::now(),
+        }
+    }
+
+    /// Record the duration of a phase. Returns the Instant for the next phase.
+    fn record(&mut self, label: &'static str, since: Instant) -> Instant {
+        if self.enabled {
+            self.entries.push((label, since.elapsed()));
+        }
+        Instant::now()
+    }
+
+    /// Print all recorded timings and total to stderr.
+    fn print_summary(&self, file_count: usize) {
+        if !self.enabled {
+            return;
+        }
+        for (label, dur) in &self.entries {
+            eprintln!("[timing] {:<20} {:>4}ms", format!("{}:", label), dur.as_millis());
+        }
+        let total = self.start.elapsed();
+        eprintln!("[timing] {:<20} {:>4}ms ({} files)", "Total:", total.as_millis(), file_count);
+    }
+}
 
 /// Run the full code generation pipeline.
-pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow::Result<GenerationResult> {
+pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bool) -> anyhow::Result<GenerationResult> {
+    let mut timer = PipelineTimer::new(timing);
+    let mut t = Instant::now();
+
     // 1. Discover files
     let schema_files = apollo_codegen_glob::match_search_paths(
         &config.input.schema_search_paths,
@@ -47,6 +88,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
     let frontend = GraphQLFrontend::load_schema(&schema_sources)
         .map_err(|errs| anyhow::anyhow!("Schema errors: {}", errs.join(", ")))?;
 
+    t = timer.record("Schema loading", t);
+
     let op_sources: Vec<(String, String)> = operation_files
         .iter()
         .map(|path| {
@@ -64,6 +107,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         .parse_operations(&op_sources)
         .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?;
 
+    t = timer.record("Operation parsing", t);
+
     // 3. Compile
     let compile_options = CompileOptions {
         legacy_safelisting_compatible_operations: config
@@ -76,6 +121,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         .compile(&doc, &source_map, &compile_options)
         .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
 
+    t = timer.record("Compilation", t);
+
     // 4. Build IR
     let camel_case_enums = matches!(
         config.options.conversion_strategies.enum_cases,
@@ -85,6 +132,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
 
     // 4b. Build type kind map for type resolution in templates
     let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
+
+    let _ = timer.record("IR building", t);
 
     // 5. Determine output configuration
     let ns = naming::first_uppercased(&config.schema_namespace);
@@ -156,6 +205,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
 
     // 6. Generate files
     let mut result = GenerationResult::new();
+    let t_gen = Instant::now();
 
     // Namespace file for embeddedInTarget
     if is_embedded {
@@ -246,6 +296,405 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &customizer,
         embedded_target_name.as_deref(),
     );
+
+    let _t = timer.record("Code generation", t_gen);
+    timer.print_summary(result.file_count());
+
+    Ok(result)
+}
+
+/// Generate only schema type files (no operations or fragments).
+///
+/// Produces: Objects, Enums, Unions, InputObjects, Interfaces, CustomScalars,
+/// SchemaMetadata, SchemaConfiguration, Package.swift, MockObjects.
+pub fn generate_schema_only(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bool) -> anyhow::Result<GenerationResult> {
+    let mut timer = PipelineTimer::new(timing);
+    let mut t = Instant::now();
+
+    // 1. Discover schema files (operations still needed for compilation to determine referenced types)
+    let schema_files = apollo_codegen_glob::match_search_paths(
+        &config.input.schema_search_paths,
+        Some(root_url),
+    )?;
+    let operation_files = apollo_codegen_glob::match_search_paths(
+        &config.input.operation_search_paths,
+        Some(root_url),
+    )?;
+
+    if schema_files.is_empty() {
+        anyhow::bail!("No schema files found");
+    }
+
+    // 2. Load schema
+    let schema_sources: Vec<(String, String)> = schema_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let frontend = GraphQLFrontend::load_schema(&schema_sources)
+        .map_err(|errs| anyhow::anyhow!("Schema errors: {}", errs.join(", ")))?;
+
+    t = timer.record("Schema loading", t);
+
+    // Parse operations if available (needed for referenced types / compilation)
+    let op_sources: Vec<(String, String)> = operation_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let source_map: BTreeMap<String, (String, String)> = op_sources
+        .iter()
+        .map(|(content, path)| (path.clone(), (content.clone(), path.clone())))
+        .collect();
+
+    let doc = if !op_sources.is_empty() {
+        Some(frontend
+            .parse_operations(&op_sources)
+            .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?)
+    } else {
+        None
+    };
+
+    t = timer.record("Operation parsing", t);
+
+    // 3. Compile
+    let compile_options = CompileOptions {
+        legacy_safelisting_compatible_operations: config
+            .experimental_features
+            .legacy_safelisting_compatible_operations,
+        reduce_generated_schema_types: config.options.reduce_generated_schema_types,
+    };
+
+    let compilation_result = if let Some(ref parsed_doc) = doc {
+        frontend
+            .compile(parsed_doc, &source_map, &compile_options)
+            .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?
+    } else {
+        // Compile with empty operations - schema types only
+        let empty_source_map = BTreeMap::new();
+        let empty_doc = frontend.parse_operations(&[])
+            .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?;
+        frontend
+            .compile(&empty_doc, &empty_source_map, &compile_options)
+            .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?
+    };
+
+    t = timer.record("Compilation", t);
+
+    // 4. Build IR
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+    let mut ir = IRBuilder::build(&compilation_result, camel_case_enums);
+    let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
+
+    let _ = timer.record("IR building", t);
+
+    // 5. Output configuration
+    let ns = naming::first_uppercased(&config.schema_namespace);
+    let api_target = if config.options.cocoapods_compatible_import_statements {
+        "Apollo"
+    } else {
+        "ApolloAPI"
+    };
+    let access_mod = determine_access_modifier(config);
+    let is_in_module = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::SwiftPackageManager(_)
+    ) || matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::Other(_)
+    );
+    let is_embedded = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::EmbeddedInTarget(_)
+    );
+    let ops_in_schema_module = matches!(
+        config.output.operations,
+        OperationsFileOutput::InSchemaModule(_)
+    );
+    let mock_access_mod = if is_embedded {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
+    let embedded_target_name = if let SchemaModuleType::EmbeddedInTarget(ref c) = config.output.schema_types.module_type {
+        Some(c.name.clone())
+    } else {
+        None
+    };
+    let include_schema_docs = matches!(
+        config.options.schema_documentation,
+        SchemaDocumentation::Include
+    );
+    if !include_schema_docs {
+        ir.clear_field_descriptions();
+    }
+    let camel_case_input_objects = matches!(
+        config.options.conversion_strategies.input_objects,
+        apollo_codegen_config::types::InputObjectConversionStrategy::CamelCase
+    );
+
+    let schema_output_path = resolve_path(root_url, &config.output.schema_types.path);
+    let customizer = SchemaCustomizer::new(&config.options.schema_customization);
+
+    // 6. Generate schema files only
+    let mut result = GenerationResult::new();
+    let t_gen = Instant::now();
+
+    // Namespace file for embeddedInTarget
+    if is_embedded {
+        let sources_path = schema_output_path.to_path_buf();
+        let namespace_content = format!(
+            "{}\n\n{}enum {} {{ }}\n",
+            apollo_codegen_render::templates::header::HEADER,
+            &access_mod,
+            &ns,
+        );
+        result.add_file(
+            sources_path.join(format!("{}.graphql.swift", &ns)),
+            namespace_content,
+        );
+    }
+
+    generate_schema_files(
+        &mut result,
+        &compilation_result,
+        &ir,
+        &schema_output_path,
+        &ns,
+        api_target,
+        &access_mod,
+        is_in_module,
+        camel_case_enums,
+        camel_case_input_objects,
+        config,
+        &type_kinds,
+        &customizer,
+        include_schema_docs,
+        is_embedded,
+        ops_in_schema_module,
+    );
+
+    generate_module_files(&mut result, config, &schema_output_path, &ns);
+
+    generate_test_mock_files(
+        &mut result,
+        &compilation_result,
+        config,
+        root_url,
+        &ns,
+        api_target,
+        &mock_access_mod,
+        &customizer,
+        embedded_target_name.as_deref(),
+    );
+
+    let _t = timer.record("Code generation", t_gen);
+    timer.print_summary(result.file_count());
+
+    Ok(result)
+}
+
+/// Generate only operation and fragment files, optionally filtered to specific source paths.
+///
+/// Still runs the full frontend (schema + all operations) for type resolution,
+/// but only renders operations/fragments whose source file matches `only_for_paths`.
+/// If `only_for_paths` is empty, renders all operations and fragments.
+pub fn generate_operations_only(
+    config: &ApolloCodegenConfiguration,
+    root_url: &Path,
+    only_for_paths: &[String],
+    timing: bool,
+) -> anyhow::Result<GenerationResult> {
+    let mut timer = PipelineTimer::new(timing);
+    let mut t = Instant::now();
+
+    // 1. Discover files
+    let schema_files = apollo_codegen_glob::match_search_paths(
+        &config.input.schema_search_paths,
+        Some(root_url),
+    )?;
+    let operation_files = apollo_codegen_glob::match_search_paths(
+        &config.input.operation_search_paths,
+        Some(root_url),
+    )?;
+
+    if schema_files.is_empty() {
+        anyhow::bail!("No schema files found");
+    }
+    if operation_files.is_empty() {
+        anyhow::bail!("No operation files found");
+    }
+
+    // 2. Load schema and parse all operations (needed for type resolution)
+    let schema_sources: Vec<(String, String)> = schema_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let frontend = GraphQLFrontend::load_schema(&schema_sources)
+        .map_err(|errs| anyhow::anyhow!("Schema errors: {}", errs.join(", ")))?;
+
+    t = timer.record("Schema loading", t);
+
+    let op_sources: Vec<(String, String)> = operation_files
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)?;
+            Ok((content, path.clone()))
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    let source_map: BTreeMap<String, (String, String)> = op_sources
+        .iter()
+        .map(|(content, path)| (path.clone(), (content.clone(), path.clone())))
+        .collect();
+
+    let doc = frontend
+        .parse_operations(&op_sources)
+        .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?;
+
+    t = timer.record("Operation parsing", t);
+
+    // 3. Compile (full compilation for type resolution)
+    let compile_options = CompileOptions {
+        legacy_safelisting_compatible_operations: config
+            .experimental_features
+            .legacy_safelisting_compatible_operations,
+        reduce_generated_schema_types: config.options.reduce_generated_schema_types,
+    };
+
+    let compilation_result = frontend
+        .compile(&doc, &source_map, &compile_options)
+        .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
+
+    t = timer.record("Compilation", t);
+
+    // 4. Build IR
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+    let mut ir = IRBuilder::build(&compilation_result, camel_case_enums);
+    let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
+
+    let _ = timer.record("IR building", t);
+
+    // 5. Output configuration
+    let ns = naming::first_uppercased(&config.schema_namespace);
+    let api_target = if config.options.cocoapods_compatible_import_statements {
+        "Apollo"
+    } else {
+        "ApolloAPI"
+    };
+    let access_mod = determine_access_modifier(config);
+    let _is_in_module = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::SwiftPackageManager(_)
+    ) || matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::Other(_)
+    );
+    let is_embedded = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::EmbeddedInTarget(_)
+    );
+    let ops_in_schema_module = matches!(
+        config.output.operations,
+        OperationsFileOutput::InSchemaModule(_)
+    );
+    let ops_access_mod = if is_embedded && !ops_in_schema_module {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
+    let embedded_target_name = if let SchemaModuleType::EmbeddedInTarget(ref c) = config.output.schema_types.module_type {
+        Some(c.name.clone())
+    } else {
+        None
+    };
+    let include_schema_docs = matches!(
+        config.options.schema_documentation,
+        SchemaDocumentation::Include
+    );
+    if !include_schema_docs {
+        ir.clear_field_descriptions();
+    }
+    let query_string_format = match config.options.query_string_literal_format {
+        QueryStringLiteralFormat::SingleLine => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::SingleLine
+        }
+        QueryStringLiteralFormat::Multiline => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::Multiline
+        }
+    };
+
+    let schema_output_path = resolve_path(root_url, &config.output.schema_types.path);
+    let customizer = SchemaCustomizer::new(&config.options.schema_customization);
+
+    // 6. Build glob patterns for filtering
+    let path_matchers: Vec<glob::Pattern> = only_for_paths
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
+
+    // 7. Generate filtered operation/fragment files
+    let mut result = GenerationResult::new();
+    let t_gen = Instant::now();
+
+    generate_operation_files_filtered(
+        &mut result,
+        &compilation_result,
+        &ir,
+        &schema_output_path,
+        &ns,
+        &ops_access_mod,
+        config,
+        &type_kinds,
+        &customizer,
+        query_string_format,
+        api_target,
+        is_embedded,
+        root_url,
+        ops_in_schema_module,
+        embedded_target_name.as_deref(),
+        include_schema_docs,
+        &path_matchers,
+    );
+
+    generate_fragment_files_filtered(
+        &mut result,
+        &compilation_result,
+        &ir,
+        &schema_output_path,
+        &ns,
+        &ops_access_mod,
+        config,
+        &type_kinds,
+        &customizer,
+        query_string_format,
+        api_target,
+        is_embedded,
+        root_url,
+        ops_in_schema_module,
+        embedded_target_name.as_deref(),
+        include_schema_docs,
+        &path_matchers,
+    );
+
+    let _t = timer.record("Code generation", t_gen);
+    timer.print_summary(result.file_count());
 
     Ok(result)
 }
@@ -1101,6 +1550,294 @@ fn generate_fragment_files(
     }
 }
 
+/// Like `generate_operation_files` but filters operations to only those whose source path
+/// matches one of the given glob patterns. If `path_matchers` is empty, renders all operations.
+#[allow(clippy::too_many_arguments)]
+fn generate_operation_files_filtered(
+    result: &mut GenerationResult,
+    compilation: &CompilationResult,
+    ir: &IRBuilder,
+    schema_path: &Path,
+    ns: &str,
+    access_mod: &str,
+    config: &ApolloCodegenConfiguration,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+    query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
+    api_target: &str,
+    is_embedded: bool,
+    root_url: &Path,
+    ops_in_schema_module: bool,
+    embedded_target_name: Option<&str>,
+    include_schema_docs: bool,
+    path_matchers: &[glob::Pattern],
+) {
+    // If no path filters, delegate to the unfiltered version
+    if path_matchers.is_empty() {
+        generate_operation_files(
+            result, compilation, ir, schema_path, ns, access_mod, config,
+            type_kinds, customizer, query_string_format, api_target,
+            is_embedded, root_url, ops_in_schema_module, embedded_target_name,
+            include_schema_docs,
+        );
+        return;
+    }
+
+    let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
+        schema_path.join("Sources")
+    } else {
+        schema_path.to_path_buf()
+    };
+
+    let relative_subpath = match &config.output.operations {
+        OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
+    };
+    let absolute_ops_path = match &config.output.operations {
+        OperationsFileOutput::Absolute(c) => Some(resolve_path(root_url, &c.path)),
+        _ => None,
+    };
+
+    for op_def in &compilation.operations {
+        // Filter: skip operations whose source file does not match any pattern
+        if !path_matchers.iter().any(|pat| pat.matches(&op_def.file_path)) {
+            continue;
+        }
+
+        let mut operation = ir.build_operation(op_def);
+        for var in &mut operation.variables {
+            if let Some(ref mut dv) = var.default_value {
+                *dv = customizer.customize_default_value(dv);
+            }
+            var.type_str = customizer.customize_variable_type(&var.type_str);
+        }
+        let generate_init = if !config.experimental_features.field_merging.is_all() {
+            false
+        } else if operation.is_local_cache_mutation {
+            true
+        } else {
+            config.options.selection_set_initializers.operations
+        };
+        let op_id = if config.options.operation_document_format.operation_identifier {
+            let mut hasher = Sha256::new();
+            let single_line = convert_to_single_line(&operation.source);
+            hasher.update(single_line.as_bytes());
+            let mut sorted_frags: Vec<_> = operation.referenced_fragments.iter().collect();
+            sorted_frags.sort_by(|a, b| a.name.cmp(&b.name));
+            for frag in &sorted_frags {
+                hasher.update(b"\n");
+                let frag_single_line = convert_to_single_line(&frag.source);
+                hasher.update(frag_single_line.as_bytes());
+            }
+            Some(format!("{:x}", hasher.finalize()))
+        } else {
+            None
+        };
+        let var_prefix = if !ops_in_schema_module {
+            format!("{}.", ns)
+        } else {
+            String::new()
+        };
+        let init_mod: Option<&str> = if is_embedded { Some("public ") } else { None };
+        let mut content = ir_adapter::render_operation(
+            &operation, ns, access_mod, generate_init, type_kinds, customizer,
+            config.options.operation_document_format.definition,
+            op_id.as_deref(), query_string_format, api_target,
+            false, &var_prefix, init_mod,
+        );
+        if !include_schema_docs {
+            content = strip_parent_type_comments(&content);
+        }
+        if is_embedded && ops_in_schema_module {
+            content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                &content, ns, access_mod,
+            );
+        } else if !ops_in_schema_module {
+            if is_embedded {
+                if let Some(target) = embedded_target_name {
+                    content = add_module_import(&content, target);
+                }
+            } else {
+                content = add_module_import(&content, ns);
+            }
+        }
+
+        let subdir = match op_def.operation_type {
+            OperationType::Query => "Queries",
+            OperationType::Mutation => "Mutations",
+            OperationType::Subscription => "Subscriptions",
+        };
+        let type_suffix = match op_def.operation_type {
+            OperationType::Query => "Query",
+            OperationType::Mutation => "Mutation",
+            OperationType::Subscription => "Subscription",
+        };
+        let file_name = if operation.name.ends_with(type_suffix) {
+            operation.name.clone()
+        } else {
+            format!("{}{}", operation.name, type_suffix)
+        };
+
+        if operation.is_local_cache_mutation {
+            if let Some(ref subpath_opt) = relative_subpath {
+                let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
+                let file_path = if let Some(subpath) = subpath_opt {
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", operation.name))
+                } else {
+                    source_dir.join(format!("{}.graphql.swift", operation.name))
+                };
+                result.add_file(file_path, content);
+            } else if let Some(ref abs_path) = absolute_ops_path {
+                let file_path = abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name));
+                result.add_file(file_path, content);
+            } else {
+                let file_path = sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name));
+                result.add_file(file_path, content);
+            }
+        } else {
+            if let Some(ref subpath_opt) = relative_subpath {
+                let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
+                let file_path = if let Some(subpath) = subpath_opt {
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", file_name))
+                } else {
+                    source_dir.join(format!("{}.graphql.swift", file_name))
+                };
+                result.add_file(file_path, content);
+            } else if let Some(ref abs_path) = absolute_ops_path {
+                let file_path = abs_path.join(subdir).join(format!("{}.graphql.swift", file_name));
+                result.add_file(file_path, content);
+            } else {
+                let file_path = sources_path.join(format!("Operations/{}", subdir)).join(format!("{}.graphql.swift", file_name));
+                result.add_file(file_path, content);
+            }
+        }
+    }
+}
+
+/// Like `generate_fragment_files` but filters fragments to only those whose source path
+/// matches one of the given glob patterns. If `path_matchers` is empty, renders all fragments.
+#[allow(clippy::too_many_arguments)]
+fn generate_fragment_files_filtered(
+    result: &mut GenerationResult,
+    compilation: &CompilationResult,
+    ir: &IRBuilder,
+    schema_path: &Path,
+    ns: &str,
+    access_mod: &str,
+    config: &ApolloCodegenConfiguration,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+    query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
+    api_target: &str,
+    is_embedded: bool,
+    root_url: &Path,
+    ops_in_schema_module: bool,
+    embedded_target_name: Option<&str>,
+    include_schema_docs: bool,
+    path_matchers: &[glob::Pattern],
+) {
+    // If no path filters, delegate to the unfiltered version
+    if path_matchers.is_empty() {
+        generate_fragment_files(
+            result, compilation, ir, schema_path, ns, access_mod, config,
+            type_kinds, customizer, query_string_format, api_target,
+            is_embedded, root_url, ops_in_schema_module, embedded_target_name,
+            include_schema_docs,
+        );
+        return;
+    }
+
+    let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
+        schema_path.join("Sources")
+    } else {
+        schema_path.to_path_buf()
+    };
+
+    let relative_subpath = match &config.output.operations {
+        OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
+    };
+    let absolute_ops_path = match &config.output.operations {
+        OperationsFileOutput::Absolute(c) => Some(resolve_path(root_url, &c.path)),
+        _ => None,
+    };
+
+    for frag_def in &compilation.fragments {
+        // Filter: skip fragments whose source file does not match any pattern
+        if !path_matchers.iter().any(|pat| pat.matches(&frag_def.file_path)) {
+            continue;
+        }
+
+        if let Some(frag) = ir.fragments().get(&frag_def.name) {
+            let generate_init = if !config.experimental_features.field_merging.is_all() {
+                false
+            } else if config.options.selection_set_initializers.named_fragments {
+                true
+            } else if frag.is_local_cache_mutation {
+                true
+            } else {
+                false
+            };
+            let mut content = ir_adapter::render_fragment(
+                frag, ns, access_mod, generate_init, type_kinds, customizer,
+                query_string_format, api_target,
+                config.options.operation_document_format.definition,
+            );
+            if !include_schema_docs {
+                content = strip_parent_type_comments(&content);
+            }
+            if is_embedded && ops_in_schema_module {
+                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                    &content, ns, access_mod,
+                );
+            } else if !ops_in_schema_module {
+                if is_embedded {
+                    if let Some(target) = embedded_target_name {
+                        content = add_module_import(&content, target);
+                    }
+                } else {
+                    content = add_module_import(&content, ns);
+                }
+            }
+
+            let frag_file_name = naming::first_uppercased(&frag.name);
+            if frag.is_local_cache_mutation {
+                if let Some(ref subpath_opt) = relative_subpath {
+                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+                    let file_path = if let Some(subpath) = subpath_opt {
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
+                    } else {
+                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
+                    };
+                    result.add_file(file_path, content);
+                } else if let Some(ref abs_path) = absolute_ops_path {
+                    let file_path = abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", frag_file_name));
+                    result.add_file(file_path, content);
+                } else {
+                    let file_path = sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", frag_file_name));
+                    result.add_file(file_path, content);
+                }
+            } else {
+                if let Some(ref subpath_opt) = relative_subpath {
+                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+                    let file_path = if let Some(subpath) = subpath_opt {
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
+                    } else {
+                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
+                    };
+                    result.add_file(file_path, content);
+                } else if let Some(ref abs_path) = absolute_ops_path {
+                    let file_path = abs_path.join("Fragments").join(format!("{}.graphql.swift", frag_file_name));
+                    result.add_file(file_path, content);
+                } else {
+                    let file_path = sources_path.join("Fragments").join(format!("{}.graphql.swift", frag_file_name));
+                    result.add_file(file_path, content);
+                }
+            }
+        }
+    }
+}
+
 fn generate_test_mock_files(
     result: &mut GenerationResult,
     compilation: &CompilationResult,
@@ -1306,6 +2043,24 @@ impl GenerationResult {
         }
 
         Ok(pruned_count)
+    }
+
+    /// Write all generated file contents concatenated into a single output file.
+    ///
+    /// Files are separated by newlines. This is useful for build systems (e.g. Bazel)
+    /// where producing a single output file avoids shell concatenation overhead.
+    pub fn write_concat(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::File::create(path)?;
+        for (file_path, content) in &self.files {
+            writeln!(out, "// Source: {}", file_path.display())?;
+            out.write_all(content.as_bytes())?;
+            out.write_all(b"\n")?;
+        }
+        Ok(())
     }
 }
 
