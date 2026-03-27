@@ -148,12 +148,13 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
                     }
                 }
             }
+            let prop_name = crate::naming::first_lowercased(accessor.name);
             if config.is_mutable {
                 result.push_str(&format!(
                     "{}{}var {}: {} {{\n",
                     inner_indent,
                     config.access_modifier,
-                    crate::naming::escape_swift_name(accessor.name),
+                    crate::naming::escape_swift_name(&prop_name),
                     accessor.swift_type,
                 ));
                 result.push_str(&format!(
@@ -170,7 +171,7 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
                     "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
                     inner_indent,
                     config.access_modifier,
-                    crate::naming::escape_swift_name(accessor.name),
+                    crate::naming::escape_swift_name(&prop_name),
                     accessor.swift_type,
                     accessor.name
                 ));

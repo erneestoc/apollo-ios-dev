@@ -374,12 +374,13 @@ pub fn render(config: &SelectionSetConfig) -> String {
                     }
                 }
             }
+            let prop_name = naming::first_lowercased(accessor.name);
             if config.is_mutable {
                 result.push_str(&format!(
                     "{}{}var {}: {} {{\n",
                     inner_indent,
                     config.access_modifier,
-                    naming::escape_swift_name(accessor.name),
+                    naming::escape_swift_name(&prop_name),
                     accessor.swift_type,
                 ));
                 result.push_str(&format!(
@@ -392,11 +393,12 @@ pub fn render(config: &SelectionSetConfig) -> String {
                 ));
                 result.push_str(&format!("{}}}\n", inner_indent));
             } else {
+                let prop_name = naming::first_lowercased(accessor.name);
                 result.push_str(&format!(
                     "{}{}var {}: {} {{ __data[\"{}\"] }}\n",
                     inner_indent,
                     config.access_modifier,
-                    naming::escape_swift_name(accessor.name),
+                    naming::escape_swift_name(&prop_name),
                     accessor.swift_type,
                     accessor.name
                 ));

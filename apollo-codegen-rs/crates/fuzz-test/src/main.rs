@@ -97,15 +97,78 @@ fn generate_schema(rng: &mut StdRng, complexity: Complexity) -> Result<(String, 
         }
     }
 
-    let schema_content = schema_parts.join("\n\n");
+    // Deduplicate schema type definitions (apollo-smith may generate duplicates)
+    let mut seen_type_names = std::collections::HashSet::new();
+    let mut deduped_parts: Vec<String> = Vec::new();
+    for part in &schema_parts {
+        // Extract the type name from the definition
+        let trimmed = part.trim();
+        // Skip description strings
+        let def_start = if trimmed.starts_with("\"\"\"") {
+            // Find end of description
+            if let Some(end) = trimmed[3..].find("\"\"\"") {
+                trimmed[end + 6..].trim()
+            } else {
+                trimmed
+            }
+        } else if trimmed.starts_with('"') {
+            // Single-line description
+            if let Some(end) = trimmed[1..].find('"') {
+                trimmed[end + 2..].trim()
+            } else {
+                trimmed
+            }
+        } else {
+            trimmed
+        };
+
+        // Extract type name: "type X", "scalar X", "enum X", "union X", "interface X", "input X"
+        let words: Vec<&str> = def_start.split_whitespace().collect();
+        let type_name = if words.len() >= 2 {
+            match words[0] {
+                "type" | "scalar" | "enum" | "union" | "interface" | "input" | "extend" => {
+                    Some(words[1].trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_'))
+                }
+                "schema" => Some("__schema__"),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(name) = type_name {
+            if seen_type_names.insert(name.to_string()) {
+                deduped_parts.push(part.clone());
+            }
+            // Skip duplicate
+        } else {
+            deduped_parts.push(part.clone());
+        }
+    }
+
+    let schema_content = deduped_parts.join("\n\n");
 
     // If no operations were generated, create a simple query
     if operation_parts.is_empty() {
-        // Try to find a query type field to reference
         operation_parts.push("query FuzzQuery { __typename }".to_string());
     }
 
-    Ok((schema_content, operation_parts))
+    // Ensure all operations are named (Apollo requires named operations)
+    let mut named_operations: Vec<String> = Vec::new();
+    for (i, op) in operation_parts.iter().enumerate() {
+        let trimmed = op.trim();
+        if trimmed.starts_with('{') {
+            // Anonymous query — give it a name
+            named_operations.push(format!("query FuzzAnon{} {}", i, trimmed));
+        } else if trimmed.starts_with("fragment") {
+            // Fragments are fine as-is
+            named_operations.push(trimmed.to_string());
+        } else {
+            named_operations.push(trimmed.to_string());
+        }
+    }
+
+    Ok((schema_content, named_operations))
 }
 
 /// Write a single test case to disk.
