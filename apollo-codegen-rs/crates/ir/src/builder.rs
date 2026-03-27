@@ -71,8 +71,12 @@ impl IRBuilder {
             field_descriptions,
         };
 
-        // Build fragments first (operations may reference them)
-        for frag_def in &result.fragments {
+        // Build fragments in dependency order (leaves first) so that when a fragment
+        // references another fragment, the referenced one is already built and available
+        // in `self.fragments` for lookup.
+        let ordered_indices = topological_sort_fragments(&result.fragments);
+        for idx in ordered_indices {
+            let frag_def = &result.fragments[idx];
             let frag = builder.build_fragment(frag_def, result);
             builder.fragments.insert(frag.name.clone(), Arc::new(frag));
         }
@@ -626,4 +630,57 @@ fn root_field_name(op_type: OperationType) -> &'static str {
         OperationType::Mutation => "mutation",
         OperationType::Subscription => "subscription",
     }
+}
+
+/// Topologically sort fragment definitions so that dependencies are built before
+/// the fragments that reference them. This ensures that when building fragment A
+/// which references fragment B, B is already available in `self.fragments`.
+fn topological_sort_fragments(
+    fragments: &[apollo_codegen_frontend::compilation_result::FragmentDefinition],
+) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+
+    // Build name-to-index map
+    let name_to_idx: HashMap<&str, usize> = fragments
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), i))
+        .collect();
+
+    let mut order = Vec::with_capacity(fragments.len());
+    let mut visited = HashSet::new();
+    let mut visiting = HashSet::new(); // cycle detection
+
+    fn visit(
+        idx: usize,
+        fragments: &[apollo_codegen_frontend::compilation_result::FragmentDefinition],
+        name_to_idx: &HashMap<&str, usize>,
+        visited: &mut HashSet<usize>,
+        visiting: &mut HashSet<usize>,
+        order: &mut Vec<usize>,
+    ) {
+        if visited.contains(&idx) {
+            return;
+        }
+        if visiting.contains(&idx) {
+            // Cycle detected - just skip to avoid infinite loop
+            return;
+        }
+        visiting.insert(idx);
+        // Visit dependencies first
+        for dep_name in &fragments[idx].referenced_fragments {
+            if let Some(&dep_idx) = name_to_idx.get(dep_name.as_str()) {
+                visit(dep_idx, fragments, name_to_idx, visited, visiting, order);
+            }
+        }
+        visiting.remove(&idx);
+        visited.insert(idx);
+        order.push(idx);
+    }
+
+    for i in 0..fragments.len() {
+        visit(i, fragments, &name_to_idx, &mut visited, &mut visiting, &mut order);
+    }
+
+    order
 }

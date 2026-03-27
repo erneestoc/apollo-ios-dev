@@ -4242,28 +4242,70 @@ fn build_initializer_config(
         }
     }
 
-    // Add directly spread named fragments to fulfilled fragments,
-    // but ONLY for fragment definition roots (not for operation selection sets).
-    // In the Swift codegen, fragment definitions include their direct spreads in
-    // fulfilledFragments, but operation entity selection sets do not (fragments are
-    // fulfilled through merged sources at inline fragment scopes instead).
-    // For fragment definitions and inline fragments, include direct fragment spreads
-    // in fulfilled_fragments. For operation entity selection sets (non-inline, non-fragment),
-    // do NOT include them.
-    if is_fragment_definition || is_inline_fragment {
+    // Add directly spread named fragments to fulfilled fragments.
+    // For fragment definitions and inline fragments, always include spreads (they're fully
+    // resolved in those scopes). For operation entity selection sets, include only if the
+    // fragment doesn't have overlapping entity fields with the parent's direct selections
+    // (overlapping entity fields would have different sub-selections, making the fragment
+    // not fully fulfilled by the parent's initializer).
+    {
         let parent_is_union = matches!(parent_type, GraphQLCompositeType::Union(_));
         if !parent_is_union {
             for spread in &ds.named_fragments {
-                if !fulfilled_fragments.contains(&spread.fragment_name) {
+                // Skip conditional fragment spreads — they get their own inline fragment scope
+                if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
+
+                // For fragment definitions and inline fragments, always include spreads.
+                // For operation entity selection sets, include only if the fragment's type
+                // condition is satisfied AND it doesn't have overlapping entity fields.
+                let should_include = if is_fragment_definition || is_inline_fragment {
+                    true
+                } else if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    // First check: type condition must be satisfied
+                    if !type_satisfies_condition(parent_type, &frag_arc.type_condition_name) {
+                        false
+                    } else {
+                        // Second check: no overlapping entity fields with parent's direct fields.
+                        // Overlapping entity fields would have merged sub-selections in the fragment
+                        // that the parent's initializer can't fully satisfy.
+                        let has_overlapping_entity = frag_arc.root_field.selection_set.direct_selections.fields
+                            .iter()
+                            .any(|(key, field)| {
+                                matches!(field, FieldSelection::Entity(_))
+                                    && ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
+                            });
+                        !has_overlapping_entity
+                    }
+                } else {
+                    false
+                };
+
+                if should_include && !fulfilled_fragments.contains(&spread.fragment_name) {
                     fulfilled_fragments.push(spread.fragment_name.clone());
                 }
                 // Also add sub-fragment names if their type condition is satisfied
-                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
-                    for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                        if !fulfilled_fragments.contains(&sub.fragment_name) {
-                            if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
-                                if type_satisfies_condition(parent_type, &sub_frag.type_condition_name) {
-                                    fulfilled_fragments.push(sub.fragment_name.clone());
+                // and they don't have overlapping entity fields
+                if should_include {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                        for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
+                            if !fulfilled_fragments.contains(&sub.fragment_name) {
+                                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                    if type_satisfies_condition(parent_type, &sub_frag.type_condition_name) {
+                                        // For non-fragment-definition/non-inline-fragment, also check entity overlap
+                                        let sub_ok = if is_fragment_definition || is_inline_fragment {
+                                            true
+                                        } else {
+                                            !sub_frag.root_field.selection_set.direct_selections.fields
+                                                .iter()
+                                                .any(|(key, field)| {
+                                                    matches!(field, FieldSelection::Entity(_))
+                                                        && ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
+                                                })
+                                        };
+                                        if sub_ok {
+                                            fulfilled_fragments.push(sub.fragment_name.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -4761,10 +4803,11 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
             .collect();
         let fulfilled: Vec<&str> = init.fulfilled_fragments.iter()
             .filter(|s| {
-                // Filter out self-referencing paths like AsPet.AsPet
+                // Filter out self-referencing type-narrowing paths like AsPet.AsPet
+                // (but not legitimate nested entity fields like Friend.Friend)
                 let parts: Vec<&str> = s.split('.').collect();
                 for w in parts.windows(2) {
-                    if w[0] == w[1] { return false; }
+                    if w[0] == w[1] && w[0].starts_with("As") { return false; }
                 }
                 // Filter out paths containing absorbed type names (from parent chain + own)
                 for absorbed in &combined_absorbed {
