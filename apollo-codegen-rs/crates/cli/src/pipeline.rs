@@ -879,10 +879,14 @@ fn generate_operation_files(
             content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
                 &content, ns, access_mod,
             );
-        } else if is_embedded && !ops_in_schema_module {
-            // For relative/absolute operations in embedded mode, add import for the target module
-            if let Some(target) = embedded_target_name {
-                content = add_module_import(&content, target);
+        } else if !ops_in_schema_module {
+            // When operations are outside the schema module, add import for the schema module
+            if is_embedded {
+                if let Some(target) = embedded_target_name {
+                    content = add_module_import(&content, target);
+                }
+            } else {
+                content = add_module_import(&content, ns);
             }
         }
 
@@ -1023,10 +1027,14 @@ fn generate_fragment_files(
                 content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
                     &content, ns, access_mod,
                 );
-            } else if is_embedded && !ops_in_schema_module {
-                // For relative/absolute operations in embedded mode, add import for the target module
-                if let Some(target) = embedded_target_name {
+            } else if !ops_in_schema_module {
+                // When operations are outside the schema module, add import for the schema module
+                if is_embedded {
+                    if let Some(target) = embedded_target_name {
                     content = add_module_import(&content, target);
+                }
+                } else {
+                    content = add_module_import(&content, ns);
                 }
             }
 
