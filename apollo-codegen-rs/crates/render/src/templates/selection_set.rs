@@ -293,7 +293,7 @@ pub fn render(config: &SelectionSetConfig) -> String {
                 SelectionItem::Field(f) => {
                     result.push_str(&format!(
                         "{}{},\n",
-                        item_indent, render_field_selection(f)
+                        item_indent, render_field_selection(f, &item_indent)
                     ));
                 }
                 SelectionItem::InlineFragment(name) => {
@@ -312,7 +312,7 @@ pub fn render(config: &SelectionSetConfig) -> String {
                     let cond_str = render_inclusion_condition(cond);
                     result.push_str(&format!(
                         "{}.include(if: {}, {}),\n",
-                        item_indent, cond_str, render_field_selection(f)
+                        item_indent, cond_str, render_field_selection(f, &item_indent)
                     ));
                 }
                 SelectionItem::ConditionalInlineFragment(cond, name) => {
@@ -332,7 +332,7 @@ pub fn render(config: &SelectionSetConfig) -> String {
                     for f in fields {
                         result.push_str(&format!(
                             "{}{},\n",
-                            group_indent, render_field_selection(f)
+                            group_indent, render_field_selection(f, &group_indent)
                         ));
                     }
                     result.push_str(&format!("{}]),\n", item_indent));
@@ -532,18 +532,38 @@ fn render_conformance(config: &SelectionSetConfig) -> String {
     }
 }
 
-/// Render a `.field(...)` selection item string.
-fn render_field_selection(f: &FieldSelectionItem) -> String {
+/// Render a `.field(...)` selection item string with proper indentation.
+fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
     let alias_part = if let Some(alias) = f.alias {
         format!(", alias: \"{}\"", alias)
     } else {
         String::new()
     };
     if let Some(args) = f.arguments {
-        // Multi-line arguments need proper indentation
+        // Multi-line arguments need proper indentation relative to parent
         if args.contains('\n') {
-            let indented_args = args.replace('\n', "\n  ");
-            format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, indented_args)
+            // Arguments format is "[\nentry1,\nentry2\n]"
+            // Indent entries at indent+"  " and closing "]" at indent level
+            let mut indented = String::new();
+            for (i, line) in args.lines().enumerate() {
+                if i > 0 {
+                    indented.push('\n');
+                }
+                if i == 0 {
+                    // Opening "[" stays on same line
+                    indented.push_str(line);
+                } else if line == "]" {
+                    // Closing "]" at parent indent level
+                    indented.push_str(indent);
+                    indented.push_str(line);
+                } else {
+                    // Entries indented at parent + 2
+                    indented.push_str(indent);
+                    indented.push_str("  ");
+                    indented.push_str(line);
+                }
+            }
+            format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, indented)
         } else {
             format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, args)
         }

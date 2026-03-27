@@ -4407,10 +4407,11 @@ fn render_field_arguments(field: &FieldSelection) -> Option<String> {
         .iter()
         .map(|arg| format!("\"{}\": {}", arg.name, render_argument_value(&arg.value)))
         .collect();
-    // Multi-line format when there are 2+ arguments (matching Swift behavior)
+    // Multi-line format when there are 2+ arguments (matching Swift behavior).
+    // Entries are NOT indented here — the rendering function adds proper indent
+    // for inner lines. The closing ']' is on its own line so the caller can indent it.
     if entries.len() > 1 {
-        let indented: Vec<String> = entries.iter().map(|e| format!("  {}", e)).collect();
-        Some(format!("[\n{}\n]", indented.join(",\n")))
+        Some(format!("[\n{}\n]", entries.join(",\n")))
     } else {
         Some(format!("[{}]", entries.join(", ")))
     }
