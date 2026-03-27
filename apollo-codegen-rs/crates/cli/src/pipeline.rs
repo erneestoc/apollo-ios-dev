@@ -617,7 +617,7 @@ fn generate_schema_files(
                     }
                     let mut init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds, customizer);
                     // Add namespace prefix when operations are outside the schema module
-                    if is_embedded && !ops_in_schema_module {
+                    if !ops_in_schema_module {
                         let prefix = format!("{}.", ns);
                         swift_type = ir_adapter::add_namespace_to_variable_type(&swift_type, &prefix, type_kinds, customizer);
                         init_type = ir_adapter::add_namespace_to_variable_type(&init_type, &prefix, type_kinds, customizer);
@@ -836,9 +836,9 @@ fn generate_operation_files(
         } else {
             None
         };
-        // When operations are not in the schema module (relative/absolute with embeddedInTarget),
+        // When operations are not in the schema module (relative/absolute),
         // variable types need the schema namespace prefix (e.g., "MySchemaModule.ID")
-        let var_prefix = if is_embedded && !ops_in_schema_module {
+        let var_prefix = if !ops_in_schema_module {
             format!("{}.", ns)
         } else {
             String::new()
