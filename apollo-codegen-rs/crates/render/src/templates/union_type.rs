@@ -26,7 +26,15 @@ pub fn render(
     description: Option<&str>,
 ) -> String {
     let body = render_body(type_name, schema_name, member_types, schema_namespace, is_in_module);
-    header::render_schema_file_with_doc(access_modifier, api_target_name, Some("Unions"), &body, description)
+
+    // For embeddedInTarget (is_in_module=false), use full namespace prefix
+    let ns_prefix = if !is_in_module {
+        format!("{}.Unions", crate::naming::first_uppercased(schema_namespace))
+    } else {
+        "Unions".to_string()
+    };
+
+    header::render_schema_file_with_doc(access_modifier, api_target_name, Some(&ns_prefix), &body, description)
 }
 
 fn render_body(

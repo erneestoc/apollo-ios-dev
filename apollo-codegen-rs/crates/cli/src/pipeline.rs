@@ -97,6 +97,20 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config.output.schema_types.module_type,
         SchemaModuleType::Other(_)
     );
+    let is_embedded = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::EmbeddedInTarget(_)
+    );
+    let ops_in_schema_module = matches!(
+        config.output.operations,
+        OperationsFileOutput::InSchemaModule(_)
+    );
+    // For embedded mode, get the target name for mock imports
+    let embedded_target_name = if let SchemaModuleType::EmbeddedInTarget(ref c) = config.output.schema_types.module_type {
+        Some(c.name.clone())
+    } else {
+        None
+    };
     let include_schema_docs = matches!(
         config.options.schema_documentation,
         SchemaDocumentation::Include
@@ -129,6 +143,21 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
     // 6. Generate files
     let mut result = GenerationResult::new();
 
+    // Namespace file for embeddedInTarget
+    if is_embedded {
+        let sources_path = schema_output_path.to_path_buf();
+        let namespace_content = format!(
+            "{}\n\n{}enum {} {{ }}\n",
+            apollo_codegen_render::templates::header::HEADER,
+            &access_mod,
+            &ns,
+        );
+        result.add_file(
+            sources_path.join(format!("{}.graphql.swift", &ns)),
+            namespace_content,
+        );
+    }
+
     // Schema type files
     generate_schema_files(
         &mut result,
@@ -145,6 +174,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &type_kinds,
         &customizer,
         include_schema_docs,
+        is_embedded,
     );
 
     // Package.swift (for SPM module type)
@@ -163,6 +193,10 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &customizer,
         query_string_format,
         api_target,
+        is_embedded,
+        root_url,
+        ops_in_schema_module,
+        embedded_target_name.as_deref(),
     );
 
     generate_fragment_files(
@@ -177,6 +211,10 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &customizer,
         query_string_format,
         api_target,
+        is_embedded,
+        root_url,
+        ops_in_schema_module,
+        embedded_target_name.as_deref(),
     );
 
     // Test mock files
@@ -189,6 +227,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         api_target,
         &access_mod,
         &customizer,
+        embedded_target_name.as_deref(),
     );
 
     Ok(result)
@@ -369,6 +408,24 @@ fn resolve_path(root: &Path, relative: &str) -> PathBuf {
     }
 }
 
+/// Add a module import line after the existing import lines in a generated file.
+fn add_module_import(content: &str, module_name: &str) -> String {
+    let import_line = format!("import {}", module_name);
+    let mut result = String::new();
+    let mut inserted = false;
+    for line in content.lines() {
+        result.push_str(line);
+        result.push('\n');
+        // Insert after the @_exported import or import line
+        if !inserted && (line.starts_with("@_exported import ") || line.starts_with("import ")) {
+            result.push_str(&import_line);
+            result.push('\n');
+            inserted = true;
+        }
+    }
+    result
+}
+
 fn generate_schema_files(
     result: &mut GenerationResult,
     compilation: &CompilationResult,
@@ -384,12 +441,20 @@ fn generate_schema_files(
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
     include_schema_docs: bool,
+    is_embedded: bool,
 ) {
     // Only swiftPackageManager adds a Sources/ subdirectory
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
         schema_path.join("Sources")
     } else {
         schema_path.to_path_buf()
+    };
+
+    // Schema/ subdirectory is used when operations are inSchemaModule (to separate schema types
+    // from operation files in the same directory), but NOT when operations are relative/absolute
+    let schema_subdir = match &config.output.operations {
+        OperationsFileOutput::InSchemaModule(_) => "Schema/",
+        _ => "",
     };
 
     // Objects
@@ -413,7 +478,7 @@ fn generate_schema_files(
                 doc,
             );
             let file_path = sources_path
-                .join("Schema/Objects")
+                .join(format!("{}Objects", schema_subdir))
                 .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -430,9 +495,11 @@ fn generate_schema_files(
                 access_mod,
                 api_target,
                 doc,
+                &config.schema_namespace,
+                is_in_module,
             );
             let file_path = sources_path
-                .join("Schema/Interfaces")
+                .join(format!("{}Interfaces", schema_subdir))
                 .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -459,7 +526,7 @@ fn generate_schema_files(
                 doc,
             );
             let file_path = sources_path
-                .join("Schema/Unions")
+                .join(format!("{}Unions", schema_subdir))
                 .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -492,7 +559,7 @@ fn generate_schema_files(
                 .collect();
 
             let enum_doc = if include_schema_docs { enum_t.description.as_deref() } else { None };
-            let content = templates::enum_type::render(
+            let mut content = templates::enum_type::render(
                 swift_name,
                 &enum_t.name, // GraphQL schema name
                 &values,
@@ -501,8 +568,13 @@ fn generate_schema_files(
                 camel_case_enums,
                 enum_doc,
             );
+            if is_embedded {
+                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                    &content, ns, access_mod,
+                );
+            }
             let file_path = sources_path
-                .join("Schema/Enums")
+                .join(format!("{}Enums", schema_subdir))
                 .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -544,7 +616,7 @@ fn generate_schema_files(
                 })
                 .collect();
 
-            let content = templates::input_object::render(
+            let mut content = templates::input_object::render(
                 swift_name,
                 &input.name, // GraphQL schema name
                 &fields,
@@ -553,8 +625,13 @@ fn generate_schema_files(
                 config.options.warnings_on_deprecated_usage == apollo_codegen_config::types::Composition::Include,
                 if include_schema_docs { input.description.as_deref() } else { None },
             );
+            if is_embedded {
+                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                    &content, ns, access_mod,
+                );
+            }
             let file_path = sources_path
-                .join("Schema/InputObjects")
+                .join(format!("{}InputObjects", schema_subdir))
                 .join(format!("{}.graphql.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -571,29 +648,39 @@ fn generate_schema_files(
             ) {
                 // ID is a custom scalar in Apollo
                 if scalar.name == "ID" {
-                    let content = templates::custom_scalar::render(
+                    let mut content = templates::custom_scalar::render(
                         swift_name,
                         if include_schema_docs { scalar.description.as_deref() } else { None },
                         if include_schema_docs { scalar.specified_by_url.as_deref() } else { None },
                         access_mod,
                         api_target,
                     );
+                    if is_embedded {
+                        content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                            &content, ns, access_mod,
+                        );
+                    }
                     let file_path = sources_path
-                        .join("Schema/CustomScalars")
+                        .join(format!("{}CustomScalars", schema_subdir))
                         .join(format!("{}.swift", naming::first_uppercased(swift_name)));
                     result.add_file(file_path, content);
                 }
                 continue;
             }
-            let content = templates::custom_scalar::render(
+            let mut content = templates::custom_scalar::render(
                 swift_name,
                 if include_schema_docs { scalar.description.as_deref() } else { None },
                 if include_schema_docs { scalar.specified_by_url.as_deref() } else { None },
                 access_mod,
                 api_target,
             );
+            if is_embedded {
+                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                    &content, ns, access_mod,
+                );
+            }
             let file_path = sources_path
-                .join("Schema/CustomScalars")
+                .join(format!("{}CustomScalars", schema_subdir))
                 .join(format!("{}.swift", naming::first_uppercased(swift_name)));
             result.add_file(file_path, content);
         }
@@ -618,16 +705,17 @@ fn generate_schema_files(
         &object_types,
         access_mod,
         api_target,
+        is_embedded,
     );
     result.add_file(
-        sources_path.join("Schema/SchemaMetadata.graphql.swift"),
+        sources_path.join(format!("{}SchemaMetadata.graphql.swift", schema_subdir)),
         content,
     );
 
     // SchemaConfiguration
-    let content = templates::schema_config::render(access_mod, api_target);
+    let content = templates::schema_config::render(access_mod, api_target, is_embedded);
     result.add_file(
-        sources_path.join("Schema/SchemaConfiguration.swift"),
+        sources_path.join(format!("{}SchemaConfiguration.swift", schema_subdir)),
         content,
     );
 }
@@ -673,11 +761,21 @@ fn generate_operation_files(
     customizer: &SchemaCustomizer,
     query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
     api_target: &str,
+    is_embedded: bool,
+    root_url: &Path,
+    ops_in_schema_module: bool,
+    embedded_target_name: Option<&str>,
 ) {
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
         schema_path.join("Sources")
     } else {
         schema_path.to_path_buf()
+    };
+
+    // Check if operations output mode is "relative"
+    let relative_subpath = match &config.output.operations {
+        OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
     };
 
     for op_def in &compilation.operations {
@@ -714,7 +812,7 @@ fn generate_operation_files(
         } else {
             None
         };
-        let content = ir_adapter::render_operation(
+        let mut content = ir_adapter::render_operation(
             &operation,
             ns,
             access_mod,
@@ -727,6 +825,18 @@ fn generate_operation_files(
             api_target,
             false, // markOperationDefinitionsAsFinal
         );
+
+        // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
+        if is_embedded && ops_in_schema_module {
+            content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                &content, ns, access_mod,
+            );
+        } else if is_embedded && !ops_in_schema_module {
+            // For relative/absolute operations in embedded mode, add import for the target module
+            if let Some(target) = embedded_target_name {
+                content = add_module_import(&content, target);
+            }
+        }
 
         let subdir = match op_def.operation_type {
             OperationType::Query => "Queries",
@@ -748,15 +858,36 @@ fn generate_operation_files(
 
         if operation.is_local_cache_mutation {
             // Local cache mutations use the operation name without type suffix
-            let file_path = sources_path
-                .join("LocalCacheMutations")
-                .join(format!("{}.graphql.swift", operation.name));
-            result.add_file(file_path, content);
+            if let Some(ref subpath_opt) = relative_subpath {
+                let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
+                let file_path = if let Some(subpath) = subpath_opt {
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", operation.name))
+                } else {
+                    source_dir.join(format!("{}.graphql.swift", operation.name))
+                };
+                result.add_file(file_path, content);
+            } else {
+                let file_path = sources_path
+                    .join("LocalCacheMutations")
+                    .join(format!("{}.graphql.swift", operation.name));
+                result.add_file(file_path, content);
+            }
         } else {
-            let file_path = sources_path
-                .join(format!("Operations/{}", subdir))
-                .join(format!("{}.graphql.swift", file_name));
-            result.add_file(file_path, content);
+            if let Some(ref subpath_opt) = relative_subpath {
+                // Relative mode: place file next to .graphql source file
+                let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
+                let file_path = if let Some(subpath) = subpath_opt {
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", file_name))
+                } else {
+                    source_dir.join(format!("{}.graphql.swift", file_name))
+                };
+                result.add_file(file_path, content);
+            } else {
+                let file_path = sources_path
+                    .join(format!("Operations/{}", subdir))
+                    .join(format!("{}.graphql.swift", file_name));
+                result.add_file(file_path, content);
+            }
         }
     }
 }
@@ -773,11 +904,21 @@ fn generate_fragment_files(
     customizer: &SchemaCustomizer,
     query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
     api_target: &str,
+    is_embedded: bool,
+    root_url: &Path,
+    ops_in_schema_module: bool,
+    embedded_target_name: Option<&str>,
 ) {
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
         schema_path.join("Sources")
     } else {
         schema_path.to_path_buf()
+    };
+
+    // Check if operations output mode is "relative"
+    let relative_subpath = match &config.output.operations {
+        OperationsFileOutput::Relative(c) => Some(c.subpath.clone()),
+        _ => None,
     };
 
     for frag_def in &compilation.fragments {
@@ -797,7 +938,7 @@ fn generate_fragment_files(
             } else {
                 false
             };
-            let content = ir_adapter::render_fragment(
+            let mut content = ir_adapter::render_fragment(
                 frag,
                 ns,
                 access_mod,
@@ -806,18 +947,51 @@ fn generate_fragment_files(
                 customizer,
                 query_string_format,
                 api_target,
+                config.options.operation_document_format.definition,
             );
 
+            // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
+            if is_embedded && ops_in_schema_module {
+                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                    &content, ns, access_mod,
+                );
+            } else if is_embedded && !ops_in_schema_module {
+                // For relative/absolute operations in embedded mode, add import for the target module
+                if let Some(target) = embedded_target_name {
+                    content = add_module_import(&content, target);
+                }
+            }
+
             if frag.is_local_cache_mutation {
-                let file_path = sources_path
-                    .join("LocalCacheMutations")
-                    .join(format!("{}.graphql.swift", frag.name));
-                result.add_file(file_path, content);
+                if let Some(ref subpath_opt) = relative_subpath {
+                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+                    let file_path = if let Some(subpath) = subpath_opt {
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag.name))
+                    } else {
+                        source_dir.join(format!("{}.graphql.swift", frag.name))
+                    };
+                    result.add_file(file_path, content);
+                } else {
+                    let file_path = sources_path
+                        .join("LocalCacheMutations")
+                        .join(format!("{}.graphql.swift", frag.name));
+                    result.add_file(file_path, content);
+                }
             } else {
-                let file_path = sources_path
-                    .join("Fragments")
-                    .join(format!("{}.graphql.swift", frag.name));
-                result.add_file(file_path, content);
+                if let Some(ref subpath_opt) = relative_subpath {
+                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+                    let file_path = if let Some(subpath) = subpath_opt {
+                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag.name))
+                    } else {
+                        source_dir.join(format!("{}.graphql.swift", frag.name))
+                    };
+                    result.add_file(file_path, content);
+                } else {
+                    let file_path = sources_path
+                        .join("Fragments")
+                        .join(format!("{}.graphql.swift", frag.name));
+                    result.add_file(file_path, content);
+                }
             }
         }
     }
@@ -832,7 +1006,10 @@ fn generate_test_mock_files(
     api_target: &str,
     access_mod: &str,
     customizer: &SchemaCustomizer,
+    embedded_target_name: Option<&str>,
 ) {
+    // For embedded mode, import the target name; otherwise import the schema namespace
+    let import_module = embedded_target_name.unwrap_or(ns);
     let mock_path = match &config.output.test_mocks {
         TestMockFileOutput::None(_) => return,
         TestMockFileOutput::Absolute(abs) => resolve_path(root_url, &abs.path),
@@ -862,7 +1039,7 @@ fn generate_test_mock_files(
         .collect();
 
     if !interfaces.is_empty() {
-        let content = templates::mock_interfaces::render(&interfaces, access_mod, ns);
+        let content = templates::mock_interfaces::render(&interfaces, access_mod, ns, import_module);
         result.add_file(
             mock_path.join("MockObject+Interfaces.graphql.swift"),
             content,
@@ -883,7 +1060,7 @@ fn generate_test_mock_files(
         .collect();
 
     if !unions.is_empty() {
-        let content = templates::mock_unions::render(&unions, access_mod, ns);
+        let content = templates::mock_unions::render(&unions, access_mod, ns, import_module);
         result.add_file(
             mock_path.join("MockObject+Unions.graphql.swift"),
             content,
@@ -934,6 +1111,7 @@ fn generate_test_mock_files(
             access_mod,
             ns,
             api_target,
+            import_module,
         );
         let file_path = mock_path.join(format!(
             "{}+Mock.graphql.swift",

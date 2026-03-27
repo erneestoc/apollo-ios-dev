@@ -22,12 +22,13 @@ pub fn render(
     access_modifier: &str,
     schema_namespace: &str,
     api_target_name: &str,
+    import_module: &str,
 ) -> String {
     let mut result = String::new();
     result.push_str(header::HEADER);
     result.push_str("\n\n");
     result.push_str("import ApolloTestSupport\n");
-    result.push_str(&format!("import {}\n\n", schema_namespace));
+    result.push_str(&format!("import {}\n\n", import_module));
 
     let swift_name = crate::naming::first_uppercased(object_name);
     let ns = crate::naming::first_uppercased(schema_namespace);

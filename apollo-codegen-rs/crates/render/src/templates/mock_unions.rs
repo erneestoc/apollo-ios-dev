@@ -13,12 +13,13 @@ pub fn render(
     unions: &[String],
     access_modifier: &str,
     schema_module_name: &str,
+    import_module: &str,
 ) -> String {
     let mut result = String::new();
     result.push_str(header::HEADER);
     result.push_str("\n\n");
     result.push_str("import ApolloTestSupport\n");
-    result.push_str(&format!("import {}\n\n", schema_module_name));
+    result.push_str(&format!("import {}\n\n", import_module));
 
     result.push_str(&format!("{}extension MockObject {{\n", access_modifier));
     for union_name in unions {

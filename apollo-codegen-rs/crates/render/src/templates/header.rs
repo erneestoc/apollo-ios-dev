@@ -62,3 +62,73 @@ pub fn render_schema_file_with_doc(
 
     result
 }
+
+/// Wrap already-rendered file content in a namespace extension for embeddedInTarget mode.
+///
+/// Takes the full rendered content of a file and wraps the body (everything after
+/// the import lines) in `{access_modifier}extension {namespace} { ... }`.
+/// The first declaration keyword (class, struct, enum, typealias) has its access
+/// modifier removed since it's inherited from the extension.
+pub fn wrap_in_namespace_extension(content: &str, namespace: &str, access_modifier: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = String::new();
+    let mut body_start = 0;
+
+    // Copy header and import lines as-is, find where body starts
+    for (i, line) in lines.iter().enumerate() {
+        if line.starts_with("import ") || line.starts_with("@_exported import ") {
+            // This is the last import line; body starts after the blank line following it
+            result.push_str(line);
+            result.push('\n');
+            body_start = i + 1;
+            // Skip blank line after import
+            if body_start < lines.len() && lines[body_start].is_empty() {
+                result.push('\n');
+                body_start += 1;
+            }
+            break;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    // Open extension
+    result.push_str(&format!("{}extension {} {{\n", access_modifier, namespace));
+
+    // Process body lines: indent by 2 spaces, remove access modifier from first declaration
+    let mut stripped_access = false;
+    for i in body_start..lines.len() {
+        let line = lines[i];
+        if line.is_empty() {
+            result.push('\n');
+            continue;
+        }
+
+        let trimmed = line.trim_start();
+        let processed = if !stripped_access
+            && !trimmed.starts_with("//")
+            && !trimmed.starts_with("///")
+            && trimmed.starts_with(access_modifier)
+        {
+            // Strip the access modifier from the first actual declaration line
+            stripped_access = true;
+            trimmed[access_modifier.len()..].to_string()
+        } else {
+            line.to_string()
+        };
+
+        result.push_str("  ");
+        result.push_str(&processed);
+        result.push('\n');
+    }
+
+    // Close extension: ensure blank line before closing brace, no trailing newline
+    // Strip any trailing newlines from body
+    while result.ends_with('\n') {
+        result.pop();
+    }
+    // Add blank line + closing brace (no trailing newline to match Swift output)
+    result.push_str("\n\n}");
+
+    result
+}

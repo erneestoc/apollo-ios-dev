@@ -35,6 +35,9 @@ pub struct FragmentConfig<'a> {
     pub query_string_format: super::operation::QueryStringFormat,
     /// The API target name for import statements (default: "ApolloAPI").
     pub api_target_name: &'a str,
+    /// Whether to include the fragmentDefinition property (default: true).
+    /// When operationDocumentFormat doesn't include "definition", this should be false.
+    pub include_definition: bool,
 }
 
 /// Render a complete fragment file.
@@ -70,21 +73,23 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
         indent, config.access_modifier, config.name, conformance
     ));
 
-    // fragmentDefinition
-    result.push_str(&format!(
-        "{}{}static var fragmentDefinition: StaticString {{\n",
-        inner_indent, config.access_modifier
-    ));
-    // Fragment definitions always use single-line format (matching Swift CLI behavior
-    // which ignores queryStringLiteralFormat for fragmentDefinition)
-    result.push_str(&format!(
-        "{}  #\"{}\"#\n",
-        inner_indent, config.fragment_definition
-    ));
-    result.push_str(&format!("{}}}\n", inner_indent));
+    // fragmentDefinition (only when definition is included in operationDocumentFormat)
+    if config.include_definition {
+        result.push_str(&format!(
+            "{}{}static var fragmentDefinition: StaticString {{\n",
+            inner_indent, config.access_modifier
+        ));
+        // Fragment definitions always use single-line format (matching Swift CLI behavior
+        // which ignores queryStringLiteralFormat for fragmentDefinition)
+        result.push_str(&format!(
+            "{}  #\"{}\"#\n",
+            inner_indent, config.fragment_definition
+        ));
+        result.push_str(&format!("{}}}\n", inner_indent));
+        result.push('\n');
+    }
 
     // __data and init
-    result.push('\n');
     let data_keyword = if config.is_mutable { "var" } else { "let" };
     result.push_str(&format!(
         "{}{}{} __data: DataDict\n",

@@ -146,6 +146,7 @@ pub fn render_fragment(
     customizer: &SchemaCustomizer,
     query_string_format: crate::templates::operation::QueryStringFormat,
     api_target_name: &str,
+    include_definition: bool,
 ) -> String {
     let frag_conformance = if frag.is_local_cache_mutation {
         SelectionSetConformance::MutableFragment
@@ -185,6 +186,7 @@ pub fn render_fragment(
         is_mutable: frag.is_local_cache_mutation,
         query_string_format,
         api_target_name: api_target_name.to_string(),
+        include_definition,
     };
 
     render_owned_fragment(&config)
@@ -219,6 +221,7 @@ struct OwnedFragmentConfig {
     is_mutable: bool,
     query_string_format: crate::templates::operation::QueryStringFormat,
     api_target_name: String,
+    include_definition: bool,
 }
 
 struct OwnedVariableConfig {
@@ -4920,6 +4923,7 @@ fn render_owned_fragment(config: &OwnedFragmentConfig) -> String {
         is_mutable: config.is_mutable,
         query_string_format: config.query_string_format,
         api_target_name: &config.api_target_name,
+        include_definition: config.include_definition,
     };
 
     crate::templates::fragment::render(&template_config)

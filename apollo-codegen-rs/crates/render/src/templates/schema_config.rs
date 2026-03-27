@@ -5,7 +5,11 @@
 pub fn render(
     access_modifier: &str,
     api_target_name: &str,
+    is_embedded: bool,
 ) -> String {
+    // In embedded mode, SchemaConfiguration doesn't have 'public' on the enum
+    // because it's accessed within the module
+    let enum_am = if is_embedded { "" } else { access_modifier };
     format!(
         "\
 // @generated
@@ -17,7 +21,7 @@ pub fn render(
 
 import {api}
 
-{am}enum SchemaConfiguration: {api}.SchemaConfiguration {{
+{eam}enum SchemaConfiguration: {api}.SchemaConfiguration {{
   {am}static func cacheKeyInfo(for type: {api}.Object, object: {api}.ObjectData) -> CacheKeyInfo? {{
     // Implement this function to configure cache key resolution for your schema types.
     return nil
@@ -25,5 +29,6 @@ import {api}
 }}\n",
         api = api_target_name,
         am = access_modifier,
+        eam = enum_am,
     )
 }

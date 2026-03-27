@@ -15,6 +15,8 @@ pub fn render(
     access_modifier: &str,
     api_target_name: &str,
     description: Option<&str>,
+    schema_namespace: &str,
+    is_in_module: bool,
 ) -> String {
     let renamed_comment = if type_name != schema_name {
         format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
@@ -29,5 +31,12 @@ pub fn render(
         schema_name,
     );
 
-    header::render_schema_file_with_doc(access_modifier, api_target_name, Some("Interfaces"), &body, description)
+    // For embeddedInTarget (is_in_module=false), use full namespace prefix
+    let ns_prefix = if !is_in_module {
+        format!("{}.Interfaces", crate::naming::first_uppercased(schema_namespace))
+    } else {
+        "Interfaces".to_string()
+    };
+
+    header::render_schema_file_with_doc(access_modifier, api_target_name, Some(&ns_prefix), &body, description)
 }

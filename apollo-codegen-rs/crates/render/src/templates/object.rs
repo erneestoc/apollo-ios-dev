@@ -40,10 +40,17 @@ pub fn render(
         is_in_module,
     );
 
+    // For embeddedInTarget (is_in_module=false), use full namespace prefix
+    let ns_prefix = if !is_in_module {
+        format!("{}.Objects", crate::naming::first_uppercased(schema_namespace))
+    } else {
+        "Objects".to_string()
+    };
+
     header::render_schema_file_with_doc(
         access_modifier,
         api_target_name,
-        Some("Objects"),
+        Some(&ns_prefix),
         &body,
         description,
     )

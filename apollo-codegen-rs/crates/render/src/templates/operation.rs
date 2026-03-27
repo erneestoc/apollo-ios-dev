@@ -248,10 +248,13 @@ fn render_regular_operation(config: &OperationConfig) -> String {
 
     // operationIdentifier (before definition if present)
     if let Some(op_id) = config.operation_identifier {
-        result.push_str(&format!("    operationIdentifier: \"{}\"{}\n",
-            op_id,
-            if config.include_definition { "," } else { "" }
-        ));
+        if config.include_definition {
+            result.push_str(&format!("    operationIdentifier: \"{}\",\n", op_id));
+        } else {
+            // When no definition, operationIdentifier is the only argument;
+            // closing paren goes on a separate line at the statement indentation level
+            result.push_str(&format!("    operationIdentifier: \"{}\"\n", op_id));
+        }
     }
 
     // definition (only if include_definition is true)
@@ -276,9 +279,11 @@ fn render_regular_operation(config: &OperationConfig) -> String {
                 .collect();
             result.push_str(&format!("      fragments: [{}]\n", fragments.join(", ")));
         }
-        result.push_str("    )");
+        result.push_str("    ))");
+    } else {
+        result.push_str("  )");
     }
-    result.push_str(")\n");
+    result.push('\n');
 
     // Variables or init
     if config.variables.is_empty() {
