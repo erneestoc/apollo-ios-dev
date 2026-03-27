@@ -126,6 +126,7 @@ pub struct InclusionConditionRef<'a> {
 #[derive(Debug, Clone)]
 pub struct FieldSelectionItem<'a> {
     pub name: &'a str,
+    pub alias: Option<&'a str>,
     pub swift_type: &'a str,
     pub arguments: Option<&'a str>,
 }
@@ -290,17 +291,10 @@ pub fn render(config: &SelectionSetConfig) -> String {
         for sel in config.selections.iter() {
             match sel {
                 SelectionItem::Field(f) => {
-                    if let Some(args) = f.arguments {
-                        result.push_str(&format!(
-                            "{}.field(\"{}\", {}.self, arguments: {}),\n",
-                            item_indent, f.name, f.swift_type, args
-                        ));
-                    } else {
-                        result.push_str(&format!(
-                            "{}.field(\"{}\", {}.self),\n",
-                            item_indent, f.name, f.swift_type
-                        ));
-                    }
+                    result.push_str(&format!(
+                        "{}{},\n",
+                        item_indent, render_field_selection(f)
+                    ));
                 }
                 SelectionItem::InlineFragment(name) => {
                     result.push_str(&format!(
@@ -316,17 +310,10 @@ pub fn render(config: &SelectionSetConfig) -> String {
                 }
                 SelectionItem::ConditionalField(cond, f) => {
                     let cond_str = render_inclusion_condition(cond);
-                    if let Some(args) = f.arguments {
-                        result.push_str(&format!(
-                            "{}.include(if: {}, .field(\"{}\", {}.self, arguments: {})),\n",
-                            item_indent, cond_str, f.name, f.swift_type, args
-                        ));
-                    } else {
-                        result.push_str(&format!(
-                            "{}.include(if: {}, .field(\"{}\", {}.self)),\n",
-                            item_indent, cond_str, f.name, f.swift_type
-                        ));
-                    }
+                    result.push_str(&format!(
+                        "{}.include(if: {}, {}),\n",
+                        item_indent, cond_str, render_field_selection(f)
+                    ));
                 }
                 SelectionItem::ConditionalInlineFragment(cond, name) => {
                     let cond_str = render_inclusion_condition(cond);
@@ -343,17 +330,10 @@ pub fn render(config: &SelectionSetConfig) -> String {
                     ));
                     let group_indent = format!("{}  ", item_indent);
                     for f in fields {
-                        if let Some(args) = f.arguments {
-                            result.push_str(&format!(
-                                "{}.field(\"{}\", {}.self, arguments: {}),\n",
-                                group_indent, f.name, f.swift_type, args
-                            ));
-                        } else {
-                            result.push_str(&format!(
-                                "{}.field(\"{}\", {}.self),\n",
-                                group_indent, f.name, f.swift_type
-                            ));
-                        }
+                        result.push_str(&format!(
+                            "{}{},\n",
+                            group_indent, render_field_selection(f)
+                        ));
                     }
                     result.push_str(&format!("{}]),\n", item_indent));
                 }
@@ -549,6 +529,26 @@ fn render_conformance(config: &SelectionSetConfig) -> String {
             format!("{}.MutableInlineFragment", config.schema_namespace)
         }
         SelectionSetConformance::Custom(s) => s.to_string(),
+    }
+}
+
+/// Render a `.field(...)` selection item string.
+fn render_field_selection(f: &FieldSelectionItem) -> String {
+    let alias_part = if let Some(alias) = f.alias {
+        format!(", alias: \"{}\"", alias)
+    } else {
+        String::new()
+    };
+    if let Some(args) = f.arguments {
+        // Multi-line arguments need proper indentation
+        if args.contains('\n') {
+            let indented_args = args.replace('\n', "\n  ");
+            format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, indented_args)
+        } else {
+            format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, args)
+        }
+    } else {
+        format!(".field(\"{}\"{}, {}.self)", f.name, alias_part, f.swift_type)
     }
 }
 

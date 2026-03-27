@@ -152,6 +152,15 @@ impl GraphQLType {
             Self::NonNull(inner) | Self::List(inner) => inner.named_type(),
         }
     }
+
+    /// Returns true if this type contains a List wrapper at any level.
+    pub fn is_list(&self) -> bool {
+        match self {
+            Self::List(_) => true,
+            Self::NonNull(inner) => inner.is_list(),
+            Self::Named(_) => false,
+        }
+    }
 }
 
 /// A GraphQL value (for default values, arguments, etc.).

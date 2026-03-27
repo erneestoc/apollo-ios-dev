@@ -143,6 +143,18 @@ fn render_fragment_body(config: &FragmentConfig) -> String {
     if !ss.field_accessors.is_empty() {
         result.push('\n');
         for accessor in &ss.field_accessors {
+            // Documentation comment
+            if let Some(desc) = accessor.description {
+                if !desc.is_empty() {
+                    for line in desc.lines() {
+                        if line.is_empty() {
+                            result.push_str(&format!("{}///\n", inner_indent));
+                        } else {
+                            result.push_str(&format!("{}/// {}\n", inner_indent, line));
+                        }
+                    }
+                }
+            }
             if config.is_mutable {
                 result.push_str(&format!(
                     "{}{}var {}: {} {{\n",
