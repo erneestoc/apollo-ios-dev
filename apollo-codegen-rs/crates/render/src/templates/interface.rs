@@ -14,6 +14,7 @@ pub fn render(
     schema_name: &str,
     access_modifier: &str,
     api_target_name: &str,
+    description: Option<&str>,
 ) -> String {
     let body = format!(
         "static let {} = {}.Interface(name: \"{}\")",
@@ -22,5 +23,5 @@ pub fn render(
         schema_name,
     );
 
-    header::render_schema_file(access_modifier, api_target_name, Some("Interfaces"), &body)
+    header::render_schema_file_with_doc(access_modifier, api_target_name, Some("Interfaces"), &body, description)
 }

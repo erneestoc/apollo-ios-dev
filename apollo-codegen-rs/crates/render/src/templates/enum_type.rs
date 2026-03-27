@@ -24,8 +24,22 @@ pub fn render(
     access_modifier: &str,
     api_target_name: &str,
     camel_case_conversion: bool,
+    description: Option<&str>,
 ) -> String {
     let mut body = String::new();
+
+    // Type-level documentation comment
+    if let Some(desc) = description {
+        if !desc.is_empty() {
+            for line in desc.lines() {
+                if line.is_empty() {
+                    body.push_str("///\n");
+                } else {
+                    body.push_str(&format!("/// {}\n", line));
+                }
+            }
+        }
+    }
 
     body.push_str(&format!(
         "{}enum {}: String, EnumType {{\n",
@@ -41,6 +55,19 @@ pub fn render(
         };
 
         let escaped_name = crate::naming::escape_swift_name(&case_name);
+
+        // Value-level documentation comment
+        if let Some(ref desc) = value.description {
+            if !desc.is_empty() {
+                for line in desc.lines() {
+                    if line.is_empty() {
+                        body.push_str("  ///\n");
+                    } else {
+                        body.push_str(&format!("  /// {}\n", line));
+                    }
+                }
+            }
+        }
 
         if value.is_deprecated {
             if let Some(ref reason) = value.deprecation_reason {

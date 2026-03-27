@@ -56,6 +56,13 @@ impl FieldSelection {
             FieldSelection::Entity(f) => &f.name,
         }
     }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            FieldSelection::Scalar(f) => f.description.as_deref(),
+            FieldSelection::Entity(f) => f.description.as_deref(),
+        }
+    }
 }
 
 /// An inline fragment (type condition) selection.

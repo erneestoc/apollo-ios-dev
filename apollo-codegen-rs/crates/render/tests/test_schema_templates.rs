@@ -53,6 +53,7 @@ fn object_template_height_no_interfaces() {
         "ApolloAPI",
         "AnimalKingdomAPI",
         true,
+        None,
     );
     assert_matches_golden(&generated, "Objects/Height.graphql.swift");
 }
@@ -72,6 +73,7 @@ fn object_template_dog_with_interfaces() {
         "ApolloAPI",
         "AnimalKingdomAPI",
         true,
+        None,
     );
     assert_matches_golden(&generated, "Objects/Dog.graphql.swift");
 }
@@ -83,6 +85,7 @@ fn interface_template_animal() {
         "Animal",
         "public ",
         "ApolloAPI",
+        None,
     );
     assert_matches_golden(&generated, "Interfaces/Animal.graphql.swift");
 }
@@ -102,6 +105,7 @@ fn union_template_classroom_pet() {
         "ApolloAPI",
         "AnimalKingdomAPI",
         true,
+        None,
     );
     assert_matches_golden(&generated, "Unions/ClassroomPet.graphql.swift");
 }
@@ -145,6 +149,7 @@ fn enum_template_skin_covering() {
         "public ",
         "ApolloAPI",
         true, // AnimalKingdomAPI config uses camelCase enum conversion
+        None,
     );
     assert_matches_golden(&generated, "Enums/SkinCovering.graphql.swift");
 }

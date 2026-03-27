@@ -18,10 +18,7 @@ pub fn render(
 import {api}
 
 {am}enum SchemaConfiguration: {api}.SchemaConfiguration {{
-  {am}static func cacheKeyInfo(
-    for type: {api}.Object,
-    object: {api}.ObjectData
-  ) -> {api}.CacheKeyInfo? {{
+  {am}static func cacheKeyInfo(for type: {api}.Object, object: {api}.ObjectData) -> CacheKeyInfo? {{
     // Implement this function to configure cache key resolution for your schema types.
     return nil
   }}

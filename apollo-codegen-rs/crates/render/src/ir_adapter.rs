@@ -279,6 +279,7 @@ enum OwnedSelectionKind {
 struct OwnedFieldAccessor {
     name: String,
     swift_type: String,
+    description: Option<String>,
 }
 
 struct OwnedInlineFragmentAccessor {
@@ -630,6 +631,7 @@ fn build_selection_set_config_owned(
             OwnedFieldAccessor {
                 name: key.clone(),
                 swift_type,
+                description: field.description().map(|s| s.to_string()),
             }
         })
         .collect();
@@ -644,7 +646,7 @@ fn build_selection_set_config_owned(
             if ds.fields.contains_key(key) { continue; }
             if !field_accessors.iter().any(|f| f.name == *key) {
                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
             }
         }
     }
@@ -675,6 +677,7 @@ fn build_selection_set_config_owned(
                     field_accessors.push(OwnedFieldAccessor {
                         name: key.clone(),
                         swift_type,
+                        description: None,
                     });
                 }
             }
@@ -694,6 +697,7 @@ fn build_selection_set_config_owned(
                                 field_accessors.push(OwnedFieldAccessor {
                                     name: key.clone(),
                                     swift_type,
+                                    description: None,
                                 });
                             }
                         }
@@ -873,7 +877,7 @@ fn build_selection_set_config_owned(
                             if frag_key == "__typename" { continue; }
                             if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
                                 let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
-                                child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
+                                child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type, description: None });
                                 // Also add to initializer if it exists
                                 if let Some(ref mut init) = child_ss.initializer {
                                     init.parameters.push(OwnedInitParam {
@@ -910,7 +914,7 @@ fn build_selection_set_config_owned(
                                     if frag_key == "__typename" { continue; }
                                     if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
                                         let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
-                                        child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type });
+                                        child_ss.field_accessors.push(OwnedFieldAccessor { name: frag_key.clone(), swift_type, description: None });
                                         if let Some(ref mut init) = child_ss.initializer {
                                             init.parameters.push(OwnedInitParam {
                                                 name: frag_key.clone(),
@@ -993,7 +997,7 @@ fn build_selection_set_config_owned(
                         // Add to field accessors - INSERT at beginning before parent fields
                         if !existing.config.field_accessors.iter().any(|f| f.name == *abs_key) {
                             // Insert at position 0 (before parent fields)
-                            existing.config.field_accessors.insert(0, OwnedFieldAccessor { name: abs_key.clone(), swift_type: swift_type.clone() });
+                            existing.config.field_accessors.insert(0, OwnedFieldAccessor { name: abs_key.clone(), swift_type: swift_type.clone(), description: None });
                             // Also update initializer
                             if let Some(ref mut init) = existing.config.initializer {
                                 // Find the right position - after __typename if present, before existing params
@@ -1079,7 +1083,7 @@ fn build_selection_set_config_owned(
                             for (key, field) in &other.selection_set.direct_selections.fields {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 if !merged.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
-                                    merged.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                    merged.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                 }
                             }
                         }
@@ -1313,7 +1317,7 @@ fn build_selection_set_config_owned(
                         if key == "__typename" { continue; }
                         if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                            child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                     // Also merge fields from sub-fragments
@@ -1323,7 +1327,7 @@ fn build_selection_set_config_owned(
                                 if key == "__typename" { continue; }
                                 if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
                                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                    child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                    child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                 }
                             }
                         }
@@ -1342,7 +1346,7 @@ fn build_selection_set_config_owned(
                                     if key == "__typename" { continue; }
                                     if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
                                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                        child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                        child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                     }
                                 }
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
@@ -1351,7 +1355,7 @@ fn build_selection_set_config_owned(
                                             if key == "__typename" { continue; }
                                             if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
                                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                                child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                                child_ss.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                             }
                                         }
                                     }
@@ -1675,7 +1679,7 @@ fn build_selection_set_config_owned(
                                 if key == "__typename" { continue; }
                                 if !merged_config.config.field_accessors.iter().any(|f| f.name == *key) {
                                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                    merged_config.config.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone() });
+                                    merged_config.config.field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone(), description: None });
                                     if let Some(ref mut init) = merged_config.config.initializer {
                                         init.parameters.push(OwnedInitParam {
                                             name: key.clone(), swift_type: swift_type.clone(),
@@ -2236,7 +2240,7 @@ fn build_selection_set_config_owned(
                             if has_inclusion_conditions(conds) && !swift_type.ends_with('?') {
                                 swift_type.push('?');
                             }
-                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                 } else {
@@ -2249,7 +2253,7 @@ fn build_selection_set_config_owned(
                 for (key, field) in &frag_ds.fields {
                     if !pfa.iter().any(|f| f.name == *key) {
                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                     }
                 }
                 // Add sub-fragment fields
@@ -2258,7 +2262,7 @@ fn build_selection_set_config_owned(
                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                             if !pfa.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                             }
                         }
                     }
@@ -2271,7 +2275,7 @@ fn build_selection_set_config_owned(
                         if key == "__typename" { continue; }
                         if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                 }
@@ -2307,7 +2311,7 @@ fn build_selection_set_config_owned(
                         for (key, field) in &parent_frag.root_field.selection_set.direct_selections.fields {
                             if !pfa.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                             }
                         }
                     }
@@ -2613,7 +2617,7 @@ fn build_selection_set_config_owned(
                                 for (key, field) in &other_frag_inline.selection_set.direct_selections.fields {
                                     if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
                                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                     }
                                 }
                             }
@@ -2623,7 +2627,7 @@ fn build_selection_set_config_owned(
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         if !pfa.iter().any(|f| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                     // Finally: parent inherited fields
@@ -2679,7 +2683,7 @@ fn build_selection_set_config_owned(
                                 if key == "__typename" { continue; }
                                 if !pfa.iter().any(|f| f.name == *key) {
                                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                    pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                    pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                                 }
                             }
                         }
@@ -2991,7 +2995,7 @@ fn build_selection_set_config_owned(
                 if key == "__typename" { continue; }
                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                 if !cond_fa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
-                    cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                    cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                 }
             }
             // Add sub-fragment fields
@@ -3001,7 +3005,7 @@ fn build_selection_set_config_owned(
                         if key == "__typename" { continue; }
                         if !cond_fa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                            cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            cond_fa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                 }
@@ -3480,7 +3484,7 @@ fn build_inline_fragment_entity_type(
                 swift_type.push('?');
             }
             if !merged_fields.iter().any(|f| f.name == *key) {
-                merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
             }
         }
     }
@@ -3489,7 +3493,7 @@ fn build_inline_fragment_entity_type(
         if key == "__typename" { continue; }
         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         if !merged_fields.iter().any(|f| f.name == *key) {
-            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
         }
     }
 
@@ -3501,7 +3505,7 @@ fn build_inline_fragment_entity_type(
             if !merged_fields.iter().any(|f| f.name == *key) {
                 if swift_type.ends_with('?') && !key.starts_with("__") {
                     // Conditional (optional) sibling fields go before fragment fields
-                    merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone() });
+                    merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone(), description: None });
                 } else {
                     // Unconditional sibling fields go after fragment fields
                     unconditional_sibling_fields.push((key.clone(), swift_type.clone()));
@@ -3518,7 +3522,7 @@ fn build_inline_fragment_entity_type(
                     if key == "__typename" { continue; }
                     if !merged_fields.iter().any(|f| f.name == *key) {
                         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                        merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                        merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                     }
                 }
             }
@@ -3530,7 +3534,7 @@ fn build_inline_fragment_entity_type(
                             if key == "__typename" { continue; }
                             if !merged_fields.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                                merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                             }
                         }
                     }
@@ -3542,7 +3546,7 @@ fn build_inline_fragment_entity_type(
     // Add unconditional sibling fields after fragment fields
     for (key, swift_type) in &unconditional_sibling_fields {
         if !merged_fields.iter().any(|f| f.name == *key) {
-            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone() });
+            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone(), description: None });
         }
     }
 
@@ -3802,7 +3806,7 @@ fn build_merged_entity_nested_type(
     for (key, field) in &parent_entity_field.selection_set.direct_selections.fields {
         if key == "__typename" { continue; }
         let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-        merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+        merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
     }
 
     // Collect fields from the source fragment's entity field
@@ -3815,7 +3819,7 @@ fn build_merged_entity_nested_type(
                 if key == "__typename" { continue; }
                 if !merged_fields.iter().any(|f| f.name == *key) {
                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                    merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                    merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                 }
             }
         }
@@ -3827,7 +3831,7 @@ fn build_merged_entity_nested_type(
                         if key == "__typename" { continue; }
                         if !merged_fields.iter().any(|f| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type });
+                            merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: None });
                         }
                     }
                 }
@@ -4597,6 +4601,7 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
         .map(|a| FieldAccessor {
             name: &a.name,
             swift_type: &a.swift_type,
+            description: a.description.as_deref(),
         })
         .collect();
 

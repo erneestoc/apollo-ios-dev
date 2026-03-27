@@ -104,13 +104,23 @@ impl GraphQLFrontend {
             }
         }
 
-        // Add Apollo-specific directives if not already present
-        let apollo_directives = r#"
-directive @apollo_client_ios_localCacheMutation on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION
-directive @typePolicy(keyFields: String!) on OBJECT | INTERFACE
-directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
-"#;
-        builder = builder.parse(apollo_directives, "apollo_extensions.graphql");
+        // Add Apollo-specific directives only if not already defined in the schema sources.
+        // Some schemas (e.g. StarWarsAPI, UploadAPI) already include these directives,
+        // and re-defining them causes a "defined multiple times" error.
+        let all_sources: String = sources.iter().map(|(content, _)| content.as_str()).collect::<Vec<_>>().join("\n");
+        let mut extra_directives = String::new();
+        if !all_sources.contains("@apollo_client_ios_localCacheMutation") {
+            extra_directives.push_str("directive @apollo_client_ios_localCacheMutation on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION\n");
+        }
+        if !all_sources.contains("@typePolicy") {
+            extra_directives.push_str("directive @typePolicy(keyFields: String!) on OBJECT | INTERFACE\n");
+        }
+        if !all_sources.contains("@fieldPolicy") {
+            extra_directives.push_str("directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION\n");
+        }
+        if !extra_directives.is_empty() {
+            builder = builder.parse(extra_directives, "apollo_extensions.graphql");
+        }
 
         let schema = builder.build().map_err(|e| {
             e.errors
@@ -233,7 +243,7 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
                 };
 
                 // Get the source text for this operation
-                let source = self.print_operation(op);
+                let source = self.print_operation(op, options.legacy_safelisting_compatible_operations);
 
                 // Determine file path from source mapping
                 let file_path = self.find_file_path_for_operation(name, source_map);
@@ -281,7 +291,7 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
         // Build fragments
         let mut fragments = Vec::new();
         for (name, frag) in &doc.fragments {
-            let source = self.print_fragment(frag);
+            let source = self.print_fragment(frag, options.legacy_safelisting_compatible_operations);
             let file_path = self.find_file_path_for_fragment(name, source_map);
 
             let is_local_cache_mutation = frag.directives.iter().any(|d| {
@@ -732,18 +742,18 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
     /// Print an operation to its source text (matching graphql-js print format).
     /// Adds __typename to every composite selection set, matching the behavior of
     /// graphql-js's transformToNetworkRequestSourceDefinition.
-    fn print_operation(&self, op: &executable::Operation) -> String {
+    fn print_operation(&self, op: &executable::Operation, legacy_safelisting: bool) -> String {
         let raw = op.serialize().no_indent().to_string();
         let raw = strip_local_cache_mutation_directive(&raw);
         let raw = fix_default_value_formatting(&raw);
-        add_typename_to_selection_sets(&raw)
+        add_typename_to_selection_sets(&raw, legacy_safelisting)
     }
 
     /// Print a fragment to its source text.
-    fn print_fragment(&self, frag: &executable::Fragment) -> String {
+    fn print_fragment(&self, frag: &executable::Fragment, legacy_safelisting: bool) -> String {
         let raw = frag.serialize().no_indent().to_string();
         let raw = strip_local_cache_mutation_directive(&raw);
-        add_typename_to_selection_sets(&raw)
+        add_typename_to_selection_sets(&raw, legacy_safelisting)
     }
 
     fn find_file_path_for_operation(
@@ -835,7 +845,7 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
         &self,
         schema: &Schema,
         doc: &ExecutableDocument,
-        _options: &CompileOptions,
+        options: &CompileOptions,
     ) -> Vec<GraphQLNamedType> {
         // Built-in scalars that should be skipped
         let builtin_scalars = ["String", "Int", "Float", "Boolean"];
@@ -871,16 +881,9 @@ directive @fieldPolicy(forField: String!, keyArgs: String!) on FIELD_DEFINITION
             self.collect_types_from_selection_set(&frag.selection_set, schema, doc, &builtin_scalars, &mut seen);
         }
 
-        // Add any remaining schema types not encountered during traversal
-        for (name, _extended_type) in &schema.types {
-            if name.starts_with("__") {
-                continue;
-            }
-            if builtin_scalars.contains(&name.as_str()) {
-                continue;
-            }
-            seen.insert(name.to_string());
-        }
+        // NOTE: We intentionally do NOT add all remaining schema types here.
+        // The Swift/JS compiler only includes types actually referenced by
+        // operations and fragments. Unreferenced types are excluded from generation.
 
         // Build the final list
         seen.iter()
@@ -1101,9 +1104,9 @@ fn strip_local_cache_mutation_directive(source: &str) -> String {
           .replace("@apollo_client_ios_localCacheMutation", "")
 }
 
-/// - Do NOT add `__typename` inside inline fragments (e.g., `... on Dog { species }`)
+/// - Do NOT add `__typename` inside inline fragments (unless legacy_safelisting is true)
 /// - DO add `__typename` in fragment definition root selection sets
-fn add_typename_to_selection_sets(source: &str) -> String {
+fn add_typename_to_selection_sets(source: &str, legacy_safelisting: bool) -> String {
     let mut result = String::with_capacity(source.len() + 100);
     let chars: Vec<char> = source.chars().collect();
     let len = chars.len();
@@ -1113,7 +1116,7 @@ fn add_typename_to_selection_sets(source: &str) -> String {
         if chars[i] == '{' {
             // Determine context by looking at what precedes this `{`.
             // We look backwards through the already-built result string, skipping whitespace.
-            let should_add_typename = should_add_typename_before_brace(&result);
+            let should_add_typename = should_add_typename_before_brace(&result, legacy_safelisting);
 
             result.push('{');
             i += 1;
@@ -1158,7 +1161,7 @@ fn add_typename_to_selection_sets(source: &str) -> String {
 ///   list at depth 0 (first `{` in the document)
 /// - Inline fragment braces: `{` preceded by a type name after `... on`
 /// - Argument object literals: `{` preceded by `:` or `[` etc.
-fn should_add_typename_before_brace(result_so_far: &str) -> bool {
+fn should_add_typename_before_brace(result_so_far: &str, legacy_safelisting: bool) -> bool {
     let trimmed = result_so_far.trim_end();
     if trimmed.is_empty() {
         return false;
@@ -1243,7 +1246,8 @@ fn should_add_typename_before_brace(result_so_far: &str) -> bool {
                 // This is a directive like @include(...). Look further back to see
                 // if there's a `... on TypeName` pattern.
                 let before_directive = trimmed[..start - 1].trim_end();
-                return !is_inline_fragment_context(before_directive);
+                // In legacy safelisting mode, inline fragments also get __typename
+                return legacy_safelisting || !is_inline_fragment_context(before_directive);
             }
             // Not a directive - this is likely a field name with arguments
             // But we should still check if the identifier is a type name after `... on`
@@ -1251,7 +1255,8 @@ fn should_add_typename_before_brace(result_so_far: &str) -> bool {
             if before_ident.ends_with("on") {
                 let before_on = before_ident[..before_ident.len() - 2].trim_end();
                 if before_on.ends_with("...") {
-                    return false; // inline fragment with arguments: `... on Type(...) {`
+                    // inline fragment with arguments: `... on Type(...) {`
+                    return legacy_safelisting;
                 }
             }
             return true;
@@ -1261,7 +1266,8 @@ fn should_add_typename_before_brace(result_so_far: &str) -> bool {
 
     // The last non-whitespace character is an identifier character
     if last_char.is_ascii_alphanumeric() || last_char == b'_' {
-        return !is_inline_fragment_context(trimmed);
+        // In legacy safelisting mode, inline fragments also get __typename
+        return legacy_safelisting || !is_inline_fragment_context(trimmed);
     }
 
     // For any other character (e.g., `:`, `[`), don't add __typename

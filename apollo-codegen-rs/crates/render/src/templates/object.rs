@@ -29,6 +29,7 @@ pub fn render(
     api_target_name: &str,
     schema_namespace: &str,
     is_in_module: bool,
+    description: Option<&str>,
 ) -> String {
     let body = render_body(
         type_name,
@@ -39,11 +40,12 @@ pub fn render(
         is_in_module,
     );
 
-    header::render_schema_file(
+    header::render_schema_file_with_doc(
         access_modifier,
         api_target_name,
         Some("Objects"),
         &body,
+        description,
     )
 }
 

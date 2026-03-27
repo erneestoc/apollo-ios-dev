@@ -61,6 +61,8 @@ fn fragment_template_dog_fragment() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "DogFragment",
             schema_namespace: "AnimalKingdomAPI",
@@ -85,7 +87,7 @@ fn fragment_template_dog_fragment() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "species",
-                    swift_type: "String",
+                    swift_type: "String", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -113,9 +115,11 @@ fn fragment_template_dog_fragment() {
             }),
             nested_types: vec![],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -134,6 +138,8 @@ fn fragment_template_height_in_meters() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "HeightInMeters",
             schema_namespace: "AnimalKingdomAPI",
@@ -158,7 +164,7 @@ fn fragment_template_height_in_meters() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "height",
-                    swift_type: "Height",
+                    swift_type: "Height", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -217,7 +223,7 @@ fn fragment_template_height_in_meters() {
                         field_accessors: vec![
                             FieldAccessor {
                                 name: "meters",
-                                swift_type: "Int",
+                                swift_type: "Int", description: None,
                             },
                         ],
                         inline_fragment_accessors: vec![],
@@ -245,16 +251,20 @@ fn fragment_template_height_in_meters() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
             ],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -272,6 +282,8 @@ fn fragment_template_pet_details() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "PetDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -306,15 +318,15 @@ fn fragment_template_pet_details() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "humanName",
-                    swift_type: "String?",
+                    swift_type: "String?", description: None,
                 },
                 FieldAccessor {
                     name: "favoriteToy",
-                    swift_type: "String",
+                    swift_type: "String", description: None,
                 },
                 FieldAccessor {
                     name: "owner",
-                    swift_type: "Owner?",
+                    swift_type: "Owner?", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -391,7 +403,7 @@ fn fragment_template_pet_details() {
                         field_accessors: vec![
                             FieldAccessor {
                                 name: "firstName",
-                                swift_type: "String",
+                                swift_type: "String", description: None,
                             },
                         ],
                         inline_fragment_accessors: vec![],
@@ -419,16 +431,20 @@ fn fragment_template_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
             ],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -446,6 +462,8 @@ fn fragment_template_crocodile_fragment() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "CrocodileFragment",
             schema_namespace: "AnimalKingdomAPI",
@@ -480,15 +498,15 @@ fn fragment_template_crocodile_fragment() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "species",
-                    swift_type: "String",
+                    swift_type: "String", description: None,
                 },
                 FieldAccessor {
                     name: "age",
-                    swift_type: "Int",
+                    swift_type: "Int", description: None,
                 },
                 FieldAccessor {
                     name: "tag",
-                    swift_type: "String?",
+                    swift_type: "String?", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -534,9 +552,11 @@ fn fragment_template_crocodile_fragment() {
             }),
             nested_types: vec![],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -554,6 +574,8 @@ fn fragment_template_warm_blooded_details() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "WarmBloodedDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -579,11 +601,11 @@ fn fragment_template_warm_blooded_details() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "bodyTemperature",
-                    swift_type: "Int",
+                    swift_type: "Int", description: None,
                 },
                 FieldAccessor {
                     name: "height",
-                    swift_type: "Height",
+                    swift_type: "Height", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -639,9 +661,11 @@ fn fragment_template_warm_blooded_details() {
                     target: "HeightInMeters.Height",
                 },
             ],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -659,6 +683,8 @@ fn fragment_template_classroom_pet_details() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_mutable: false,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
         selection_set: SelectionSetConfig {
             struct_name: "ClassroomPetDetails",
             schema_namespace: "AnimalKingdomAPI",
@@ -723,7 +749,7 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "species", swift_type: "String" },
+                            FieldAccessor { name: "species", swift_type: "String", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -744,9 +770,11 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
                 // AsPet
@@ -770,7 +798,7 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "humanName", swift_type: "String?" },
+                            FieldAccessor { name: "humanName", swift_type: "String?", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -791,9 +819,11 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
                 // AsWarmBlooded
@@ -817,8 +847,8 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "laysEggs", swift_type: "Bool" },
-                            FieldAccessor { name: "species", swift_type: "String" },
+                            FieldAccessor { name: "laysEggs", swift_type: "Bool", description: None },
+                            FieldAccessor { name: "species", swift_type: "String", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -842,9 +872,11 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
                 // AsCat
@@ -873,11 +905,11 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "bodyTemperature", swift_type: "Int" },
-                            FieldAccessor { name: "isJellicle", swift_type: "Bool" },
-                            FieldAccessor { name: "species", swift_type: "String" },
-                            FieldAccessor { name: "humanName", swift_type: "String?" },
-                            FieldAccessor { name: "laysEggs", swift_type: "Bool" },
+                            FieldAccessor { name: "bodyTemperature", swift_type: "Int", description: None },
+                            FieldAccessor { name: "isJellicle", swift_type: "Bool", description: None },
+                            FieldAccessor { name: "species", swift_type: "String", description: None },
+                            FieldAccessor { name: "humanName", swift_type: "String?", description: None },
+                            FieldAccessor { name: "laysEggs", swift_type: "Bool", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -908,9 +940,11 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
                 // AsBird
@@ -934,10 +968,10 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "wingspan", swift_type: "Double" },
-                            FieldAccessor { name: "species", swift_type: "String" },
-                            FieldAccessor { name: "humanName", swift_type: "String?" },
-                            FieldAccessor { name: "laysEggs", swift_type: "Bool" },
+                            FieldAccessor { name: "wingspan", swift_type: "Double", description: None },
+                            FieldAccessor { name: "species", swift_type: "String", description: None },
+                            FieldAccessor { name: "humanName", swift_type: "String?", description: None },
+                            FieldAccessor { name: "laysEggs", swift_type: "Bool", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -966,9 +1000,11 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
                 // AsPetRock
@@ -992,8 +1028,8 @@ fn fragment_template_classroom_pet_details() {
                             }),
                         ],
                         field_accessors: vec![
-                            FieldAccessor { name: "favoriteToy", swift_type: "String" },
-                            FieldAccessor { name: "humanName", swift_type: "String?" },
+                            FieldAccessor { name: "favoriteToy", swift_type: "String", description: None },
+                            FieldAccessor { name: "humanName", swift_type: "String?", description: None },
                         ],
                         inline_fragment_accessors: vec![],
                         fragment_spreads: vec![],
@@ -1016,16 +1052,20 @@ fn fragment_template_classroom_pet_details() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
             ],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -1048,6 +1088,11 @@ fn operation_template_dog_query() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_local_cache_mutation: false,
+        include_definition: true,
+        operation_identifier: None,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
+        class_keyword: "class",
         source: "query DogQuery { allAnimals { __typename id skinCovering ... on Dog { ...DogFragment houseDetails } } }",
         fragment_names: vec!["DogFragment"],
         variables: vec![],
@@ -1070,7 +1115,7 @@ fn operation_template_dog_query() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "allAnimals",
-                    swift_type: "[AllAnimal]",
+                    swift_type: "[AllAnimal]", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -1130,11 +1175,11 @@ fn operation_template_dog_query() {
                         field_accessors: vec![
                             FieldAccessor {
                                 name: "id",
-                                swift_type: "AnimalKingdomAPI.ID",
+                                swift_type: "AnimalKingdomAPI.ID", description: None,
                             },
                             FieldAccessor {
                                 name: "skinCovering",
-                                swift_type: "GraphQLEnum<AnimalKingdomAPI.SkinCovering>?",
+                                swift_type: "GraphQLEnum<AnimalKingdomAPI.SkinCovering>?", description: None,
                             },
                         ],
                         inline_fragment_accessors: vec![
@@ -1203,19 +1248,19 @@ fn operation_template_dog_query() {
                                     field_accessors: vec![
                                         FieldAccessor {
                                             name: "houseDetails",
-                                            swift_type: "AnimalKingdomAPI.Object?",
+                                            swift_type: "AnimalKingdomAPI.Object?", description: None,
                                         },
                                         FieldAccessor {
                                             name: "id",
-                                            swift_type: "AnimalKingdomAPI.ID",
+                                            swift_type: "AnimalKingdomAPI.ID", description: None,
                                         },
                                         FieldAccessor {
                                             name: "skinCovering",
-                                            swift_type: "GraphQLEnum<AnimalKingdomAPI.SkinCovering>?",
+                                            swift_type: "GraphQLEnum<AnimalKingdomAPI.SkinCovering>?", description: None,
                                         },
                                         FieldAccessor {
                                             name: "species",
-                                            swift_type: "String",
+                                            swift_type: "String", description: None,
                                         },
                                     ],
                                     inline_fragment_accessors: vec![],
@@ -1280,23 +1325,29 @@ fn operation_template_dog_query() {
                                     }),
                                     nested_types: vec![],
                                     type_aliases: vec![],
+                                    type_alias_insert_index: 0,
                                     indent: 6,
                                     access_modifier: "public ",
                                     is_mutable: false,
+                                    api_target_name: "ApolloAPI",
                                 },
                             },
                         ],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 4,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
             ],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 2,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 
@@ -1315,6 +1366,11 @@ fn operation_template_pet_adoption_mutation() {
         schema_namespace: "AnimalKingdomAPI",
         access_modifier: "public ",
         is_local_cache_mutation: false,
+        include_definition: true,
+        operation_identifier: None,
+        query_string_format: operation::QueryStringFormat::SingleLine,
+        api_target_name: "ApolloAPI",
+        class_keyword: "class",
         source: "mutation PetAdoptionMutation($input: PetAdoptionInput!) { adoptPet(input: $input) { __typename id humanName } }",
         fragment_names: vec![],
         variables: vec![
@@ -1343,7 +1399,7 @@ fn operation_template_pet_adoption_mutation() {
             field_accessors: vec![
                 FieldAccessor {
                     name: "adoptPet",
-                    swift_type: "AdoptPet",
+                    swift_type: "AdoptPet", description: None,
                 },
             ],
             inline_fragment_accessors: vec![],
@@ -1402,11 +1458,11 @@ fn operation_template_pet_adoption_mutation() {
                         field_accessors: vec![
                             FieldAccessor {
                                 name: "id",
-                                swift_type: "AnimalKingdomAPI.ID",
+                                swift_type: "AnimalKingdomAPI.ID", description: None,
                             },
                             FieldAccessor {
                                 name: "humanName",
-                                swift_type: "String?",
+                                swift_type: "String?", description: None,
                             },
                         ],
                         inline_fragment_accessors: vec![],
@@ -1448,16 +1504,20 @@ fn operation_template_pet_adoption_mutation() {
                         }),
                         nested_types: vec![],
                         type_aliases: vec![],
+                        type_alias_insert_index: 0,
                         indent: 4,
                         access_modifier: "public ",
                         is_mutable: false,
+                        api_target_name: "ApolloAPI",
                     },
                 },
             ],
             type_aliases: vec![],
+            type_alias_insert_index: 0,
             indent: 2,
             access_modifier: "public ",
             is_mutable: false,
+            api_target_name: "ApolloAPI",
         },
     };
 

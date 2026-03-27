@@ -24,6 +24,8 @@ pub struct IRBuilder {
     type_kinds: HashMap<String, TypeKind>,
     /// Map from input object type name to its field definitions
     input_object_fields: HashMap<String, IndexMap<String, GraphQLInputField>>,
+    /// Map from (type_name, field_name) to field description for schema documentation
+    field_descriptions: HashMap<(String, String), String>,
 }
 
 impl IRBuilder {
@@ -37,9 +39,27 @@ impl IRBuilder {
         let type_kinds = build_type_kinds(result);
 
         let mut input_object_fields: HashMap<String, IndexMap<String, GraphQLInputField>> = HashMap::new();
+        let mut field_descriptions: HashMap<(String, String), String> = HashMap::new();
         for named_type in &result.referenced_types {
-            if let GraphQLNamedType::InputObject(io) = named_type {
-                input_object_fields.insert(io.name.clone(), io.fields.clone());
+            match named_type {
+                GraphQLNamedType::InputObject(io) => {
+                    input_object_fields.insert(io.name.clone(), io.fields.clone());
+                }
+                GraphQLNamedType::Object(obj) => {
+                    for (fname, fdef) in &obj.fields {
+                        if let Some(ref desc) = fdef.description {
+                            field_descriptions.insert((obj.name.clone(), fname.clone()), desc.clone());
+                        }
+                    }
+                }
+                GraphQLNamedType::Interface(iface) => {
+                    for (fname, fdef) in &iface.fields {
+                        if let Some(ref desc) = fdef.description {
+                            field_descriptions.insert((iface.name.clone(), fname.clone()), desc.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -48,6 +68,7 @@ impl IRBuilder {
             fragments: HashMap::new(),
             type_kinds,
             input_object_fields,
+            field_descriptions,
         };
 
         // Build fragments first (operations may reference them)
@@ -57,6 +78,16 @@ impl IRBuilder {
         }
 
         builder
+    }
+
+    /// Look up a field's schema description by parent type name and field name.
+    pub fn field_description(&self, parent_type: &str, field_name: &str) -> Option<&str> {
+        self.field_descriptions.get(&(parent_type.to_string(), field_name.to_string())).map(|s| s.as_str())
+    }
+
+    /// Clear all field descriptions (use when schema documentation should not be included).
+    pub fn clear_field_descriptions(&mut self) {
+        self.field_descriptions.clear();
     }
 
     /// Build an operation from its definition.
@@ -75,6 +106,7 @@ impl IRBuilder {
             inclusion_conditions: None,
             selection_set,
             deprecation_reason: None,
+            description: None,
         };
 
         let referenced = op_def
@@ -88,7 +120,7 @@ impl IRBuilder {
             .iter()
             .map(|v| VariableDefinition {
                 name: v.name.clone(),
-                type_str: render_graphql_type(&v.variable_type),
+                type_str: render_graphql_type(&v.variable_type, &self.type_kinds),
                 default_value: v.default_value.as_ref().map(|dv| {
                     self.render_swift_default_value(dv, &v.variable_type, 2)
                 }),
@@ -128,6 +160,7 @@ impl IRBuilder {
             inclusion_conditions: None,
             selection_set,
             deprecation_reason: None,
+            description: None,
         };
 
         let referenced = frag_def
@@ -179,6 +212,7 @@ impl IRBuilder {
                             needs_typename: false,
                         });
 
+                        let desc = self.field_description(parent_type.name(), &field.name).map(|s| s.to_string());
                         direct.fields.insert(
                             response_key.to_string(),
                             FieldSelection::Entity(EntityField {
@@ -189,10 +223,12 @@ impl IRBuilder {
                                 inclusion_conditions: inclusion,
                                 selection_set: sub_selection,
                                 deprecation_reason: None,
+                                description: desc,
                             }),
                         );
                     } else {
                         // Scalar field
+                        let desc = self.field_description(parent_type.name(), &field.name).map(|s| s.to_string());
                         direct.fields.insert(
                             response_key.to_string(),
                             FieldSelection::Scalar(ScalarField {
@@ -202,6 +238,7 @@ impl IRBuilder {
                                 arguments: field.arguments.clone().unwrap_or_default(),
                                 inclusion_conditions: inclusion,
                                 deprecation_reason: None,
+                                description: desc,
                             }),
                         );
                     }
@@ -483,41 +520,48 @@ fn render_swift_float(f: f64) -> String {
 /// - NonNull types are bare: `PetAdoptionInput` (not `PetAdoptionInput!`)
 /// - Nullable types use `GraphQLNullable<T>`: `GraphQLNullable<PetSearchFilters>`
 /// - List types follow GraphQL: `[Type]`
-fn render_graphql_type(ty: &GraphQLType) -> String {
+fn render_graphql_type(ty: &GraphQLType, type_kinds: &HashMap<String, TypeKind>) -> String {
     match ty {
-        GraphQLType::Named(name) => format!("GraphQLNullable<{}>", render_swift_variable_named_type(name)),
-        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
-        GraphQLType::List(inner) => format!("GraphQLNullable<[{}]>", render_graphql_type_list_inner(inner)),
+        GraphQLType::Named(name) => format!("GraphQLNullable<{}>", render_swift_variable_named_type(name, type_kinds)),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner, type_kinds),
+        GraphQLType::List(inner) => format!("GraphQLNullable<[{}]>", render_graphql_type_list_inner(inner, type_kinds)),
     }
 }
 
 /// Render the inner type for a NonNull wrapper (no GraphQLNullable wrapping).
-fn render_graphql_type_nonnull(ty: &GraphQLType) -> String {
+fn render_graphql_type_nonnull(ty: &GraphQLType, type_kinds: &HashMap<String, TypeKind>) -> String {
     match ty {
-        GraphQLType::Named(name) => render_swift_variable_named_type(name),
-        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
-        GraphQLType::List(inner) => format!("[{}]", render_graphql_type_list_inner(inner)),
+        GraphQLType::Named(name) => render_swift_variable_named_type(name, type_kinds),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner, type_kinds),
+        GraphQLType::List(inner) => format!("[{}]", render_graphql_type_list_inner(inner, type_kinds)),
     }
 }
 
 /// Render the inner type for a List wrapper.
-fn render_graphql_type_list_inner(ty: &GraphQLType) -> String {
+fn render_graphql_type_list_inner(ty: &GraphQLType, type_kinds: &HashMap<String, TypeKind>) -> String {
     match ty {
-        GraphQLType::Named(name) => format!("{}?", render_swift_variable_named_type(name)),
-        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner),
-        GraphQLType::List(inner) => format!("[{}]?", render_graphql_type_list_inner(inner)),
+        GraphQLType::Named(name) => format!("{}?", render_swift_variable_named_type(name, type_kinds)),
+        GraphQLType::NonNull(inner) => render_graphql_type_nonnull(inner, type_kinds),
+        GraphQLType::List(inner) => format!("[{}]?", render_graphql_type_list_inner(inner, type_kinds)),
     }
 }
 
 /// Render a named type for Swift variable declarations.
-fn render_swift_variable_named_type(name: &str) -> String {
+/// Enum types are wrapped in `GraphQLEnum<>` to match Swift codegen behavior.
+fn render_swift_variable_named_type(name: &str, type_kinds: &HashMap<String, TypeKind>) -> String {
     match name {
         "String" => "String".to_string(),
         "Int" => "Int".to_string(),
         "Float" => "Double".to_string(),
         "Boolean" => "Bool".to_string(),
         "ID" => "ID".to_string(),
-        other => other.to_string(),
+        other => {
+            if matches!(type_kinds.get(other), Some(TypeKind::Enum)) {
+                format!("GraphQLEnum<{}>", other)
+            } else {
+                other.to_string()
+            }
+        }
     }
 }
 

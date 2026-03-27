@@ -13,6 +13,7 @@ pub struct ScalarField {
     pub arguments: Vec<Argument>,
     pub inclusion_conditions: Option<InclusionConditions>,
     pub deprecation_reason: Option<String>,
+    pub description: Option<String>,
 }
 
 /// An entity (composite) field that has a selection set.
@@ -25,6 +26,7 @@ pub struct EntityField {
     pub inclusion_conditions: Option<InclusionConditions>,
     pub selection_set: SelectionSet,
     pub deprecation_reason: Option<String>,
+    pub description: Option<String>,
 }
 
 impl ScalarField {

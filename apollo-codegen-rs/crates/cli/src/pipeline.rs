@@ -77,7 +77,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
 
     // 4. Build IR
-    let ir = IRBuilder::build(&compilation_result);
+    let mut ir = IRBuilder::build(&compilation_result);
 
     // 4b. Build type kind map for type resolution in templates
     let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
@@ -101,6 +101,9 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config.options.schema_documentation,
         SchemaDocumentation::Include
     );
+    if !include_schema_docs {
+        ir.clear_field_descriptions();
+    }
     let query_string_format = match config.options.query_string_literal_format {
         QueryStringLiteralFormat::SingleLine => {
             apollo_codegen_render::templates::operation::QueryStringFormat::SingleLine
@@ -112,6 +115,10 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
     let camel_case_enums = matches!(
         config.options.conversion_strategies.enum_cases,
         EnumCaseConversionStrategy::CamelCase
+    );
+    let camel_case_input_objects = matches!(
+        config.options.conversion_strategies.input_objects,
+        apollo_codegen_config::types::InputObjectConversionStrategy::CamelCase
     );
 
     let schema_output_path = resolve_path(root_url, &config.output.schema_types.path);
@@ -133,6 +140,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &access_mod,
         is_in_module,
         camel_case_enums,
+        camel_case_input_objects,
         config,
         &type_kinds,
         &customizer,
@@ -371,6 +379,7 @@ fn generate_schema_files(
     access_mod: &str,
     is_in_module: bool,
     camel_case_enums: bool,
+    camel_case_input_objects: bool,
     config: &ApolloCodegenConfiguration,
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
@@ -387,6 +396,7 @@ fn generate_schema_files(
                 .iter()
                 .map(|iface| customizer.custom_type_name(iface).to_string())
                 .collect();
+            let doc = if include_schema_docs { obj.description.as_deref() } else { None };
             let content = templates::object::render(
                 swift_name,
                 &obj.name, // GraphQL typename stays original
@@ -395,6 +405,7 @@ fn generate_schema_files(
                 api_target,
                 &config.schema_namespace,
                 is_in_module,
+                doc,
             );
             let file_path = sources_path
                 .join("Schema/Objects")
@@ -407,11 +418,13 @@ fn generate_schema_files(
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Interface(iface) = named_type {
             let swift_name = customizer.custom_type_name(&iface.name);
+            let doc = if include_schema_docs { iface.description.as_deref() } else { None };
             let content = templates::interface::render(
                 swift_name,
                 &iface.name, // GraphQL name stays original
                 access_mod,
                 api_target,
+                doc,
             );
             let file_path = sources_path
                 .join("Schema/Interfaces")
@@ -429,6 +442,7 @@ fn generate_schema_files(
                 .iter()
                 .map(|m| customizer.custom_type_name(m).to_string())
                 .collect();
+            let doc = if include_schema_docs { union_t.description.as_deref() } else { None };
             let content = templates::union_type::render(
                 swift_name,
                 &union_t.name, // GraphQL name stays original
@@ -437,6 +451,7 @@ fn generate_schema_files(
                 api_target,
                 &config.schema_namespace,
                 is_in_module,
+                doc,
             );
             let file_path = sources_path
                 .join("Schema/Unions")
@@ -469,12 +484,14 @@ fn generate_schema_files(
                 })
                 .collect();
 
+            let enum_doc = if include_schema_docs { enum_t.description.as_deref() } else { None };
             let content = templates::enum_type::render(
                 swift_name,
                 &values,
                 access_mod,
                 api_target,
                 camel_case_enums,
+                enum_doc,
             );
             let file_path = sources_path
                 .join("Schema/Enums")
@@ -492,6 +509,14 @@ fn generate_schema_files(
                 .iter()
                 .map(|(fname, fdef)| {
                     let custom_field_name = customizer.custom_input_field(&input.name, fname);
+                    // Apply camelCase conversion if enabled and no explicit customization.
+                    // Only converts snake_case names (containing '_'). Names already in
+                    // camelCase (like ownerID) are left unchanged.
+                    let rendered_name = if camel_case_input_objects && custom_field_name == fname && fname.contains('_') {
+                        naming::to_camel_case(fname)
+                    } else {
+                        custom_field_name.to_string()
+                    };
                     let mut swift_type = render_input_field_type(&fdef.field_type, ns, &type_kinds, customizer);
                     // Non-null fields with default values become optional
                     if matches!(fdef.field_type, GraphQLType::NonNull(_)) && fdef.default_value.is_some() {
@@ -500,7 +525,7 @@ fn generate_schema_files(
                     let init_type = render_input_field_init_type(&fdef.field_type, ns, &fdef.default_value, &type_kinds, customizer);
                     templates::input_object::InputField {
                         schema_name: fname.clone(), // GraphQL field name for __data access
-                        rendered_name: custom_field_name.to_string(),
+                        rendered_name,
                         rendered_type: swift_type,
                         rendered_init_type: init_type,
                         description: if include_schema_docs { fdef.description.clone() } else { None },
@@ -610,7 +635,7 @@ fn generate_module_files(
                     .as_deref()
                     .map(|n| naming::first_uppercased(n))
                     .unwrap_or_else(|| format!("{}TestMocks", ns));
-                Some((target_name, "./TestMocks".to_string()))
+                Some((target_name.clone(), format!("./{}", target_name)))
             }
             _ => None,
         };
@@ -773,15 +798,14 @@ fn generate_test_mock_files(
         TestMockFileOutput::None(_) => return,
         TestMockFileOutput::Absolute(abs) => resolve_path(root_url, &abs.path),
         TestMockFileOutput::SwiftPackage(pkg) => {
-            // SwiftPackage test mocks always go to ./TestMocks relative to schema types path
-            // (matching the Swift behavior where the targetName is for Package.swift, not the directory)
+            // SwiftPackage test mocks go to ./{targetName} relative to schema types path
             let target_name = pkg
                 .target_name
                 .as_deref()
                 .map(|n| naming::first_uppercased(n))
                 .unwrap_or_else(|| format!("{}TestMocks", ns));
             resolve_path(root_url, &config.output.schema_types.path)
-                .join("TestMocks")
+                .join(&target_name)
         }
     };
 

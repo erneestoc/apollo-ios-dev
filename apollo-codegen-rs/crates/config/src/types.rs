@@ -484,16 +484,16 @@ pub struct ConversionStrategies {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EnumCaseConversionStrategy {
-    #[default]
     None,
+    #[default]
     CamelCase,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InputObjectConversionStrategy {
-    #[default]
     None,
+    #[default]
     CamelCase,
 }
 
