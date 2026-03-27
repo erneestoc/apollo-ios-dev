@@ -385,7 +385,12 @@ fn generate_schema_files(
     customizer: &SchemaCustomizer,
     include_schema_docs: bool,
 ) {
-    let sources_path = schema_path.join("Sources");
+    // Only swiftPackageManager adds a Sources/ subdirectory
+    let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
+        schema_path.join("Sources")
+    } else {
+        schema_path.to_path_buf()
+    };
 
     // Objects
     for named_type in &compilation.referenced_types {
@@ -663,7 +668,11 @@ fn generate_operation_files(
     query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
     api_target: &str,
 ) {
-    let sources_path = schema_path.join("Sources");
+    let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
+        schema_path.join("Sources")
+    } else {
+        schema_path.to_path_buf()
+    };
 
     for op_def in &compilation.operations {
         let mut operation = ir.build_operation(op_def);
@@ -748,7 +757,11 @@ fn generate_fragment_files(
     query_string_format: apollo_codegen_render::templates::operation::QueryStringFormat,
     api_target: &str,
 ) {
-    let sources_path = schema_path.join("Sources");
+    let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
+        schema_path.join("Sources")
+    } else {
+        schema_path.to_path_buf()
+    };
 
     for frag_def in &compilation.fragments {
         if let Some(frag) = ir.fragments().get(&frag_def.name) {
