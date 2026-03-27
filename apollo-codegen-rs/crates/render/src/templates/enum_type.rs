@@ -102,10 +102,15 @@ pub fn render(
             ));
         }
 
-        body.push_str(&format!(
-            "  case {} = \"{}\"\n",
-            escaped_name, value.raw_value
-        ));
+        // Omit raw value when case name matches (Swift enum optimization)
+        if escaped_name == value.raw_value {
+            body.push_str(&format!("  case {}\n", escaped_name));
+        } else {
+            body.push_str(&format!(
+                "  case {} = \"{}\"\n",
+                escaped_name, value.raw_value
+            ));
+        }
     }
 
     body.push_str("}\n");
