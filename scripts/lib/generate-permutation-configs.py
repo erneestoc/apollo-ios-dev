@@ -152,6 +152,27 @@ def build_config(combo):
     return config
 
 
+def is_valid_combo(combo):
+    """Check if a config combination is valid (Swift CLI would accept it)."""
+    (module_type, operations, test_mocks, sel_init, query_fmt,
+     op_doc_fmt, schema_doc, prune, enum_cases, cocoapods, depr_enum, schema_custom) = combo
+
+    # cocoapodsCompatibleImportStatements can't be true with swiftPackageManager
+    mt_key = list(module_type.keys())[0]
+    if cocoapods and mt_key == "swiftPackageManager":
+        return False
+
+    # swiftPackage testMocks require swiftPackageManager module type
+    tm_key = list(test_mocks.keys())[0]
+    if tm_key == "swiftPackage" and mt_key != "swiftPackageManager":
+        return False
+
+    # relative/absolute operations with embeddedInTarget require the target name
+    ops_key = list(operations.keys())[0]
+
+    return True
+
+
 def generate_configs(target_count=50, seed=42):
     """Generate configs ensuring every flag value appears at least once."""
     random.seed(seed)
@@ -168,12 +189,23 @@ def generate_configs(target_count=50, seed=42):
                 combo.append(pool[slot_idx])
             else:
                 combo.append(random.choice(pool))
-        configs.append(build_config(tuple(combo)))
+        combo = tuple(combo)
+        # Retry with random values if invalid
+        attempts = 0
+        while not is_valid_combo(combo) and attempts < 100:
+            combo = list(combo)
+            for i, (_name, pool) in enumerate(DIMENSIONS):
+                combo[i] = random.choice(pool)
+            combo = tuple(combo)
+            attempts += 1
+        if is_valid_combo(combo):
+            configs.append(build_config(combo))
 
     # --- Phase 2: random fill to reach target_count ---
     while len(configs) < target_count:
         combo = tuple(random.choice(pool) for _, pool in DIMENSIONS)
-        configs.append(build_config(combo))
+        if is_valid_combo(combo):
+            configs.append(build_config(combo))
 
     return configs
 
