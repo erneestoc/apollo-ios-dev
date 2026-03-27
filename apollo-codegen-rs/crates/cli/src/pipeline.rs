@@ -692,7 +692,12 @@ fn generate_operation_files(
         // Compute operation identifier (SHA256 hash of source) when configured
         let op_id = if config.options.operation_document_format.operation_identifier {
             let mut hasher = Sha256::new();
+            // Hash the operation source + all referenced fragment sources (matching Swift's rawSource format)
             hasher.update(operation.source.as_bytes());
+            for frag in &operation.referenced_fragments {
+                hasher.update(b"\n");
+                hasher.update(frag.source.as_bytes());
+            }
             Some(format!("{:x}", hasher.finalize()))
         } else {
             None
