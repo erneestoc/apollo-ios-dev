@@ -8,7 +8,8 @@ use crate::operation::{Operation, VariableDefinition};
 use crate::schema::Schema;
 use crate::scope::ScopeDescriptor;
 use crate::selection_set::{
-    DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread, SelectionSet,
+    DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread, SelectionKind,
+    SelectionSet,
 };
 use apollo_codegen_frontend::compilation_result::{CompilationResult, OperationType};
 use apollo_codegen_frontend::types::*;
@@ -253,6 +254,7 @@ impl IRBuilder {
                         continue;
                     }
 
+                    let rk = response_key.to_string();
                     if field.selection_set.is_some() {
                         // Entity field
                         let sub_type = infer_composite_type(&field.field_type, &field.name, &self.schema);
@@ -266,7 +268,7 @@ impl IRBuilder {
 
                         let desc = self.field_description(parent_type.name(), &field.name).map(|s| s.to_string());
                         direct.fields.insert(
-                            response_key.to_string(),
+                            rk.clone(),
                             FieldSelection::Entity(EntityField {
                                 name: field.name.clone(),
                                 alias: field.alias.clone(),
@@ -282,7 +284,7 @@ impl IRBuilder {
                         // Scalar field
                         let desc = self.field_description(parent_type.name(), &field.name).map(|s| s.to_string());
                         direct.fields.insert(
-                            response_key.to_string(),
+                            rk.clone(),
                             FieldSelection::Scalar(ScalarField {
                                 name: field.name.clone(),
                                 alias: field.alias.clone(),
@@ -294,6 +296,7 @@ impl IRBuilder {
                             }),
                         );
                     }
+                    direct.source_order.push(SelectionKind::Field(rk));
                 }
                 Selection::InlineFragment(inline) => {
                     let type_condition = inline.type_condition.clone();
@@ -309,6 +312,7 @@ impl IRBuilder {
                     // Check for @defer
                     let (is_deferred, defer_label) = self.extract_defer_info(&inline.directives);
 
+                    let inline_idx = direct.inline_fragments.len();
                     direct.inline_fragments.push(InlineFragmentSelection {
                         type_condition,
                         selection_set: sub_selection,
@@ -316,17 +320,20 @@ impl IRBuilder {
                         is_deferred,
                         defer_label,
                     });
+                    direct.source_order.push(SelectionKind::InlineFragment(inline_idx));
                 }
                 Selection::FragmentSpread(spread) => {
                     let inclusion = self.convert_inclusion_conditions(&spread.inclusion_conditions);
                     let (is_deferred, defer_label) = self.extract_defer_info(&spread.directives);
 
+                    let frag_idx = direct.named_fragments.len();
                     direct.named_fragments.push(NamedFragmentSpread {
                         fragment_name: spread.fragment_name.clone(),
                         inclusion_conditions: inclusion,
                         is_deferred,
                         defer_label,
                     });
+                    direct.source_order.push(SelectionKind::NamedFragment(frag_idx));
                 }
             }
         }

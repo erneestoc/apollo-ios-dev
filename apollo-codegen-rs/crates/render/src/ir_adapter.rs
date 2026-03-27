@@ -18,7 +18,7 @@ use apollo_codegen_ir::operation::Operation;
 use apollo_codegen_ir::inclusion::{self, InclusionConditions};
 use apollo_codegen_ir::selection_set::{
     DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread,
-    SelectionSet as IrSelectionSet,
+    SelectionKind as IrSelectionKind, SelectionSet as IrSelectionSet,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -460,30 +460,26 @@ fn build_selection_set_config_owned(
     // Track fields whose conditions are satisfied by the enclosing scope.
     // These appear after fragment spreads in __selections to preserve source ordering.
     let mut scope_satisfied_fields: Vec<OwnedSelectionItem> = Vec::new();
-    for (key, field) in &ds.fields {
-        // Skip __typename since it's added explicitly above when needed
-        if key == "__typename" { continue; }
+    // Helper closure to process a direct field selection into selections/conditional/scope-satisfied.
+    let mut process_direct_field = |key: &str, field: &FieldSelection,
+        selections: &mut Vec<OwnedSelectionItem>,
+        conditional_field_groups: &mut Vec<(Vec<OwnedConditionEntry>, OwnedConditionOperator, Vec<(String, Option<String>, String, Option<String>)>)>,
+        scope_satisfied_fields: &mut Vec<OwnedSelectionItem>| {
+        if key == "__typename" { return; }
         let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         let arguments = render_field_arguments(field);
         let conds = field_inclusion_conditions(field);
-        // Check if the field's conditions are already satisfied by the enclosing scope.
-        // If so, treat it as unconditional within this scope but place after fragments.
         let has_original_conditions = has_inclusion_conditions(conds);
         let effective_conditions = if has_original_conditions {
             let ic = conds.unwrap();
-            if conditions_satisfied_by_scope(ic, scope_conditions) {
-                false
-            } else {
-                true
-            }
+            !conditions_satisfied_by_scope(ic, scope_conditions)
         } else {
             false
         };
-        // Determine name vs alias: if key (response key) differs from field.name(), it's an alias
         let (field_name, field_alias) = if key != field.name() {
-            (field.name().to_string(), Some(key.clone()))
+            (field.name().to_string(), Some(key.to_string()))
         } else {
-            (key.clone(), None)
+            (key.to_string(), None)
         };
         if effective_conditions {
             let ic = conds.unwrap();
@@ -495,7 +491,6 @@ fn build_selection_set_config_owned(
                 inclusion::InclusionOperator::And => OwnedConditionOperator::And,
                 inclusion::InclusionOperator::Or => OwnedConditionOperator::Or,
             };
-            // Group fields with identical conditions together
             let conds_match = |group_conds: &Vec<OwnedConditionEntry>, group_op: &OwnedConditionOperator| -> bool {
                 if owned_conds.len() != group_conds.len() { return false; }
                 if !matches!((operator, group_op), (OwnedConditionOperator::And, OwnedConditionOperator::And) | (OwnedConditionOperator::Or, OwnedConditionOperator::Or)) { return false; }
@@ -507,7 +502,6 @@ fn build_selection_set_config_owned(
                 conditional_field_groups.push((owned_conds, operator, vec![(field_name, field_alias, swift_type, arguments)]));
             }
         } else if has_original_conditions {
-            // Condition was satisfied by scope - place after fragments to preserve source order
             scope_satisfied_fields.push(OwnedSelectionItem {
                 kind: OwnedSelectionKind::Field {
                     name: field_name,
@@ -526,31 +520,75 @@ fn build_selection_set_config_owned(
                 },
             });
         }
-    }
-    // Add absorbed field selections (from absorbed inline fragments)
-    for &idx in &absorbed_inline_indices {
-        let inline = &ds.inline_fragments[idx];
-        for (key, field) in &inline.selection_set.direct_selections.fields {
-            if key == "__typename" { continue; }
-            // Skip if already in direct selections
-            if ds.fields.contains_key(key) { continue; }
-            let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-            let arguments = render_field_arguments(field);
-            let (abs_field_name, abs_field_alias) = if key != field.name() {
-                (field.name().to_string(), Some(key.clone()))
-            } else {
-                (key.clone(), None)
-            };
-            // Avoid duplicates
-            if !selections.iter().any(|s| matches!(&s.kind, OwnedSelectionKind::Field { name, .. } if name == &abs_field_name)) {
-                selections.push(OwnedSelectionItem {
-                    kind: OwnedSelectionKind::Field {
-                        name: abs_field_name,
-                        alias: abs_field_alias,
-                        swift_type,
-                        arguments,
-                    },
-                });
+    };
+    // Iterate in source order: process direct fields and absorbed inline fragment fields
+    // in their original source positions, preserving interleaved ordering.
+    if !ds.source_order.is_empty() {
+        for sk in &ds.source_order {
+            match sk {
+                IrSelectionKind::Field(key) => {
+                    if let Some(field) = ds.fields.get(key) {
+                        process_direct_field(key, field, &mut selections, &mut conditional_field_groups, &mut scope_satisfied_fields);
+                    }
+                }
+                IrSelectionKind::InlineFragment(idx) => {
+                    if absorbed_inline_indices.contains(idx) {
+                        let inline = &ds.inline_fragments[*idx];
+                        for (key, field) in &inline.selection_set.direct_selections.fields {
+                            if key == "__typename" { continue; }
+                            if ds.fields.contains_key(key) { continue; }
+                            let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                            let arguments = render_field_arguments(field);
+                            let (abs_field_name, abs_field_alias) = if key != field.name() {
+                                (field.name().to_string(), Some(key.clone()))
+                            } else {
+                                (key.clone(), None)
+                            };
+                            if !selections.iter().any(|s| matches!(&s.kind, OwnedSelectionKind::Field { name, .. } if name == &abs_field_name)) {
+                                selections.push(OwnedSelectionItem {
+                                    kind: OwnedSelectionKind::Field {
+                                        name: abs_field_name,
+                                        alias: abs_field_alias,
+                                        swift_type,
+                                        arguments,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                IrSelectionKind::NamedFragment(_) => {
+                    // Named fragments are handled separately below
+                }
+            }
+        }
+    } else {
+        // Fallback for selection sets without source_order (e.g., programmatically constructed)
+        for (key, field) in &ds.fields {
+            process_direct_field(key, field, &mut selections, &mut conditional_field_groups, &mut scope_satisfied_fields);
+        }
+        for &idx in &absorbed_inline_indices {
+            let inline = &ds.inline_fragments[idx];
+            for (key, field) in &inline.selection_set.direct_selections.fields {
+                if key == "__typename" { continue; }
+                if ds.fields.contains_key(key) { continue; }
+                let (swift_type, _is_entity) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                let arguments = render_field_arguments(field);
+                let (abs_field_name, abs_field_alias) = if key != field.name() {
+                    (field.name().to_string(), Some(key.clone()))
+                } else {
+                    (key.clone(), None)
+                };
+                if !selections.iter().any(|s| matches!(&s.kind, OwnedSelectionKind::Field { name, .. } if name == &abs_field_name)) {
+                    selections.push(OwnedSelectionItem {
+                        kind: OwnedSelectionKind::Field {
+                            name: abs_field_name,
+                            alias: abs_field_alias,
+                            swift_type,
+                            arguments,
+                        },
+                    });
+                }
             }
         }
     }
@@ -657,38 +695,62 @@ fn build_selection_set_config_owned(
     // Build field accessors (skip __typename)
     // Fields with inclusion conditions become optional types, unless the condition
     // is already satisfied by the enclosing scope's conditions.
-    let mut field_accessors: Vec<OwnedFieldAccessor> = ds
-        .fields
-        .iter()
-        .filter(|(key, _)| key.as_str() != "__typename") // __typename handled separately
-        .map(|(key, field)| {
-            let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-            // If the field has inclusion conditions not satisfied by the enclosing scope, make its type optional
-            let conds = field_inclusion_conditions(field);
-            if has_inclusion_conditions(conds) && !conditions_satisfied_by_scope(conds.unwrap(), scope_conditions) {
-                if !swift_type.ends_with('?') {
-                    swift_type.push('?');
+    // Use source_order to interleave direct fields and absorbed inline fragment fields.
+    let mut field_accessors: Vec<OwnedFieldAccessor> = Vec::new();
+    let build_field_accessor = |key: &str, field: &FieldSelection| -> OwnedFieldAccessor {
+        let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+        let conds = field_inclusion_conditions(field);
+        if has_inclusion_conditions(conds) && !conditions_satisfied_by_scope(conds.unwrap(), scope_conditions) {
+            if !swift_type.ends_with('?') {
+                swift_type.push('?');
+            }
+        }
+        OwnedFieldAccessor {
+            name: key.to_string(),
+            swift_type,
+            description: field.description().map(|s| s.to_string()),
+        }
+    };
+    if !ds.source_order.is_empty() {
+        for sk in &ds.source_order {
+            match sk {
+                IrSelectionKind::Field(key) => {
+                    if key == "__typename" { continue; }
+                    if let Some(field) = ds.fields.get(key) {
+                        field_accessors.push(build_field_accessor(key, field));
+                    }
                 }
+                IrSelectionKind::InlineFragment(idx) => {
+                    if absorbed_inline_indices.contains(idx) {
+                        let inline = &ds.inline_fragments[*idx];
+                        for (key, field) in &inline.selection_set.direct_selections.fields {
+                            if key == "__typename" { continue; }
+                            if ds.fields.contains_key(key) { continue; }
+                            if !field_accessors.iter().any(|f| f.name == *key) {
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                            }
+                        }
+                    }
+                }
+                IrSelectionKind::NamedFragment(_) => {}
             }
-            OwnedFieldAccessor {
-                name: key.clone(),
-                swift_type,
-                description: field.description().map(|s| s.to_string()),
-            }
-        })
-        .collect();
-
-    // Add absorbed inline fragment fields to field_accessors as direct fields.
-    // These come before parent-inherited fields because they represent direct selections
-    // (e.g., `... on Animal { height { ... } }` absorbed into AsPet).
-    for &idx in &absorbed_inline_indices {
-        let inline = &ds.inline_fragments[idx];
-        for (key, field) in &inline.selection_set.direct_selections.fields {
-            if key == "__typename" { continue; }
-            if ds.fields.contains_key(key) { continue; }
-            if !field_accessors.iter().any(|f| f.name == *key) {
-                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+        }
+    } else {
+        // Fallback for selection sets without source_order
+        field_accessors = ds.fields.iter()
+            .filter(|(key, _)| key.as_str() != "__typename")
+            .map(|(key, field)| build_field_accessor(key, field))
+            .collect();
+        for &idx in &absorbed_inline_indices {
+            let inline = &ds.inline_fragments[idx];
+            for (key, field) in &inline.selection_set.direct_selections.fields {
+                if key == "__typename" { continue; }
+                if ds.fields.contains_key(key) { continue; }
+                if !field_accessors.iter().any(|f| f.name == *key) {
+                    let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                    field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                }
             }
         }
     }
@@ -991,6 +1053,48 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
+            // Merge entity sub-fields from sibling inline fragments in the parent scope.
+            // E.g., when building AsIssue.Author, merge `login` from AsReactable.AsComment.author { login }.
+            // This ensures entity types include all fields from all paths across the entity.
+            if is_inline_fragment {
+                if let Some(pds) = parent_scope_ds {
+                    // Collect matching entity fields from sibling inline fragments
+                    // (and their nested inline fragments, recursively)
+                    fn collect_entity_subfields_from_inline<'a>(
+                        inline: &'a InlineFragmentSelection,
+                        field_key: &str,
+                    ) -> Vec<(&'a str, &'a FieldSelection)> {
+                        let mut result = Vec::new();
+                        // Check the inline fragment's own fields
+                        if let Some(FieldSelection::Entity(ef)) = inline.selection_set.direct_selections.fields.get(field_key) {
+                            for (k, f) in &ef.selection_set.direct_selections.fields {
+                                result.push((k.as_str(), f));
+                            }
+                        }
+                        // Recursively check nested inline fragments
+                        for nested_inline in &inline.selection_set.direct_selections.inline_fragments {
+                            result.extend(collect_entity_subfields_from_inline(nested_inline, field_key));
+                        }
+                        result
+                    }
+
+                    for sibling in &pds.inline_fragments {
+                        let subfields = collect_entity_subfields_from_inline(sibling, key);
+                        for (sub_key, sub_field) in subfields {
+                            if sub_key == "__typename" { continue; }
+                            if !child_ss.field_accessors.iter().any(|f| f.name == sub_key) {
+                                let (swift_type, _) = render_field_swift_type(sub_field, schema_namespace, type_kinds, customizer);
+                                child_ss.field_accessors.push(OwnedFieldAccessor {
+                                    name: sub_key.to_string(),
+                                    swift_type,
+                                    description: sub_field.description().map(|s| s.to_string()),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             let parent_type_name = ef.selection_set.scope.parent_type.name();
             let doc_comment = if is_root {
                 format!("/// {}", child_name)

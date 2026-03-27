@@ -27,12 +27,26 @@ impl SelectionSet {
     }
 }
 
+/// Tracks which kind of selection appeared at a given source position.
+#[derive(Debug, Clone)]
+pub enum SelectionKind {
+    /// A field selection, identified by its response key.
+    Field(String),
+    /// An inline fragment, identified by its index in `inline_fragments`.
+    InlineFragment(usize),
+    /// A named fragment spread, identified by its index in `named_fragments`.
+    NamedFragment(usize),
+}
+
 /// Direct selections in a selection set.
 #[derive(Debug, Default)]
 pub struct DirectSelections {
     pub fields: IndexMap<String, FieldSelection>,
     pub inline_fragments: Vec<InlineFragmentSelection>,
     pub named_fragments: Vec<NamedFragmentSpread>,
+    /// Source order of selections (fields, inline fragments, named fragments interleaved).
+    /// This preserves the original ordering from the GraphQL document.
+    pub source_order: Vec<SelectionKind>,
 }
 
 /// A field in a selection set (either scalar or entity).
