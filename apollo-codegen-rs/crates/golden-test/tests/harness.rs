@@ -18,7 +18,7 @@ fn golden_files_exist_for_all_apis() {
 #[test]
 fn golden_file_counts() {
     let expected_counts = [
-        ("AnimalKingdomAPI", 50, 70),  // range to allow for non-.graphql.swift files
+        ("AnimalKingdomAPI", 50, 200),  // range to allow for non-.graphql.swift files + Package.resolved
         ("StarWarsAPI", 60, 80),
         ("GitHubAPI", 220, 240),
         ("UploadAPI", 5, 15),

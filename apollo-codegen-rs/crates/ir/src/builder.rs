@@ -229,7 +229,27 @@ impl IRBuilder {
                             }
                             continue;
                         }
-                        // If one has no conditions, the field is unconditional - just skip
+                        // If one has no conditions, the field is unconditional.
+                        // For entity fields: if the new conditional field has sub-selections,
+                        // add them as a conditional inline fragment within the existing entity's
+                        // sub-selection set, so the conditional selections are preserved.
+                        if let (FieldSelection::Entity(existing_ef), Some(new_ic)) = (direct.fields.get_mut(response_key).unwrap(), &inclusion) {
+                            if let Some(ref new_ss) = field.selection_set {
+                                let sub_type = infer_composite_type(&field.field_type, &field.name, &self.schema);
+                                let new_sub = self.build_selection_set_from_compiled(new_ss, &sub_type);
+                                // Create a conditional inline fragment with no type condition
+                                // but with the inclusion conditions from the conditional field.
+                                existing_ef.selection_set.direct_selections.inline_fragments.push(
+                                    InlineFragmentSelection {
+                                        type_condition: None,
+                                        selection_set: new_sub,
+                                        inclusion_conditions: Some(new_ic.clone()),
+                                        is_deferred: false,
+                                        defer_label: None,
+                                    }
+                                );
+                            }
+                        }
                         continue;
                     }
 

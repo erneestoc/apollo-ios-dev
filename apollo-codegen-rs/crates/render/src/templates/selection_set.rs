@@ -558,8 +558,12 @@ fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
         // Multi-line arguments need proper indentation relative to parent
         if args.contains('\n') {
             // Arguments format is "[\nentry1,\nentry2\n]"
-            // Indent entries at indent+"  " and closing "]" at indent level
+            // Track bracket nesting depth to properly indent nested object values.
+            // depth 1 = inside outermost [], depth 2 = inside nested [], etc.
+            let base_indent = format!("{}  ", indent);
             let mut indented = String::new();
+            let mut bracket_depth: usize = 0;
+
             for (i, line) in args.lines().enumerate() {
                 if i > 0 {
                     indented.push('\n');
@@ -567,15 +571,35 @@ fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
                 if i == 0 {
                     // Opening "[" stays on same line
                     indented.push_str(line);
-                } else if line == "]" {
-                    // Closing "]" at parent indent level
-                    indented.push_str(indent);
-                    indented.push_str(line);
+                    bracket_depth += 1;
                 } else {
-                    // Entries indented at parent + 2
-                    indented.push_str(indent);
-                    indented.push_str("  ");
-                    indented.push_str(line);
+                    let trimmed = line.trim();
+                    // Check if this line is a closing bracket
+                    if trimmed == "]" || trimmed == "])" {
+                        bracket_depth = bracket_depth.saturating_sub(1);
+                        if bracket_depth == 0 {
+                            // Outermost closing "]" at parent indent level
+                            indented.push_str(indent);
+                        } else {
+                            // Inner closing "]" at entry level for that depth
+                            let extra = "  ".repeat(bracket_depth - 1);
+                            indented.push_str(&base_indent);
+                            indented.push_str(&extra);
+                        }
+                        indented.push_str(trimmed);
+                    } else {
+                        // Content line: indent at base + extra for depth
+                        // depth 1 → base_indent (no extra)
+                        // depth 2 → base_indent + "  " (2 extra)
+                        let extra = "  ".repeat(bracket_depth.saturating_sub(1));
+                        indented.push_str(&base_indent);
+                        indented.push_str(&extra);
+                        indented.push_str(trimmed);
+                        // Check if this line ends with "[" (opens a nested value)
+                        if trimmed.ends_with('[') {
+                            bracket_depth += 1;
+                        }
+                    }
                 }
             }
             format!(".field(\"{}\"{}, {}.self, arguments: {})", f.name, alias_part, f.swift_type, indented)

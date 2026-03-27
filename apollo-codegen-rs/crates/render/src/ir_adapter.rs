@@ -1227,6 +1227,20 @@ fn build_selection_set_config_owned(
                 api_target_name,
             );
 
+            // When this inline fragment is nested inside a conditional scope (e.g., AsDroid
+            // inside IfIncludeFriendsDetails), add the parent conditional scope to the child's
+            // fulfilled fragments so the child includes it.
+            if struct_name.starts_with("If") && is_inline_fragment {
+                if let Some(ref mut init) = child_ss.initializer {
+                    let parent_scope = qualified_name.to_string();
+                    if !init.fulfilled_fragments.contains(&parent_scope) {
+                        // Insert after the root entity, before self
+                        let insert_pos = if init.fulfilled_fragments.len() >= 2 { 1 } else { init.fulfilled_fragments.len() };
+                        init.fulfilled_fragments.insert(insert_pos, parent_scope);
+                    }
+                }
+            }
+
             // Propagate absorbed type names from parent to child
             for atn in &absorbed_type_names {
                 if !child_ss.absorbed_type_names.contains(atn) {
@@ -1825,8 +1839,13 @@ fn build_selection_set_config_owned(
                 for frag_name in &applicable_frags {
                     if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
-                            if matches!(field, FieldSelection::Entity(_)) {
-                                let entity_type = naming::first_uppercased(key);
+                            if let FieldSelection::Entity(ef) = field {
+                                // Use singularized name for list fields to match the fragment's entity struct name
+                                let entity_type = if ef.field_type.is_list() {
+                                    naming::first_uppercased(&naming::singularize(key))
+                                } else {
+                                    naming::first_uppercased(key)
+                                };
                                 // Only add if not already handled as nested type or typealias
                                 if !child_ss.nested_types.iter().any(|nt| nt.config.struct_name == entity_type)
                                     && !child_ss.type_aliases.iter().any(|ta| ta.name == entity_type)
@@ -2143,8 +2162,13 @@ fn build_selection_set_config_owned(
                 for frag_name in &applicable_frags {
                     if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
-                            if matches!(field, FieldSelection::Entity(_)) {
-                                let entity_type = naming::first_uppercased(key);
+                            if let FieldSelection::Entity(ef) = field {
+                                // Use singularized name for list fields to match the fragment's entity struct name
+                                let entity_type = if ef.field_type.is_list() {
+                                    naming::first_uppercased(&naming::singularize(key))
+                                } else {
+                                    naming::first_uppercased(key)
+                                };
                                 if !child_ss.nested_types.iter().any(|nt| nt.config.struct_name == entity_type)
                                     && !child_ss.type_aliases.iter().any(|ta| ta.name == entity_type)
                                 {
@@ -2262,6 +2286,88 @@ fn build_selection_set_config_owned(
                 ),
                 config: child_ss,
             });
+        } else if inline.type_condition.is_none() && has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
+            // Conditional inline fragment WITHOUT a type condition
+            // e.g., `... @include(if: $includeDetails) { name appearsIn }`
+            // These generate IfVariableName wrapper structs.
+            let ic = inline.inclusion_conditions.as_ref().unwrap();
+            let type_name = conditional_inline_fragment_name(None, ic);
+            let property_name = conditional_inline_fragment_property(None, ic);
+            let child_qualified = format!("{}.{}", qualified_name, type_name);
+            let child_root_entity = if is_root {
+                qualified_name.to_string()
+            } else {
+                root_entity_type.unwrap_or(qualified_name).to_string()
+            };
+            let inline_conformance = if is_mutable {
+                SelectionSetConformance::MutableInlineFragment
+            } else {
+                SelectionSetConformance::InlineFragment
+            };
+
+            // Add the selection item
+            let (entries, op) = inclusion_conditions_to_owned(ic);
+            selections.push(OwnedSelectionItem {
+                kind: OwnedSelectionKind::ConditionalInlineFragment {
+                    conditions: entries,
+                    operator: op,
+                    type_name: type_name.clone(),
+                },
+            });
+
+            // Add the inline fragment accessor
+            inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
+                property_name: property_name.clone(),
+                type_name: type_name.clone(),
+            });
+
+            // Use the parent type as the type condition for this conditional wrapper
+            let parent_type_name = ir_ss.scope.parent_type.name().to_string();
+
+            // Build child selection set
+            let child_ss = build_selection_set_config_owned(
+                &type_name,
+                &inline.selection_set,
+                schema_namespace,
+                access_modifier,
+                false,
+                true,
+                inline_conformance,
+                Some(&child_root_entity),
+                indent + 2,
+                &child_qualified,
+                generate_initializers,
+                referenced_fragments,
+                type_kinds,
+                Some(&field_accessors), // pass parent field accessors
+                is_mutable,
+                customizer,
+                entity_root_graphql_type.or(Some(ir_ss.scope.parent_type.name())),
+                ancestor_fragments,
+                Some(ds),
+                inline.inclusion_conditions.as_ref(),
+                api_target_name,
+            );
+
+            let doc_comment = if is_root {
+                format!("/// {}", type_name)
+            } else {
+                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
+                    &qualified_name[pos + 6..]
+                } else {
+                    struct_name
+                };
+                format!("/// {}.{}", doc_prefix, type_name)
+            };
+            nested_types.push(OwnedNestedSelectionSet {
+                doc_comment,
+                parent_type_comment: format!(
+                    "///\n{}/// Parent Type: `{}`",
+                    " ".repeat(indent + 2),
+                    parent_type_name
+                ),
+                config: child_ss,
+            });
         }
     }
 
@@ -2327,9 +2433,26 @@ fn build_selection_set_config_owned(
                         }
                     }
                 } else {
-                    // Fallback: use the current scope's field_accessors
-                    // (these include parent-inherited fields but in the current scope's order)
-                    for fa in &field_accessors { pfa.push(fa.clone()); }
+                    // Fallback: use the current scope's field_accessors.
+                    // Determine ordering: if the fragment's fields have NO overlap with
+                    // field_accessors, put fragment fields first (they're the primary content).
+                    // If there IS overlap, keep parent-first order (fields are shared/merged).
+                    let mut frag_field_names: Vec<String> = frag_ds.fields.keys().cloned().collect();
+                    for fs in &frag_ds.named_fragments {
+                        if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                            for key in inner.root_field.selection_set.direct_selections.fields.keys() {
+                                frag_field_names.push(key.clone());
+                            }
+                        }
+                    }
+                    let has_overlap = field_accessors.iter().any(|fa| frag_field_names.contains(&fa.name));
+
+                    if has_overlap {
+                        // Parent-first: field_accessors first, then fragment fields
+                        for fa in &field_accessors { pfa.push(fa.clone()); }
+                    }
+                    // Fragment fields will be added in step 2 below.
+                    // If no overlap, pfa is empty here and fragment fields go first.
                 }
 
                 // 2. Add the promoted fragment's own fields
@@ -2346,6 +2469,28 @@ fn build_selection_set_config_owned(
                             if !pfa.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                                 pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                            }
+                        }
+                    }
+                }
+
+                // 2b. If no overlap, add parent fields AFTER fragment fields
+                if !parent_scope_ds.is_some() {
+                    let has_overlap_check = {
+                        let mut frag_fn: Vec<String> = frag_ds.fields.keys().cloned().collect();
+                        for fs in &frag_ds.named_fragments {
+                            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                                for key in inner.root_field.selection_set.direct_selections.fields.keys() {
+                                    frag_fn.push(key.clone());
+                                }
+                            }
+                        }
+                        field_accessors.iter().any(|fa| frag_fn.contains(&fa.name))
+                    };
+                    if !has_overlap_check {
+                        for fa in &field_accessors {
+                            if !pfa.iter().any(|f| f.name == fa.name) {
+                                pfa.push(fa.clone());
                             }
                         }
                     }
@@ -2668,6 +2813,9 @@ fn build_selection_set_config_owned(
             }
 
             // Case 2: Fragment contains inline fragments - promote them as CompositeInlineFragment
+            // Skip conditional fragment spreads — their inline fragments should not be promoted
+            // to the parent scope (they belong inside the conditional wrapper).
+            if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
             for frag_inline in &frag_ds.inline_fragments {
                 if let Some(ref tc) = frag_inline.type_condition {
                     let tc_name = tc.name().to_string();
@@ -4091,8 +4239,13 @@ fn build_type_aliases(
     for spread in &ds.named_fragments {
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
-                if let FieldSelection::Entity(_) = field {
-                    let type_name = naming::first_uppercased(key);
+                if let FieldSelection::Entity(ef) = field {
+                    // Use singularized name for list fields to match the fragment's entity struct name
+                    let type_name = if ef.field_type.is_list() {
+                        naming::first_uppercased(&naming::singularize(key))
+                    } else {
+                        naming::first_uppercased(key)
+                    };
                     // Only add alias if we don't have a direct entity field with the same name
                     if !ds.fields.contains_key(key) || !matches!(ds.fields.get(key), Some(FieldSelection::Entity(_))) {
                         if !aliases.iter().any(|a: &OwnedTypeAlias| a.name == type_name) {
@@ -4108,8 +4261,13 @@ fn build_type_aliases(
             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                 if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
                     for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
-                        if let FieldSelection::Entity(_) = field {
-                            let type_name = naming::first_uppercased(key);
+                        if let FieldSelection::Entity(ef) = field {
+                            // Use singularized name for list fields to match the fragment's entity struct name
+                            let type_name = if ef.field_type.is_list() {
+                                naming::first_uppercased(&naming::singularize(key))
+                            } else {
+                                naming::first_uppercased(key)
+                            };
                             if !ds.fields.contains_key(key) || !matches!(ds.fields.get(key), Some(FieldSelection::Entity(_))) {
                                 if !aliases.iter().any(|a: &OwnedTypeAlias| a.name == type_name) {
                                     aliases.push(OwnedTypeAlias {

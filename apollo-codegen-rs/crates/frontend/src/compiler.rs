@@ -746,6 +746,7 @@ impl GraphQLFrontend {
         let raw = op.serialize().no_indent().to_string();
         let raw = strip_local_cache_mutation_directive(&raw);
         let raw = fix_default_value_formatting(&raw);
+        let raw = fix_inline_argument_format(&raw);
         add_typename_to_selection_sets(&raw, legacy_safelisting)
     }
 
@@ -753,6 +754,7 @@ impl GraphQLFrontend {
     fn print_fragment(&self, frag: &executable::Fragment, legacy_safelisting: bool) -> String {
         let raw = frag.serialize().no_indent().to_string();
         let raw = strip_local_cache_mutation_directive(&raw);
+        let raw = fix_inline_argument_format(&raw);
         add_typename_to_selection_sets(&raw, legacy_safelisting)
     }
 
@@ -859,8 +861,17 @@ impl GraphQLFrontend {
         // - For input objects: recursively adds all field types
         let mut seen = IndexSet::new();
 
-        // Walk all operations in document order
-        for op in doc.operations.iter() {
+        // Walk all operations, sorted by type (queries first, then subscriptions,
+        // then mutations) to match the JS frontend's encounter order.
+        // The JS frontend processes operations from the merged document, where
+        // query-type operations tend to be encountered before mutation-type ones.
+        let mut sorted_ops: Vec<_> = doc.operations.iter().collect();
+        sorted_ops.sort_by_key(|op| match op.operation_type {
+            apollo_compiler::ast::OperationType::Query => 0,
+            apollo_compiler::ast::OperationType::Subscription => 1,
+            apollo_compiler::ast::OperationType::Mutation => 2,
+        });
+        for op in sorted_ops {
             // 1. Variable types first (matching JS: variables processed before rootType)
             for var in &op.variables {
                 self.add_referenced_type_from_ast(&var.ty, schema, &builtin_scalars, &mut seen);
@@ -1015,6 +1026,259 @@ impl GraphQLFrontend {
 /// Strip the `@apollo_client_ios_localCacheMutation` directive from a source string.
 /// This directive is used for code generation purposes but should not appear in the
 /// emitted fragment definition source.
+/// Fix inline argument formatting to match graphql-js output.
+///
+/// graphql-js's printer uses multi-line format for arguments when the single-line
+/// form would exceed 80 characters. When collapsed to single-line, the multi-line
+/// format produces `( arg1 arg2 )` instead of `(arg1, arg2)`.
+///
+/// Rules:
+///   1. Only reformat argument lists that contain non-variable literal values
+///   2. Only reformat when the field+args line would exceed 80 characters
+///   3. Add space after `(` and before `)`
+///   4. Remove commas between top-level arguments
+///   5. Add spaces inside `{` and `}` for input object literals
+///   6. Commas INSIDE object values are KEPT
+///
+/// Additionally, always add spaces inside `{}` for input object literals in arguments,
+/// even when the argument list doesn't need the multi-line reformat.
+fn fix_inline_argument_format(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(len + 50);
+    let mut i = 0;
+
+    while i < len {
+        // Look for `(` that starts an argument list (preceded by identifier)
+        if chars[i] == '(' {
+            // Check if this is an argument list (preceded by an identifier char)
+            let is_arg_list = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+            if is_arg_list {
+                // Find matching `)` and extract the argument list
+                let mut depth = 1;
+                let start = i;
+                let mut j = i + 1;
+                while j < len && depth > 0 {
+                    if chars[j] == '(' { depth += 1; }
+                    else if chars[j] == ')' { depth -= 1; }
+                    else if chars[j] == '"' {
+                        // Skip string contents
+                        j += 1;
+                        while j < len && chars[j] != '"' {
+                            if chars[j] == '\\' { j += 1; }
+                            j += 1;
+                        }
+                    }
+                    j += 1;
+                }
+                let end = j; // one past the closing `)`
+
+                // Extract argument list content (between parens)
+                let arg_content: String = chars[start + 1..end - 1].iter().collect();
+
+                // Skip variable definition lists (e.g., `($var: Type!)`)
+                // Variable definitions have `$name:` format ($ before the first colon).
+                let is_var_def_list = is_variable_definition_list(&arg_content);
+
+                // Check if any argument value is a non-variable literal
+                let has_inline_literal = !is_var_def_list && has_non_variable_argument(&arg_content);
+
+                if has_inline_literal {
+                    // First, add spaces inside `{}` for object literals
+                    let with_brace_spaces = add_brace_spaces(&arg_content);
+
+                    // Find the field name that precedes this argument list by scanning
+                    // backwards from `(`. The field call is `fieldName(args)`.
+                    let field_start = {
+                        let mut fs = start;
+                        while fs > 0 && (chars[fs - 1].is_alphanumeric() || chars[fs - 1] == '_') {
+                            fs -= 1;
+                        }
+                        fs
+                    };
+                    // The full "line" that graphql-js would measure includes the field name + (args)
+                    let full_line_len = (start - field_start) + 1 + with_brace_spaces.len() + 1; // fieldName + ( + args + )
+
+                    if full_line_len > 80 {
+                        // Multi-line format: spaces around parens, remove top-level commas
+                        let reformatted = remove_top_level_commas(&with_brace_spaces);
+                        result.push_str("( ");
+                        result.push_str(&reformatted);
+                        result.push_str(" )");
+                    } else {
+                        // Compact format but with spaces inside braces
+                        result.push('(');
+                        result.push_str(&with_brace_spaces);
+                        result.push(')');
+                    }
+                    i = end;
+                } else {
+                    // All variables - leave unchanged
+                    result.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Check if this parenthesized content is a variable definition list
+/// (e.g., `$var: Type!, $var2: Type`). Variable definitions start with `$`.
+fn is_variable_definition_list(content: &str) -> bool {
+    let trimmed = content.trim();
+    trimmed.starts_with('$')
+}
+
+/// Check if an argument list string contains any non-variable literal value.
+/// Variable references start with `$` after `:`.
+fn has_non_variable_argument(args: &str) -> bool {
+    let chars: Vec<char> = args.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == ':' {
+            // Skip whitespace after `:`
+            i += 1;
+            while i < len && chars[i] == ' ' { i += 1; }
+            if i < len && chars[i] != '$' {
+                return true; // Non-variable argument value
+            }
+        } else if chars[i] == '"' {
+            // Skip string
+            i += 1;
+            while i < len && chars[i] != '"' {
+                if chars[i] == '\\' { i += 1; }
+                i += 1;
+            }
+            if i < len { i += 1; }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Add spaces inside `{` and `}` for input object literals.
+fn add_brace_spaces(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(len + 20);
+    let mut i = 0;
+
+    while i < len {
+        match chars[i] {
+            '{' => {
+                result.push_str("{ ");
+                i += 1;
+                // Skip any existing space after `{`
+                while i < len && chars[i] == ' ' { i += 1; }
+            }
+            '}' => {
+                // Ensure space before `}`
+                if !result.ends_with(' ') {
+                    result.push(' ');
+                }
+                result.push('}');
+                i += 1;
+            }
+            '"' => {
+                // Copy string literal verbatim
+                result.push(chars[i]);
+                i += 1;
+                while i < len && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        result.push(chars[i]);
+                        i += 1;
+                        if i < len {
+                            result.push(chars[i]);
+                            i += 1;
+                        }
+                    } else {
+                        result.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                if i < len {
+                    result.push(chars[i]); // closing quote
+                    i += 1;
+                }
+            }
+            _ => {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
+/// Remove commas between top-level arguments (brace_depth == 0).
+/// Commas inside `{}` are kept.
+fn remove_top_level_commas(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(len);
+    let mut i = 0;
+    let mut brace_depth = 0;
+
+    while i < len {
+        match chars[i] {
+            '{' => {
+                brace_depth += 1;
+                result.push(chars[i]);
+                i += 1;
+            }
+            '}' => {
+                brace_depth -= 1;
+                result.push(chars[i]);
+                i += 1;
+            }
+            ',' if brace_depth == 0 => {
+                // Top-level comma between arguments — remove it
+                i += 1;
+            }
+            '"' => {
+                // Copy string literal verbatim
+                result.push(chars[i]);
+                i += 1;
+                while i < len && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        result.push(chars[i]);
+                        i += 1;
+                        if i < len {
+                            result.push(chars[i]);
+                            i += 1;
+                        }
+                    } else {
+                        result.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                if i < len {
+                    result.push(chars[i]); // closing quote
+                    i += 1;
+                }
+            }
+            _ => {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
 /// Fix default value formatting in the source string to match graphql-js output.
 /// apollo-compiler prints: `{key: val, key2: val2}`
 /// graphql-js prints:      `{ key: val key2: val2 }` (spaces around braces, commas

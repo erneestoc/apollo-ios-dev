@@ -74,11 +74,13 @@ fn fragment_template_dog_fragment() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "species",
                     swift_type: "String",
                     arguments: None,
@@ -151,11 +153,13 @@ fn fragment_template_height_in_meters() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "height",
                     swift_type: "Height",
                     arguments: None,
@@ -210,11 +214,13 @@ fn fragment_template_height_in_meters() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "__typename",
                                 swift_type: "String",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "meters",
                                 swift_type: "Int",
                                 arguments: None,
@@ -295,21 +301,25 @@ fn fragment_template_pet_details() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "humanName",
                     swift_type: "String?",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "favoriteToy",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "owner",
                     swift_type: "Owner?",
                     arguments: None,
@@ -390,11 +400,13 @@ fn fragment_template_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "__typename",
                                 swift_type: "String",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "firstName",
                                 swift_type: "String",
                                 arguments: None,
@@ -475,21 +487,25 @@ fn fragment_template_crocodile_fragment() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "species",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "age",
                     swift_type: "Int",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "tag",
                     swift_type: "String?",
                     arguments: Some(r#"["id": "albino"]"#),
@@ -587,11 +603,13 @@ fn fragment_template_warm_blooded_details() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
                 }),
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "bodyTemperature",
                     swift_type: "Int",
                     arguments: None,
@@ -696,6 +714,7 @@ fn fragment_template_classroom_pet_details() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "__typename",
                     swift_type: "String",
                     arguments: None,
@@ -743,6 +762,7 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "species",
                                 swift_type: "String",
                                 arguments: None,
@@ -792,6 +812,7 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "humanName",
                                 swift_type: "String?",
                                 arguments: None,
@@ -841,6 +862,7 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "laysEggs",
                                 swift_type: "Bool",
                                 arguments: None,
@@ -894,11 +916,13 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "bodyTemperature",
                                 swift_type: "Int",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "isJellicle",
                                 swift_type: "Bool",
                                 arguments: None,
@@ -962,6 +986,7 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "wingspan",
                                 swift_type: "Double",
                                 arguments: None,
@@ -1022,6 +1047,7 @@ fn fragment_template_classroom_pet_details() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "favoriteToy",
                                 swift_type: "String",
                                 arguments: None,
@@ -1107,6 +1133,7 @@ fn operation_template_dog_query() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "allAnimals",
                     swift_type: "[AllAnimal]",
                     arguments: None,
@@ -1156,16 +1183,19 @@ fn operation_template_dog_query() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "__typename",
                                 swift_type: "String",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "id",
                                 swift_type: "AnimalKingdomAPI.ID",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "skinCovering",
                                 swift_type: "GraphQLEnum<AnimalKingdomAPI.SkinCovering>?",
                                 arguments: None,
@@ -1239,6 +1269,7 @@ fn operation_template_dog_query() {
                                     merged_sources: vec![],
                                     selections: vec![
                                         SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                                             name: "houseDetails",
                                             swift_type: "AnimalKingdomAPI.Object?",
                                             arguments: None,
@@ -1391,6 +1422,7 @@ fn operation_template_pet_adoption_mutation() {
             merged_sources: vec![],
             selections: vec![
                 SelectionItem::Field(FieldSelectionItem {
+                    alias: None,
                     name: "adoptPet",
                     swift_type: "AdoptPet",
                     arguments: Some(r#"["input": .variable("input")]"#),
@@ -1440,16 +1472,19 @@ fn operation_template_pet_adoption_mutation() {
                         merged_sources: vec![],
                         selections: vec![
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "__typename",
                                 swift_type: "String",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "id",
                                 swift_type: "AnimalKingdomAPI.ID",
                                 arguments: None,
                             }),
                             SelectionItem::Field(FieldSelectionItem {
+                                alias: None,
                                 name: "humanName",
                                 swift_type: "String?",
                                 arguments: None,
