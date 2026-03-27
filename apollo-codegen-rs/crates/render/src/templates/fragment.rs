@@ -398,8 +398,10 @@ fn render_initializer(
     result.push_str(&format!("{}self.init(_dataDict: DataDict(\n", inner));
     result.push_str(&format!("{}data: [\n", inner2));
 
-    // Data entries - all get trailing comma
+    // Data entries - all get trailing comma, skip duplicates
+    let mut seen_keys = std::collections::HashSet::new();
     for entry in config.data_entries.iter() {
+        if !seen_keys.insert(&entry.key) { continue; } // skip duplicate keys
         match &entry.value {
             selection_set::DataEntryValue::Variable(var_name) => {
                 result.push_str(&format!(

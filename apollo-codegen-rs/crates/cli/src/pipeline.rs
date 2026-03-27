@@ -54,8 +54,17 @@ impl PipelineTimer {
     }
 }
 
+/// Options for controlling which files are generated.
+#[derive(Default)]
+pub struct GenerateOptions {
+    pub timing: bool,
+    pub skip_schema_configuration: bool,
+    pub skip_custom_scalars: bool,
+}
+
 /// Run the full code generation pipeline.
-pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bool) -> anyhow::Result<GenerationResult> {
+pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, options: &GenerateOptions) -> anyhow::Result<GenerationResult> {
+    let timing = options.timing;
     let mut timer = PipelineTimer::new(timing);
     let mut t = Instant::now();
 
@@ -240,6 +249,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bo
         include_schema_docs,
         is_embedded,
         ops_in_schema_module,
+        options.skip_schema_configuration,
+        options.skip_custom_scalars,
     );
 
     // Package.swift (for SPM module type)
@@ -307,7 +318,8 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bo
 ///
 /// Produces: Objects, Enums, Unions, InputObjects, Interfaces, CustomScalars,
 /// SchemaMetadata, SchemaConfiguration, Package.swift, MockObjects.
-pub fn generate_schema_only(config: &ApolloCodegenConfiguration, root_url: &Path, timing: bool) -> anyhow::Result<GenerationResult> {
+pub fn generate_schema_only(config: &ApolloCodegenConfiguration, root_url: &Path, options: &GenerateOptions) -> anyhow::Result<GenerationResult> {
+    let timing = options.timing;
     let mut timer = PipelineTimer::new(timing);
     let mut t = Instant::now();
 
@@ -481,6 +493,8 @@ pub fn generate_schema_only(config: &ApolloCodegenConfiguration, root_url: &Path
         include_schema_docs,
         is_embedded,
         ops_in_schema_module,
+        options.skip_schema_configuration,
+        options.skip_custom_scalars,
     );
 
     generate_module_files(&mut result, config, &schema_output_path, &ns);
@@ -923,6 +937,8 @@ fn generate_schema_files(
     include_schema_docs: bool,
     is_embedded: bool,
     ops_in_schema_module: bool,
+    skip_schema_configuration: bool,
+    skip_custom_scalars: bool,
 ) {
     // Only swiftPackageManager adds a Sources/ subdirectory
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
@@ -1124,7 +1140,8 @@ fn generate_schema_files(
         }
     }
 
-    // Custom Scalars
+    // Custom Scalars (skip if --skip-custom-scalars)
+    if !skip_custom_scalars {
     for named_type in &compilation.referenced_types {
         if let GraphQLNamedType::Scalar(scalar) = named_type {
             let swift_name = customizer.custom_type_name(&scalar.name);
@@ -1172,6 +1189,7 @@ fn generate_schema_files(
             result.add_file(file_path, content);
         }
     }
+    } // end if !skip_custom_scalars
 
     // SchemaMetadata
     let object_types: Vec<(String, String)> = compilation
@@ -1199,12 +1217,14 @@ fn generate_schema_files(
         content,
     );
 
-    // SchemaConfiguration
-    let content = templates::schema_config::render(access_mod, api_target, is_embedded);
-    result.add_file(
-        sources_path.join(format!("{}SchemaConfiguration.swift", schema_subdir)),
-        content,
-    );
+    // SchemaConfiguration (skip if --skip-schema-configuration)
+    if !skip_schema_configuration {
+        let content = templates::schema_config::render(access_mod, api_target, is_embedded);
+        result.add_file(
+            sources_path.join(format!("{}SchemaConfiguration.swift", schema_subdir)),
+            content,
+        );
+    }
 }
 
 fn generate_module_files(

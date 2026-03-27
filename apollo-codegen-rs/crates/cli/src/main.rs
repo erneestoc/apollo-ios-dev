@@ -63,6 +63,14 @@ enum Commands {
         #[arg(long)]
         concat: Option<String>,
 
+        /// Skip generating SchemaConfiguration.swift (editable file)
+        #[arg(long = "skip-schema-configuration")]
+        skip_schema_configuration: bool,
+
+        /// Skip generating CustomScalars/ directory
+        #[arg(long = "skip-custom-scalars")]
+        skip_custom_scalars: bool,
+
         /// Save compiled IR to a file for reuse by other commands
         #[arg(long = "save-ir")]
         save_ir: Option<String>,
@@ -93,6 +101,14 @@ enum Commands {
         /// Concatenate all generated files into a single output file
         #[arg(long)]
         concat: Option<String>,
+
+        /// Skip generating SchemaConfiguration.swift (editable file)
+        #[arg(long = "skip-schema-configuration")]
+        skip_schema_configuration: bool,
+
+        /// Skip generating CustomScalars/ directory
+        #[arg(long = "skip-custom-scalars")]
+        skip_custom_scalars: bool,
 
         /// Save compiled IR to a file for reuse by other commands
         #[arg(long = "save-ir")]
@@ -237,6 +253,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Generate {
             path, string, verbose, timing, fetch_schema, ignore_version_mismatch: _,
             concat, save_ir, load_ir,
+            skip_schema_configuration, skip_custom_scalars,
         } => {
             let (config, root) = load_config(path, string, verbose)?;
 
@@ -260,7 +277,12 @@ fn main() -> anyhow::Result<()> {
             }
 
             let show_timing = timing || verbose;
-            let result = pipeline::generate(&config, &root, show_timing)?;
+            let gen_options = pipeline::GenerateOptions {
+                timing: show_timing,
+                skip_schema_configuration,
+                skip_custom_scalars,
+            };
+            let result = pipeline::generate(&config, &root, &gen_options)?;
 
             if save_ir.is_some() {
                 eprintln!("Warning: --save-ir is not yet implemented; ignoring.");
@@ -303,11 +325,17 @@ fn main() -> anyhow::Result<()> {
 
         Commands::GenerateSchemaTypes {
             path, string, verbose, timing, concat, save_ir,
+            skip_schema_configuration, skip_custom_scalars,
         } => {
             let (config, root) = load_config(path, string, verbose)?;
             let show_timing = timing || verbose;
+            let gen_options = pipeline::GenerateOptions {
+                timing: show_timing,
+                skip_schema_configuration,
+                skip_custom_scalars,
+            };
 
-            let result = pipeline::generate_schema_only(&config, &root, show_timing)?;
+            let result = pipeline::generate_schema_only(&config, &root, &gen_options)?;
 
             // TODO: --save-ir is stubbed for now.
             if save_ir.is_some() {
