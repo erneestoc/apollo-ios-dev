@@ -69,61 +69,95 @@ pub fn to_camel_case(s: &str) -> String {
     result
 }
 
-/// Basic English singularization for GraphQL field names.
+/// InflectorKit-compatible English singularization for GraphQL field names.
 ///
-/// The Swift codegen singularizes list field names when creating struct names.
-/// For example:
-/// - `allAnimals` → `AllAnimal`
-/// - `classroomPets` → `ClassroomPet`
-/// - `predators` → `Predator`
-/// - `height` → `Height` (unchanged, not plural)
+/// Uses the same regex-based singularization rules as the Swift codegen
+/// (InflectorKit's StringInflector). Rules are applied in reverse order
+/// (last matching rule wins).
+///
+/// Examples:
+/// - `allAnimals` → `allAnimal`
+/// - `classroomPets` → `classroomPet`
+/// - `predators` → `predator`
+/// - `height` → `height` (unchanged, not plural)
+/// - `Data` → `Datum` (Latin: `([ti])a$` → `$1um`)
 pub fn singularize(s: &str) -> String {
+    use regex::Regex;
+
     if s.is_empty() {
         return s.to_string();
     }
 
-    // Only singularize if it ends with 's' and is likely plural
-    if let Some(stripped) = s.strip_suffix('s') {
-        if stripped.is_empty() {
+    // Uncountable words (never singularize)
+    let uncountables = [
+        "equipment", "information", "rice", "money", "species",
+        "series", "fish", "sheep", "jeans", "police",
+    ];
+    let lower = s.to_lowercase();
+    for word in &uncountables {
+        if lower == *word {
             return s.to_string();
         }
-        // Don't singularize words ending in "ss" (e.g., "class", "address")
-        if stripped.ends_with('s') {
-            return s.to_string();
-        }
-        // Don't singularize words ending in "us" (e.g., "status", "radius")
-        if stripped.ends_with('u') {
-            return s.to_string();
-        }
-        // Handle "ies" → "y" (e.g., "buddies" → "buddy")
-        if let Some(base) = stripped.strip_suffix("ie") {
-            return format!("{}y", base);
-        }
-        // Handle "ves" → "f" (e.g., "wolves" → "wolf") -- "wolves" stripped to "wolve"
-        // Actually after stripping 's', "wolves" → "wolve", check for "ve" → "f"
-        // Handle "es" ending (after stripping 's', we have the base ending in 'e')
-        // e.g., "classes" → "classe" -- but we already handled "ss" above
-        // "boxes" → "boxe" -- need to handle "xes", "shes", "ches"
-        if stripped.ends_with('e') {
-            // Check for "xes" → "x", "shes" → "sh", "ches" → "ch"
-            let without_e = &stripped[..stripped.len() - 1];
-            if without_e.ends_with('x')
-                || without_e.ends_with("sh")
-                || without_e.ends_with("ch")
-                || without_e.ends_with('z')
-            {
-                return without_e.to_string();
-            }
-            // "ves" → "f" (e.g., "wolves" → "wolve" → "wolf")
-            if without_e.ends_with('v') {
-                let without_ve = &without_e[..without_e.len() - 1];
-                return format!("{}f", without_ve);
-            }
-        }
-        stripped.to_string()
-    } else {
-        s.to_string()
     }
+
+    // Irregular words
+    let irregulars = [
+        ("people", "person"),
+        ("men", "man"),
+        ("children", "child"),
+        ("sexes", "sex"),
+        ("moves", "move"),
+        ("zombies", "zombie"),
+    ];
+    for (plural, singular) in &irregulars {
+        if lower == *plural {
+            // Preserve original casing of first character
+            let first = s.chars().next().unwrap();
+            return format!("{}{}", first, &singular[1..]);
+        }
+    }
+
+    // Singularization rules (applied in reverse order — last match wins)
+    // These match InflectorKit's default singularization rules exactly.
+    let rules: Vec<(&str, &str)> = vec![
+        ("s$", ""),
+        ("(ss)$", "$1"),
+        ("(n)ews$", "${1}ews"),
+        ("([ti])a$", "${1}um"),
+        ("((a)naly|(b)a|(d)iagno|(p)arenthe|(p)rogno|(s)ynop|(t)he)(sis|ses)$", "${1}sis"),
+        ("(^analy)(sis|ses)$", "${1}sis"),
+        ("([^f])ves$", "${1}fe"),
+        ("(hive)s$", "$1"),
+        ("(tive)s$", "$1"),
+        ("([lr])ves$", "${1}f"),
+        ("([^aeiouy]|qu)ies$", "${1}y"),
+        ("(s)eries$", "${1}eries"),
+        ("(m)ovies$", "${1}ovie"),
+        ("(x|ch|ss|sh)es$", "$1"),
+        ("^(m|l)ice$", "${1}ouse"),
+        ("(bus)(es)?$", "$1"),
+        ("(o)es$", "$1"),
+        ("(shoe)s$", "$1"),
+        ("(cris|test)(is|es)$", "${1}is"),
+        ("^(a)x[ie]s$", "${1}xis"),
+        ("(octop|vir)(us|i)$", "${1}us"),
+        ("(alias|status)(es)?$", "$1"),
+        ("^(ox)en", "$1"),
+        ("(vert|ind)ices$", "${1}ex"),
+        ("(matr)ices$", "${1}ix"),
+        ("(quiz)zes$", "$1"),
+        ("(database)s$", "$1"),
+    ];
+
+    // Apply rules in reverse (last matching rule wins, per InflectorKit behavior)
+    for &(pattern, replacement) in rules.iter().rev() {
+        let re = Regex::new(&format!("(?i){}", pattern)).unwrap();
+        if re.is_match(s) {
+            return re.replace(s, replacement).to_string();
+        }
+    }
+
+    s.to_string()
 }
 
 /// A pluralizer/singularizer that mirrors Swift's InflectorKit-based `Pluralizer`.
