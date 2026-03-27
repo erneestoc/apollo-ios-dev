@@ -37,6 +37,7 @@ pub fn render_operation(
     api_target_name: &str,
     mark_definitions_as_final: bool,
     variable_namespace_prefix: &str,
+    init_access_modifier: Option<&str>,
 ) -> String {
     // Build owned strings we'll reference
     let op_type = match op.operation_type {
@@ -130,6 +131,7 @@ pub fn render_operation(
         operation_type: op_type,
         schema_namespace: schema_namespace.to_string(),
         access_modifier: access_modifier.to_string(),
+        init_access_modifier: init_access_modifier.unwrap_or(access_modifier).to_string(),
         source: op.source.clone(),
         fragment_names,
         variables,
@@ -210,6 +212,9 @@ struct OwnedOperationConfig {
     operation_type: TemplateOpType,
     schema_namespace: String,
     access_modifier: String,
+    /// Access modifier for init, variable properties, and __variables.
+    /// For embeddedInTarget, this is always "public " to satisfy protocol conformance.
+    init_access_modifier: String,
     source: String,
     fragment_names: Vec<String>,
     variables: Vec<OwnedVariableConfig>,
@@ -5008,6 +5013,7 @@ fn render_owned_operation(config: &OwnedOperationConfig) -> String {
         query_string_format: config.query_string_format,
         api_target_name: &config.api_target_name,
         class_keyword: &config.class_keyword,
+        init_access_modifier: &config.init_access_modifier,
     };
 
     crate::templates::operation::render(&template_config)

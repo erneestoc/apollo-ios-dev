@@ -279,11 +279,12 @@ pub fn render(config: &SelectionSetConfig) -> String {
     ));
 
     // __mergedSources (for CompositeInlineFragment)
+    // Always uses "public" access — it's a protocol requirement from CompositeInlineFragment
     if !config.merged_sources.is_empty() {
         let item_indent = format!("{}  ", inner_indent);
         result.push_str(&format!(
-            "{}{}static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n",
-            inner_indent, config.access_modifier, config.api_target_name
+            "{}public static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n",
+            inner_indent, config.api_target_name
         ));
         for (i, source) in config.merged_sources.iter().enumerate() {
             let comma = if i < config.merged_sources.len() - 1 { "," } else { "" };

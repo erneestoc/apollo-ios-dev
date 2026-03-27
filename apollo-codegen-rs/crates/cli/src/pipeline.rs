@@ -109,6 +109,20 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         config.output.operations,
         OperationsFileOutput::InSchemaModule(_)
     );
+    // For embeddedInTarget, operations/fragments/mocks that live outside the schema module
+    // must always use "public" access, regardless of the configured access modifier.
+    // Only operations that are inSchemaModule use the embedded access modifier.
+    let ops_access_mod = if is_embedded && !ops_in_schema_module {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
+    // Test mocks are always outside the schema module, so they always need "public"
+    let mock_access_mod = if is_embedded {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
     // For embedded mode, get the target name for mock imports
     let embedded_target_name = if let SchemaModuleType::EmbeddedInTarget(ref c) = config.output.schema_types.module_type {
         Some(c.name.clone())
@@ -188,7 +202,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &ir,
         &schema_output_path,
         &ns,
-        &access_mod,
+        &ops_access_mod,
         config,
         &type_kinds,
         &customizer,
@@ -207,7 +221,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         &ir,
         &schema_output_path,
         &ns,
-        &access_mod,
+        &ops_access_mod,
         config,
         &type_kinds,
         &customizer,
@@ -228,7 +242,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         root_url,
         &ns,
         api_target,
-        &access_mod,
+        &mock_access_mod,
         &customizer,
         embedded_target_name.as_deref(),
     );
@@ -854,6 +868,8 @@ fn generate_operation_files(
         } else {
             String::new()
         };
+        // For embeddedInTarget, init/variables/__variables always need "public "
+        let init_mod: Option<&str> = if is_embedded { Some("public ") } else { None };
         let mut content = ir_adapter::render_operation(
             &operation,
             ns,
@@ -867,6 +883,7 @@ fn generate_operation_files(
             api_target,
             false, // markOperationDefinitionsAsFinal
             &var_prefix,
+            init_mod,
         );
 
         // Strip parent type doc comments when schema docs excluded

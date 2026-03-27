@@ -94,6 +94,11 @@ pub struct OperationConfig<'a> {
     /// Class definition keyword prefix (e.g. "class" or "final class").
     /// When `markOperationDefinitionsAsFinal` is true, this is "final class".
     pub class_keyword: &'a str,
+    /// Access modifier for init, variable properties, and __variables on the operation class.
+    /// For embeddedInTarget with inSchemaModule, this is "public " while access_modifier is
+    /// the embedded access modifier (e.g. "" for internal). For all other cases, this matches
+    /// access_modifier.
+    pub init_access_modifier: &'a str,
 }
 
 /// Render a complete operation file.
@@ -131,17 +136,18 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
         config.access_modifier, op_type_value
     ));
 
-    // Variables or init
+    // Variables or init — use init_access_modifier for init, variable properties, and __variables
+    let init_mod = config.init_access_modifier;
     if config.variables.is_empty() {
         result.push('\n');
-        result.push_str(&format!("  {}init() {{}}\n", config.access_modifier));
+        result.push_str(&format!("  {}init() {{}}\n", init_mod));
     } else {
         result.push('\n');
         // Variable properties
         for var in &config.variables {
             result.push_str(&format!(
                 "  {}var {}: {}\n",
-                config.access_modifier, var.name, var.swift_type
+                init_mod, var.name, var.swift_type
             ));
         }
         result.push('\n');
@@ -153,17 +159,17 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
                 // Single variable with default value - inline format
                 result.push_str(&format!(
                     "  {}init({}: {} = {}) {{\n",
-                    config.access_modifier, var.name, var.swift_type, default
+                    init_mod, var.name, var.swift_type, default
                 ));
             } else {
                 // Single variable without default - inline format
                 result.push_str(&format!(
                     "  {}init({}: {}) {{\n",
-                    config.access_modifier, var.name, var.swift_type
+                    init_mod, var.name, var.swift_type
                 ));
             }
         } else {
-            result.push_str(&format!("  {}init(\n", config.access_modifier));
+            result.push_str(&format!("  {}init(\n", init_mod));
             for (i, var) in config.variables.iter().enumerate() {
                 let comma = if i < config.variables.len() - 1 { "," } else { "" };
                 if let Some(default) = var.default_value {
@@ -191,12 +197,12 @@ fn render_local_cache_mutation(config: &OperationConfig) -> String {
             let v = &config.variables[0];
             result.push_str(&format!(
                 "  {}var __variables: GraphQLOperation.Variables? {{ [\"{}\": {}] }}\n",
-                config.access_modifier, v.name, v.name
+                init_mod, v.name, v.name
             ));
         } else {
             result.push_str(&format!(
                 "  {}var __variables: GraphQLOperation.Variables? {{ [\n",
-                config.access_modifier,
+                init_mod,
             ));
             for (i, v) in config.variables.iter().enumerate() {
                 let comma = if i < config.variables.len() - 1 { "," } else { "" };
@@ -285,17 +291,18 @@ fn render_regular_operation(config: &OperationConfig) -> String {
     }
     result.push('\n');
 
-    // Variables or init
+    // Variables or init — use init_access_modifier for init, variable properties, and __variables
+    let init_mod = config.init_access_modifier;
     if config.variables.is_empty() {
         result.push('\n');
-        result.push_str(&format!("  {}init() {{}}\n", config.access_modifier));
+        result.push_str(&format!("  {}init() {{}}\n", init_mod));
     } else {
         result.push('\n');
         // Variable properties
         for var in &config.variables {
             result.push_str(&format!(
                 "  {}var {}: {}\n",
-                config.access_modifier, var.name, var.swift_type
+                init_mod, var.name, var.swift_type
             ));
         }
         result.push('\n');
@@ -307,17 +314,17 @@ fn render_regular_operation(config: &OperationConfig) -> String {
                 // Single variable with default value - inline format
                 result.push_str(&format!(
                     "  {}init({}: {} = {}) {{\n",
-                    config.access_modifier, var.name, var.swift_type, default
+                    init_mod, var.name, var.swift_type, default
                 ));
             } else {
                 // Single variable without default - inline format
                 result.push_str(&format!(
                     "  {}init({}: {}) {{\n",
-                    config.access_modifier, var.name, var.swift_type
+                    init_mod, var.name, var.swift_type
                 ));
             }
         } else {
-            result.push_str(&format!("  {}init(\n", config.access_modifier));
+            result.push_str(&format!("  {}init(\n", init_mod));
             for (i, var) in config.variables.iter().enumerate() {
                 let comma = if i < config.variables.len() - 1 { "," } else { "" };
                 if let Some(default) = var.default_value {
@@ -345,12 +352,12 @@ fn render_regular_operation(config: &OperationConfig) -> String {
             let v = &config.variables[0];
             result.push_str(&format!(
                 "  {}var __variables: Variables? {{ [\"{}\": {}] }}\n",
-                config.access_modifier, v.name, v.name
+                init_mod, v.name, v.name
             ));
         } else {
             result.push_str(&format!(
                 "  {}var __variables: Variables? {{ [\n",
-                config.access_modifier,
+                init_mod,
             ));
             for (i, v) in config.variables.iter().enumerate() {
                 let comma = if i < config.variables.len() - 1 { "," } else { "" };

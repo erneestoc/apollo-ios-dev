@@ -1119,6 +1119,7 @@ fn operation_template_dog_query() {
         query_string_format: operation::QueryStringFormat::SingleLine,
         api_target_name: "ApolloAPI",
         class_keyword: "class",
+        init_access_modifier: "public ",
         source: "query DogQuery { allAnimals { __typename id skinCovering ... on Dog { ...DogFragment houseDetails } } }",
         fragment_names: vec!["DogFragment"],
         variables: vec![],
@@ -1402,6 +1403,7 @@ fn operation_template_pet_adoption_mutation() {
         query_string_format: operation::QueryStringFormat::SingleLine,
         api_target_name: "ApolloAPI",
         class_keyword: "class",
+        init_access_modifier: "public ",
         source: "mutation PetAdoptionMutation($input: PetAdoptionInput!) { adoptPet(input: $input) { __typename id humanName } }",
         fragment_names: vec![],
         variables: vec![
