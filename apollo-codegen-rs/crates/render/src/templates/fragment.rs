@@ -323,11 +323,7 @@ fn render_selections(
                 ));
             }
             selection_set::SelectionItem::ConditionalField(cond, f) => {
-                let cond_str = if cond.is_inverted {
-                    format!("!\"{}\"", cond.variable)
-                } else {
-                    format!("\"{}\"", cond.variable)
-                };
+                let cond_str = selection_set::render_inclusion_condition(cond);
                 if let Some(args) = f.arguments {
                     result.push_str(&format!(
                         "{}.include(if: {}, .field(\"{}\", {}.self, arguments: {})),\n",
@@ -341,22 +337,14 @@ fn render_selections(
                 }
             }
             selection_set::SelectionItem::ConditionalInlineFragment(cond, name) => {
-                let cond_str = if cond.is_inverted {
-                    format!("!\"{}\"", cond.variable)
-                } else {
-                    format!("\"{}\"", cond.variable)
-                };
+                let cond_str = selection_set::render_inclusion_condition(cond);
                 result.push_str(&format!(
                     "{}.include(if: {}, .inlineFragment({}.self)),\n",
                     item_indent, cond_str, name
                 ));
             }
             selection_set::SelectionItem::ConditionalFieldGroup(cond, fields) => {
-                let cond_str = if cond.is_inverted {
-                    format!("!\"{}\"", cond.variable)
-                } else {
-                    format!("\"{}\"", cond.variable)
-                };
+                let cond_str = selection_set::render_inclusion_condition(cond);
                 result.push_str(&format!(
                     "{}.include(if: {}, [\n",
                     item_indent, cond_str

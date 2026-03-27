@@ -115,11 +115,26 @@ pub enum SelectionItem<'a> {
     ConditionalFieldGroup(InclusionConditionRef<'a>, Vec<FieldSelectionItem<'a>>),
 }
 
-/// A reference to an inclusion condition for rendering.
+/// How multiple inclusion conditions are combined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionOperator {
+    And,
+    Or,
+}
+
+/// A single condition entry for rendering.
 #[derive(Debug, Clone)]
-pub struct InclusionConditionRef<'a> {
+pub struct ConditionEntry<'a> {
     pub variable: &'a str,
     pub is_inverted: bool,
+}
+
+/// A reference to an inclusion condition for rendering.
+/// Supports compound conditions (e.g., `!"skipName" && "includeName"`).
+#[derive(Debug, Clone)]
+pub struct InclusionConditionRef<'a> {
+    pub conditions: Vec<ConditionEntry<'a>>,
+    pub operator: ConditionOperator,
 }
 
 /// A field in the __selections array.
@@ -647,10 +662,26 @@ fn render_initializer(
 }
 
 /// Render an inclusion condition for `.include(if: ...)`.
-fn render_inclusion_condition(cond: &InclusionConditionRef) -> String {
-    if cond.is_inverted {
-        format!("!\"{}\"", cond.variable)
+pub fn render_inclusion_condition(cond: &InclusionConditionRef) -> String {
+    if cond.conditions.len() == 1 {
+        let c = &cond.conditions[0];
+        if c.is_inverted {
+            format!("!\"{}\"", c.variable)
+        } else {
+            format!("\"{}\"", c.variable)
+        }
     } else {
-        format!("\"{}\"", cond.variable)
+        let op_str = match cond.operator {
+            ConditionOperator::And => " && ",
+            ConditionOperator::Or => " || ",
+        };
+        let parts: Vec<String> = cond.conditions.iter().map(|c| {
+            if c.is_inverted {
+                format!("!\"{}\"", c.variable)
+            } else {
+                format!("\"{}\"", c.variable)
+            }
+        }).collect();
+        parts.join(op_str)
     }
 }

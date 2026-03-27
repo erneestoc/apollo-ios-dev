@@ -2,7 +2,7 @@
 
 use crate::field_collector::{TypeKind, build_type_kinds};
 use crate::fields::{EntityField, ScalarField};
-use crate::inclusion::{InclusionCondition, InclusionConditions};
+use crate::inclusion::{InclusionCondition, InclusionConditions, InclusionOperator};
 use crate::named_fragment::NamedFragment;
 use crate::operation::{Operation, VariableDefinition};
 use crate::schema::Schema;
@@ -204,6 +204,34 @@ impl IRBuilder {
                 Selection::Field(field) => {
                     let response_key = field.alias.as_deref().unwrap_or(&field.name);
                     let inclusion = self.convert_inclusion_conditions(&field.inclusion_conditions);
+
+                    // Check if this response key already exists (e.g., duplicate field
+                    // declarations like `name @skip(if: $a)` + `name @include(if: $b)`).
+                    // When merging, combine conditions with OR since the field is included
+                    // if EITHER condition is met.
+                    if let Some(existing) = direct.fields.get(response_key) {
+                        let existing_conds = match existing {
+                            FieldSelection::Scalar(f) => f.inclusion_conditions.as_ref(),
+                            FieldSelection::Entity(f) => f.inclusion_conditions.as_ref(),
+                        };
+                        if let (Some(existing_ic), Some(new_ic)) = (existing_conds, &inclusion) {
+                            // Merge: flatten both conditions into a single OR set
+                            let mut merged = existing_ic.conditions.clone();
+                            merged.extend(new_ic.conditions.clone());
+                            let merged_inclusion = Some(InclusionConditions::from_conditions_with_operator(
+                                merged,
+                                InclusionOperator::Or,
+                            ));
+                            // Update the existing field's conditions
+                            match direct.fields.get_mut(response_key).unwrap() {
+                                FieldSelection::Scalar(f) => f.inclusion_conditions = merged_inclusion,
+                                FieldSelection::Entity(f) => f.inclusion_conditions = merged_inclusion,
+                            }
+                            continue;
+                        }
+                        // If one has no conditions, the field is unconditional - just skip
+                        continue;
+                    }
 
                     if field.selection_set.is_some() {
                         // Entity field

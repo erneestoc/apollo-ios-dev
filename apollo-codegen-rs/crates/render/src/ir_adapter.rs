@@ -15,7 +15,7 @@ use apollo_codegen_ir::field_collector::TypeKind;
 use apollo_codegen_ir::fields::EntityField;
 use apollo_codegen_ir::named_fragment::NamedFragment;
 use apollo_codegen_ir::operation::Operation;
-use apollo_codegen_ir::inclusion::InclusionConditions;
+use apollo_codegen_ir::inclusion::{self, InclusionConditions};
 use apollo_codegen_ir::selection_set::{
     DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread,
     SelectionSet as IrSelectionSet,
@@ -266,13 +266,27 @@ struct OwnedSelectionItem {
     kind: OwnedSelectionKind,
 }
 
+/// A single owned condition entry for compound inclusion conditions.
+#[derive(Clone, Debug)]
+struct OwnedConditionEntry {
+    variable: String,
+    is_inverted: bool,
+}
+
+/// How multiple owned conditions are combined.
+#[derive(Clone, Debug, Copy)]
+enum OwnedConditionOperator {
+    And,
+    Or,
+}
+
 enum OwnedSelectionKind {
     Field { name: String, alias: Option<String>, swift_type: String, arguments: Option<String> },
     InlineFragment(String),
     Fragment(String),
-    ConditionalField { variable: String, is_inverted: bool, name: String, alias: Option<String>, swift_type: String, arguments: Option<String> },
-    ConditionalInlineFragment { variable: String, is_inverted: bool, type_name: String },
-    ConditionalFieldGroup { variable: String, is_inverted: bool, fields: Vec<(String, Option<String>, String, Option<String>)> }, // (name, alias, swift_type, arguments)
+    ConditionalField { conditions: Vec<OwnedConditionEntry>, operator: OwnedConditionOperator, name: String, alias: Option<String>, swift_type: String, arguments: Option<String> },
+    ConditionalInlineFragment { conditions: Vec<OwnedConditionEntry>, operator: OwnedConditionOperator, type_name: String },
+    ConditionalFieldGroup { conditions: Vec<OwnedConditionEntry>, operator: OwnedConditionOperator, fields: Vec<(String, Option<String>, String, Option<String>)> }, // (name, alias, swift_type, arguments)
 }
 
 #[derive(Clone)]
@@ -441,8 +455,8 @@ fn build_selection_set_config_owned(
         });
     }
     // Track conditional fields to add after unconditional selections.
-    // Key: condition variable + inverted, Value: vec of (name, alias, swift_type, arguments)
-    let mut conditional_field_groups: Vec<(String, bool, Vec<(String, Option<String>, String, Option<String>)>)> = Vec::new();
+    // Key: conditions + operator, Value: vec of (name, alias, swift_type, arguments)
+    let mut conditional_field_groups: Vec<(Vec<OwnedConditionEntry>, OwnedConditionOperator, Vec<(String, Option<String>, String, Option<String>)>)> = Vec::new();
     // Track fields whose conditions are satisfied by the enclosing scope.
     // These appear after fragment spreads in __selections to preserve source ordering.
     let mut scope_satisfied_fields: Vec<OwnedSelectionItem> = Vec::new();
@@ -473,12 +487,24 @@ fn build_selection_set_config_owned(
         };
         if effective_conditions {
             let ic = conds.unwrap();
-            // For now, use the first condition (most common case is a single condition)
-            let cond = &ic.conditions[0];
-            if let Some(group) = conditional_field_groups.iter_mut().find(|(v, inv, _)| v == &cond.variable && *inv == cond.is_inverted) {
+            let owned_conds: Vec<OwnedConditionEntry> = ic.conditions.iter().map(|c| OwnedConditionEntry {
+                variable: c.variable.clone(),
+                is_inverted: c.is_inverted,
+            }).collect();
+            let operator = match ic.effective_operator() {
+                inclusion::InclusionOperator::And => OwnedConditionOperator::And,
+                inclusion::InclusionOperator::Or => OwnedConditionOperator::Or,
+            };
+            // Group fields with identical conditions together
+            let conds_match = |group_conds: &Vec<OwnedConditionEntry>, group_op: &OwnedConditionOperator| -> bool {
+                if owned_conds.len() != group_conds.len() { return false; }
+                if !matches!((operator, group_op), (OwnedConditionOperator::And, OwnedConditionOperator::And) | (OwnedConditionOperator::Or, OwnedConditionOperator::Or)) { return false; }
+                owned_conds.iter().zip(group_conds.iter()).all(|(a, b)| a.variable == b.variable && a.is_inverted == b.is_inverted)
+            };
+            if let Some(group) = conditional_field_groups.iter_mut().find(|(gc, go, _)| conds_match(gc, go)) {
                 group.2.push((field_name, field_alias, swift_type, arguments));
             } else {
-                conditional_field_groups.push((cond.variable.clone(), cond.is_inverted, vec![(field_name, field_alias, swift_type, arguments)]));
+                conditional_field_groups.push((owned_conds, operator, vec![(field_name, field_alias, swift_type, arguments)]));
             }
         } else if has_original_conditions {
             // Condition was satisfied by scope - place after fragments to preserve source order
@@ -549,11 +575,11 @@ fn build_selection_set_config_owned(
             if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
                 let ic = inline.inclusion_conditions.as_ref().unwrap();
                 let type_name = conditional_inline_fragment_name(Some(tc.name()), ic);
-                let cond = &ic.conditions[0];
+                let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 conditional_inline_selections.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::ConditionalInlineFragment {
-                        variable: cond.variable.clone(),
-                        is_inverted: cond.is_inverted,
+                        conditions: owned_conds,
+                        operator,
                         type_name,
                     },
                 });
@@ -581,11 +607,11 @@ fn build_selection_set_config_owned(
                 } else {
                     conditional_inline_fragment_name(None, ic)
                 };
-                let cond = &ic.conditions[0];
+                let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 conditional_frag_spread_selections.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::ConditionalInlineFragment {
-                        variable: cond.variable.clone(),
-                        is_inverted: cond.is_inverted,
+                        conditions: owned_conds,
+                        operator,
                         type_name,
                     },
                 });
@@ -601,13 +627,13 @@ fn build_selection_set_config_owned(
     // to preserve source ordering).
     selections.extend(scope_satisfied_fields);
     // Add conditional fields after unconditional selections
-    for (variable, is_inverted, fields) in &conditional_field_groups {
+    for (conds, operator, fields) in &conditional_field_groups {
         if fields.len() == 1 {
             let (name, alias, swift_type, arguments) = &fields[0];
             selections.push(OwnedSelectionItem {
                 kind: OwnedSelectionKind::ConditionalField {
-                    variable: variable.clone(),
-                    is_inverted: *is_inverted,
+                    conditions: conds.clone(),
+                    operator: *operator,
                     name: name.clone(),
                     alias: alias.clone(),
                     swift_type: swift_type.clone(),
@@ -617,8 +643,8 @@ fn build_selection_set_config_owned(
         } else {
             selections.push(OwnedSelectionItem {
                 kind: OwnedSelectionKind::ConditionalFieldGroup {
-                    variable: variable.clone(),
-                    is_inverted: *is_inverted,
+                    conditions: conds.clone(),
+                    operator: *operator,
                     fields: fields.clone(),
                 },
             });
@@ -2663,9 +2689,16 @@ fn build_selection_set_config_owned(
                         GraphQLCompositeType::Union(u) => OwnedParentTypeRef::Union(customizer.custom_type_name(&u.name).to_string()),
                     };
 
-                    // Build merged_sources: include self, the fragment's own inline fragment,
-                    // and sibling supertype inline fragments from the same fragment.
+                    // Build merged_sources: include self, fragment root (if it has direct fields),
+                    // sibling supertype inline fragments, and the fragment's own inline fragment type.
                     let mut ms = vec![qualified_name.to_string()];
+                    // Add the fragment root itself (e.g. HeroDetails.self) only if the fragment
+                    // has direct field selections (not just inline fragments).
+                    let frag_has_direct_fields = frag_ds.fields.iter()
+                        .any(|(key, _)| key != "__typename");
+                    if frag_has_direct_fields {
+                        ms.push(spread.fragment_name.clone());
+                    }
                     // Add sibling supertype inline fragments from the fragment
                     for other_frag_inline in &frag_ds.inline_fragments {
                         if let Some(ref other_tc) = other_frag_inline.type_condition {
@@ -2679,11 +2712,15 @@ fn build_selection_set_config_owned(
                     ms.push(format!("{}.{}", spread.fragment_name, type_name));
 
                     // Build field accessors following merged_sources order:
-                    // 1. Fields from sibling supertype inline fragments (in merged_sources order)
-                    // 2. Own direct fields
-                    // 3. Parent inherited fields
+                    // 1. Parent inherited fields (from the enclosing selection set)
+                    // 2. Fields from sibling supertype inline fragments (in merged_sources order)
+                    // 3. Own direct fields from this inline fragment
                     let mut pfa = Vec::new();
-                    // First: fields from sibling supertype inline fragments within the fragment
+                    // First: parent inherited fields
+                    for fa in &field_accessors {
+                        if !pfa.iter().any(|f: &OwnedFieldAccessor| f.name == fa.name) { pfa.push(fa.clone()); }
+                    }
+                    // Then: fields from sibling supertype inline fragments within the fragment
                     for other_frag_inline in &frag_ds.inline_fragments {
                         if let Some(ref other_tc) = other_frag_inline.type_condition {
                             let other_name = other_tc.name();
@@ -2697,16 +2734,12 @@ fn build_selection_set_config_owned(
                             }
                         }
                     }
-                    // Then: own direct fields from this inline fragment
+                    // Finally: own direct fields from this inline fragment
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         if !pfa.iter().any(|f| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                             pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
                         }
-                    }
-                    // Finally: parent inherited fields
-                    for fa in &field_accessors {
-                        if !pfa.iter().any(|f| f.name == fa.name) { pfa.push(fa.clone()); }
                     }
 
                     let mut pfs = vec![OwnedFragmentSpreadAccessor {
@@ -3768,8 +3801,8 @@ fn build_inline_fragment_entity_type(
         // Use inline_entity_field for __selections if available (absorbed inline case),
         // otherwise use parent_entity_field (direct selection case)
         let sel_source = inline_entity_field.unwrap_or(parent_entity_field);
-        // Collect conditional field groups (same condition variable grouped together)
-        let mut conditional_groups: Vec<(String, bool, Vec<(String, Option<String>, String, Option<String>)>)> = Vec::new();
+        // Collect conditional field groups (same conditions grouped together)
+        let mut conditional_groups: Vec<(Vec<OwnedConditionEntry>, OwnedConditionOperator, Vec<(String, Option<String>, String, Option<String>)>)> = Vec::new();
         for (key, field) in &sel_source.selection_set.direct_selections.fields {
             if key == "__typename" { continue; }
             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
@@ -3781,11 +3814,16 @@ fn build_inline_fragment_entity_type(
             };
             if has_inclusion_conditions(conds) {
                 let ic = conds.unwrap();
-                let cond = &ic.conditions[0];
-                if let Some(group) = conditional_groups.iter_mut().find(|(v, inv, _)| v == &cond.variable && *inv == cond.is_inverted) {
+                let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
+                let conds_match = |group_conds: &Vec<OwnedConditionEntry>, group_op: &OwnedConditionOperator| -> bool {
+                    if owned_conds.len() != group_conds.len() { return false; }
+                    if !matches!((operator, group_op), (OwnedConditionOperator::And, OwnedConditionOperator::And) | (OwnedConditionOperator::Or, OwnedConditionOperator::Or)) { return false; }
+                    owned_conds.iter().zip(group_conds.iter()).all(|(a, b)| a.variable == b.variable && a.is_inverted == b.is_inverted)
+                };
+                if let Some(group) = conditional_groups.iter_mut().find(|(gc, go, _)| conds_match(gc, go)) {
                     group.2.push((nest_field_name, nest_field_alias, swift_type, None));
                 } else {
-                    conditional_groups.push((cond.variable.clone(), cond.is_inverted, vec![(nest_field_name, nest_field_alias, swift_type, None)]));
+                    conditional_groups.push((owned_conds, operator, vec![(nest_field_name, nest_field_alias, swift_type, None)]));
                 }
             } else {
                 sels.push(OwnedSelectionItem {
@@ -3794,13 +3832,13 @@ fn build_inline_fragment_entity_type(
             }
         }
         // Add conditional field groups after unconditional fields
-        for (variable, is_inverted, fields) in &conditional_groups {
+        for (conds, operator, fields) in &conditional_groups {
             if fields.len() == 1 {
                 let (name, alias, swift_type, arguments) = &fields[0];
                 sels.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::ConditionalField {
-                        variable: variable.clone(),
-                        is_inverted: *is_inverted,
+                        conditions: conds.clone(),
+                        operator: *operator,
                         name: name.clone(),
                         alias: alias.clone(),
                         swift_type: swift_type.clone(),
@@ -3810,8 +3848,8 @@ fn build_inline_fragment_entity_type(
             } else {
                 sels.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::ConditionalFieldGroup {
-                        variable: variable.clone(),
-                        is_inverted: *is_inverted,
+                        conditions: conds.clone(),
+                        operator: *operator,
                         fields: fields.clone(),
                     },
                 });
@@ -4478,7 +4516,11 @@ fn render_argument_value(value: &GraphQLValue) -> String {
                 .iter()
                 .map(|(k, v)| format!("\"{}\": {}", k, render_argument_value(v)))
                 .collect();
-            format!("[{}]", entries.join(", "))
+            if entries.len() > 1 {
+                Some(format!("[\n{}\n]", entries.join(",\n")))
+            } else {
+                Some(format!("[{}]", entries.join(", ")))
+            }.unwrap()
         }
     }
 }
@@ -4675,6 +4717,33 @@ fn conditions_satisfied_by_scope(field_conds: &InclusionConditions, scope_conds:
     }
 }
 
+/// Convert IR InclusionConditions to owned condition entries + operator.
+fn inclusion_conditions_to_owned(ic: &InclusionConditions) -> (Vec<OwnedConditionEntry>, OwnedConditionOperator) {
+    let entries = ic.conditions.iter().map(|c| OwnedConditionEntry {
+        variable: c.variable.clone(),
+        is_inverted: c.is_inverted,
+    }).collect();
+    let operator = match ic.effective_operator() {
+        inclusion::InclusionOperator::And => OwnedConditionOperator::And,
+        inclusion::InclusionOperator::Or => OwnedConditionOperator::Or,
+    };
+    (entries, operator)
+}
+
+/// Convert owned condition entries to a template InclusionConditionRef.
+fn owned_conditions_to_ref<'a>(conditions: &'a [OwnedConditionEntry], operator: OwnedConditionOperator) -> InclusionConditionRef<'a> {
+    InclusionConditionRef {
+        conditions: conditions.iter().map(|c| ConditionEntry {
+            variable: c.variable.as_str(),
+            is_inverted: c.is_inverted,
+        }).collect(),
+        operator: match operator {
+            OwnedConditionOperator::And => ConditionOperator::And,
+            OwnedConditionOperator::Or => ConditionOperator::Or,
+        },
+    }
+}
+
 /// Collect ALL absorbed type names from the entire nested tree.
 fn collect_all_absorbed_types(config: &OwnedSelectionSetConfig) -> Vec<String> {
     let mut all = config.absorbed_type_names.clone();
@@ -4717,9 +4786,9 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
             }
             OwnedSelectionKind::InlineFragment(name) => SelectionItem::InlineFragment(name.as_str()),
             OwnedSelectionKind::Fragment(name) => SelectionItem::Fragment(name.as_str()),
-            OwnedSelectionKind::ConditionalField { variable, is_inverted, name, alias, swift_type, arguments } => {
+            OwnedSelectionKind::ConditionalField { conditions, operator, name, alias, swift_type, arguments } => {
                 SelectionItem::ConditionalField(
-                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    owned_conditions_to_ref(conditions, *operator),
                     FieldSelectionItem {
                         name: name.as_str(),
                         alias: alias.as_deref(),
@@ -4728,15 +4797,15 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
                     },
                 )
             }
-            OwnedSelectionKind::ConditionalInlineFragment { variable, is_inverted, type_name } => {
+            OwnedSelectionKind::ConditionalInlineFragment { conditions, operator, type_name } => {
                 SelectionItem::ConditionalInlineFragment(
-                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    owned_conditions_to_ref(conditions, *operator),
                     type_name.as_str(),
                 )
             }
-            OwnedSelectionKind::ConditionalFieldGroup { variable, is_inverted, fields } => {
+            OwnedSelectionKind::ConditionalFieldGroup { conditions, operator, fields } => {
                 SelectionItem::ConditionalFieldGroup(
-                    InclusionConditionRef { variable: variable.as_str(), is_inverted: *is_inverted },
+                    owned_conditions_to_ref(conditions, *operator),
                     fields.iter().map(|(n, a, st, args)| FieldSelectionItem {
                         name: n.as_str(),
                         alias: a.as_deref(),

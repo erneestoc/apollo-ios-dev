@@ -22,5 +22,5 @@ pub use selection_set::SelectionSet;
 pub use entity::Entity;
 pub use fields::{ScalarField, EntityField};
 pub use scope::ScopeDescriptor;
-pub use inclusion::InclusionConditions;
+pub use inclusion::{InclusionConditions, InclusionOperator};
 pub use builder::IRBuilder;
