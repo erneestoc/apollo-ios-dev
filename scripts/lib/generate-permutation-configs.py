@@ -110,14 +110,16 @@ def build_config(combo):
         schema_custom,
     ) = combo
 
+    # Use absolute paths so configs work from any directory
+    repo_root = os.environ.get("REPO_ROOT", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     config = {
         "schemaNamespace": "TestSchema",
         "input": {
             "operationSearchPaths": [
-                "../../../Sources/AnimalKingdomAPI/animalkingdom-graphql/*.graphql"
+                os.path.join(repo_root, "Sources/AnimalKingdomAPI/animalkingdom-graphql/**/*.graphql")
             ],
             "schemaSearchPaths": [
-                "../../../Sources/AnimalKingdomAPI/animalkingdom-graphql/AnimalSchema.graphqls"
+                os.path.join(repo_root, "Sources/AnimalKingdomAPI/animalkingdom-graphql/AnimalSchema.graphqls")
             ],
         },
         "output": {
@@ -137,7 +139,7 @@ def build_config(combo):
     options["schemaDocumentation"] = schema_doc
     options["pruneGeneratedFiles"] = prune
     options["cocoapodsCompatibleImportStatements"] = cocoapods
-    options["deprecated_enum_cases"] = depr_enum
+    options["deprecatedEnumCases"] = depr_enum
     options["conversionStrategies"] = {"enumCases": enum_cases}
 
     if sel_init is not None:
@@ -228,7 +230,7 @@ def verify_coverage(configs):
                         found = True
                         break
                 elif dim_name == "deprecatedEnumCases":
-                    if cfg["options"]["deprecated_enum_cases"] == val:
+                    if cfg["options"]["deprecatedEnumCases"] == val:
                         found = True
                         break
                 elif dim_name == "schemaCustomization":
