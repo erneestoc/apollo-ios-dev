@@ -1874,6 +1874,7 @@ fn build_selection_set_config_owned(
                             root_entity_type,
                             parent_has_this_entity,
                             api_target_name,
+                            generate_initializers,
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -2716,7 +2717,7 @@ fn build_selection_set_config_owned(
                     let parent_has_field = ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false);
                     // Also check if the field is inherited from a higher scope
                     let inherited_field = !parent_has_field && field_accessors.iter().any(|fa| fa.name == *key);
-                    if (parent_has_field || inherited_field) && generate_initializers {
+                    if parent_has_field || inherited_field {
                         // Find the best entity field source - direct, from parent scope, from absorbed inline, or from fragment.
                         // Prefer the parent scope's entity field (e.g., AllAnimal.height with feet/inches)
                         // over fragments (e.g., HeightInMeters.height with only meters).
@@ -2852,6 +2853,7 @@ fn build_selection_set_config_owned(
                                 root_entity_type,
                                 parent_has,
                                 api_target_name,
+                                generate_initializers,
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -3168,6 +3170,7 @@ fn build_selection_set_config_owned(
                                 root_entity_type,
                                 parent_has,
                                 api_target_name,
+                                generate_initializers,
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -3471,6 +3474,7 @@ fn build_selection_set_config_owned(
                                 root_entity_type,
                                 true,
                                 api_target_name,
+                                generate_initializers,
                             );
                             cond_nested.push(merged);
                         }
@@ -3499,7 +3503,7 @@ fn build_selection_set_config_owned(
                                     pds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
                                 });
                                 let field_accessor_has = field_accessors.iter().any(|fa| fa.name == *key);
-                                if (parent_has || inherited_has || field_accessor_has) && generate_initializers {
+                                if parent_has || inherited_has || field_accessor_has {
                                     // Need a merged nested type
                                     let best_parent_ef = ds.fields.get(key).and_then(|f| {
                                         if let FieldSelection::Entity(ef) = f { Some(ef) } else { None }
@@ -3530,6 +3534,7 @@ fn build_selection_set_config_owned(
                                             root_entity_type,
                                             true,
                                             api_target_name,
+                                            generate_initializers,
                                         );
                                         cond_nested.push(merged);
                                     } else {
@@ -3838,6 +3843,7 @@ fn build_inline_fragment_entity_type(
     root_entity_qualified: Option<&str>,  // Root entity qualified name for fulfilled fragments
     parent_has_entity_field: bool,  // Whether the parent scope actually has this entity field
     api_target_name: &str,
+    generate_initializers: bool,
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -4135,7 +4141,7 @@ fn build_inline_fragment_entity_type(
         field_accessors: merged_fields,
         inline_fragment_accessors: vec![],
         fragment_spreads: vec![],
-        initializer: Some(initializer),
+        initializer: if generate_initializers { Some(initializer) } else { None },
         nested_types: vec![],
         type_aliases: vec![],
         type_alias_insert_index: 0,

@@ -689,9 +689,15 @@ fn generate_operation_files(
             }
             var.type_str = customizer.customize_variable_type(&var.type_str);
         }
-        // Determine whether to generate initializers based on config
-        let generate_init = if operation.is_local_cache_mutation {
-            config.options.selection_set_initializers.local_cache_mutations
+        // Determine whether to generate initializers based on config.
+        // Mirrors Swift's shouldGenerateSelectionSetInitializers(for:):
+        //   guard experimentalFeatures.fieldMerging == .all else { return false }
+        //   if isLocalCacheMutation { return true }  // always generate inits
+        //   else check selectionSetInitializers.operations
+        let generate_init = if !config.experimental_features.field_merging.is_all() {
+            false
+        } else if operation.is_local_cache_mutation {
+            true
         } else {
             config.options.selection_set_initializers.operations
         };
@@ -776,11 +782,20 @@ fn generate_fragment_files(
 
     for frag_def in &compilation.fragments {
         if let Some(frag) = ir.fragments().get(&frag_def.name) {
-            // Determine whether to generate initializers based on config
-            let generate_init = if frag.is_local_cache_mutation {
-                config.options.selection_set_initializers.local_cache_mutations
+            // Determine whether to generate initializers based on config.
+            // Mirrors Swift's shouldGenerateSelectionSetInitializers(for:):
+            //   guard experimentalFeatures.fieldMerging == .all else { return false }
+            //   if namedFragments flag { return true }
+            //   if isLocalCacheMutation { return true }  // always generate inits
+            //   else check per-definition name
+            let generate_init = if !config.experimental_features.field_merging.is_all() {
+                false
+            } else if config.options.selection_set_initializers.named_fragments {
+                true
+            } else if frag.is_local_cache_mutation {
+                true
             } else {
-                config.options.selection_set_initializers.named_fragments
+                false
             };
             let content = ir_adapter::render_fragment(
                 frag,
