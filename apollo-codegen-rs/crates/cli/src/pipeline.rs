@@ -77,7 +77,11 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
 
     // 4. Build IR
-    let mut ir = IRBuilder::build(&compilation_result);
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+    let mut ir = IRBuilder::build(&compilation_result, camel_case_enums);
 
     // 4b. Build type kind map for type resolution in templates
     let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
@@ -126,10 +130,6 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
             apollo_codegen_render::templates::operation::QueryStringFormat::Multiline
         }
     };
-    let camel_case_enums = matches!(
-        config.options.conversion_strategies.enum_cases,
-        EnumCaseConversionStrategy::CamelCase
-    );
     let camel_case_input_objects = matches!(
         config.options.conversion_strategies.input_objects,
         apollo_codegen_config::types::InputObjectConversionStrategy::CamelCase
@@ -308,7 +308,11 @@ pub fn generate_operation_manifest(
         .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
 
     // 4. Build IR to get operation sources
-    let ir = IRBuilder::build(&compilation_result);
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+    let ir = IRBuilder::build(&compilation_result, camel_case_enums);
 
     // 5. Generate manifest entries
     let mut entries: Vec<serde_json::Value> = Vec::new();

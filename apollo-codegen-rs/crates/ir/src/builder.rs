@@ -25,13 +25,15 @@ pub struct IRBuilder {
     type_kinds: HashMap<String, TypeKind>,
     /// Map from input object type name to its field definitions
     input_object_fields: HashMap<String, IndexMap<String, GraphQLInputField>>,
+    /// Whether to camelCase enum values in default value rendering
+    camel_case_enums: bool,
     /// Map from (type_name, field_name) to field description for schema documentation
     field_descriptions: HashMap<(String, String), String>,
 }
 
 impl IRBuilder {
     /// Build IR from a compilation result.
-    pub fn build(result: &CompilationResult) -> Self {
+    pub fn build(result: &CompilationResult, camel_case_enums: bool) -> Self {
         let schema = Schema::from_referenced_types(
             &result.referenced_types,
             result.schema_documentation.clone(),
@@ -68,6 +70,7 @@ impl IRBuilder {
             schema,
             fragments: HashMap::new(),
             type_kinds,
+            camel_case_enums,
             input_object_fields,
             field_descriptions,
         };
@@ -441,9 +444,12 @@ impl IRBuilder {
                 self.render_input_object_value(type_name, map, indent)
             }
             GraphQLValue::Enum(e) => {
-                // Enum: render as .camelCasedValue
-                let camel = to_camel_case(e);
-                format!(".{}", camel)
+                // Enum: render as .camelCasedValue or .RAW_VALUE depending on config
+                if self.camel_case_enums {
+                    format!(".{}", to_camel_case(e))
+                } else {
+                    format!(".{}", e)
+                }
             }
             GraphQLValue::String(s) => format!("\"{}\"", s),
             GraphQLValue::Int(i) => i.to_string(),
