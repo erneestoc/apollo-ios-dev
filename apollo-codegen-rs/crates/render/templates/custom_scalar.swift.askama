@@ -1,0 +1,19 @@
+// @generated
+// This file was automatically generated and can be edited to
+// implement advanced custom scalar functionality.
+//
+// Any changes to this file will not be overwritten by future
+// code generation execution.
+
+import {{ api_target_name }}
+
+{% if let Some(doc) = documentation -%}
+{% for line in doc.lines() -%}
+{% if line.is_empty() -%}
+///
+{% else -%}
+/// {{ line }}
+{% endif -%}
+{% endfor -%}
+{% endif -%}
+{{ access_modifier }}typealias {{ type_name }} = String

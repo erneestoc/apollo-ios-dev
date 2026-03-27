@@ -14,7 +14,16 @@
 //! public typealias CustomDate = String
 //! ```
 
-use super::header;
+use askama::Template;
+
+#[derive(Template)]
+#[template(path = "custom_scalar.swift.askama", escape = "none")]
+struct CustomScalarTemplate<'a> {
+    api_target_name: &'a str,
+    access_modifier: &'a str,
+    type_name: String,
+    documentation: Option<String>,
+}
 
 pub fn render(
     type_name: &str,
@@ -23,21 +32,7 @@ pub fn render(
     access_modifier: &str,
     api_target_name: &str,
 ) -> String {
-    let mut result = String::new();
-
-    // Editable file header
-    result.push_str(
-        "// @generated\n\
-         // This file was automatically generated and can be edited to\n\
-         // implement advanced custom scalar functionality.\n\
-         //\n\
-         // Any changes to this file will not be overwritten by future\n\
-         // code generation execution.\n",
-    );
-    result.push('\n');
-    result.push_str(&format!("import {}\n", api_target_name));
-
-    // Documentation comment
+    // Build documentation string
     let mut doc = description.map(|s| s.to_string());
     if let Some(url) = specified_by_url {
         let spec_docs = format!("Specified by: []({})", url);
@@ -47,22 +42,17 @@ pub fn render(
         });
     }
 
-    result.push('\n');
-    if let Some(ref d) = doc {
-        for line in d.lines() {
-            if line.is_empty() {
-                result.push_str("///\n");
-            } else {
-                result.push_str(&format!("/// {}\n", line));
-            }
-        }
-    }
-
-    result.push_str(&format!(
-        "{}typealias {} = String\n",
+    let template = CustomScalarTemplate {
+        api_target_name,
         access_modifier,
-        crate::naming::first_uppercased(type_name),
-    ));
+        type_name: crate::naming::first_uppercased(type_name),
+        documentation: doc,
+    };
 
-    result
+    let mut output = template.render().expect("custom_scalar template render failed");
+    // Ensure trailing newline
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
 }

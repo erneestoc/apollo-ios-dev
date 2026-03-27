@@ -53,6 +53,9 @@ apollo-smith = "0.15"
 arbitrary = "1"
 rand = "0.8"
 
+# Templates
+askama = "0.15"
+
 # Utilities
 indexmap = { version = "2", features = ["serde"] }
 regex = "1"

@@ -9,6 +9,7 @@ description = "Swift code rendering templates for Apollo iOS code generation"
 apollo-codegen-ir.workspace = true
 apollo-codegen-frontend.workspace = true
 apollo-codegen-config.workspace = true
+askama.workspace = true
 indexmap.workspace = true
 regex.workspace = true
 thiserror.workspace = true
