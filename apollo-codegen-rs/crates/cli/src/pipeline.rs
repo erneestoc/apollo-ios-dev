@@ -198,6 +198,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         root_url,
         ops_in_schema_module,
         embedded_target_name.as_deref(),
+        include_schema_docs,
     );
 
     generate_fragment_files(
@@ -216,6 +217,7 @@ pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path) -> anyhow:
         root_url,
         ops_in_schema_module,
         embedded_target_name.as_deref(),
+        include_schema_docs,
     );
 
     // Test mock files
@@ -787,6 +789,7 @@ fn generate_operation_files(
     root_url: &Path,
     ops_in_schema_module: bool,
     embedded_target_name: Option<&str>,
+    include_schema_docs: bool,
 ) {
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
         schema_path.join("Sources")
@@ -865,6 +868,11 @@ fn generate_operation_files(
             false, // markOperationDefinitionsAsFinal
             &var_prefix,
         );
+
+        // Strip parent type doc comments when schema docs excluded
+        if !include_schema_docs {
+            content = strip_parent_type_comments(&content);
+        }
 
         // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
         if is_embedded && ops_in_schema_module {
@@ -958,6 +966,7 @@ fn generate_fragment_files(
     root_url: &Path,
     ops_in_schema_module: bool,
     embedded_target_name: Option<&str>,
+    include_schema_docs: bool,
 ) {
     let sources_path = if matches!(config.output.schema_types.module_type, SchemaModuleType::SwiftPackageManager(_)) {
         schema_path.join("Sources")
@@ -1003,6 +1012,11 @@ fn generate_fragment_files(
                 api_target,
                 config.options.operation_document_format.definition,
             );
+
+            // Strip parent type doc comments when schema docs excluded
+            if !include_schema_docs {
+                content = strip_parent_type_comments(&content);
+            }
 
             // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
             if is_embedded && ops_in_schema_module {
@@ -1480,6 +1494,35 @@ fn render_mock_init_named_type_customized(
             }
         }
     }
+}
+
+/// Strip `///\n  /// Parent Type:` doc comments from rendered output.
+/// These are schema documentation comments that should be excluded when
+/// `schemaDocumentation: exclude` is set.
+fn strip_parent_type_comments(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        // Look for pattern: line with just "  ///" (with any indent) followed by "  /// Parent Type: `...`"
+        if i + 1 < lines.len() {
+            let trimmed = lines[i].trim();
+            let next_trimmed = lines[i + 1].trim();
+            if trimmed == "///" && next_trimmed.starts_with("/// Parent Type: `") {
+                // Skip both lines
+                i += 2;
+                continue;
+            }
+        }
+        result.push_str(lines[i]);
+        result.push('\n');
+        i += 1;
+    }
+    // Remove trailing newline to match original
+    if result.ends_with('\n') && !content.ends_with('\n') {
+        result.pop();
+    }
+    result
 }
 
 fn strip_outer_nonnull(ty: &GraphQLType) -> &GraphQLType {
