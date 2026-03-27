@@ -1098,6 +1098,26 @@ fn fix_default_value_formatting(source: &str) -> String {
     result
 }
 
+/// Strip existing __typename fields from the source string.
+/// Used in legacy safelisting mode where __typename fields are first removed,
+/// then re-added at the start of each selection set.
+fn strip_existing_typenames(source: &str) -> String {
+    // Remove "__typename " (with trailing space) or " __typename" (with leading space)
+    let result = source.replace("__typename ", "");
+    // Clean up any double spaces left behind
+    let mut cleaned = String::with_capacity(result.len());
+    let mut prev_space = false;
+    for c in result.chars() {
+        if c == ' ' && prev_space {
+            continue;
+        }
+        prev_space = c == ' ';
+        cleaned.push(c);
+    }
+    // Clean up "{ }" (empty selection sets after removing __typename)
+    cleaned
+}
+
 fn strip_local_cache_mutation_directive(source: &str) -> String {
     source.replace(" @apollo_client_ios_localCacheMutation", "")
           .replace("@apollo_client_ios_localCacheMutation ", "")
@@ -1107,6 +1127,15 @@ fn strip_local_cache_mutation_directive(source: &str) -> String {
 /// - Do NOT add `__typename` inside inline fragments (unless legacy_safelisting is true)
 /// - DO add `__typename` in fragment definition root selection sets
 fn add_typename_to_selection_sets(source: &str, legacy_safelisting: bool) -> String {
+    // When legacy safelisting is enabled, first strip all existing __typename fields
+    // (the JS transform removes them first, then re-adds at the beginning of each selection set)
+    let source = if legacy_safelisting {
+        strip_existing_typenames(source)
+    } else {
+        source.to_string()
+    };
+    let source = &source;
+
     let mut result = String::with_capacity(source.len() + 100);
     let chars: Vec<char> = source.chars().collect();
     let len = chars.len();
