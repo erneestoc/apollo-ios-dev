@@ -395,7 +395,7 @@ fn build_selection_set_config_owned(
                     || is_supertype_of_current(&ir_ss.scope.parent_type, tc_name);
                 if should_absorb {
                     absorbed_inline_indices.push(idx);
-                    absorbed_type_names.push(format!("As{}", naming::first_uppercased(tc_name)));
+                    absorbed_type_names.push(format!("As{}", naming::first_uppercased(customizer.custom_type_name(tc_name))));
                 }
             }
         }
@@ -597,7 +597,7 @@ fn build_selection_set_config_owned(
     // and requires a type narrowing inline fragment (e.g., ...WarmBloodedDetails on Animal
     // creates AsWarmBlooded because WarmBlooded != Animal).
     for promoted_type in &early_promoted_types {
-        let type_name = format!("As{}", naming::first_uppercased(promoted_type));
+        let type_name = format!("As{}", naming::first_uppercased(customizer.custom_type_name(promoted_type)));
         selections.push(OwnedSelectionItem {
             kind: OwnedSelectionKind::InlineFragment(type_name),
         });
@@ -612,7 +612,7 @@ fn build_selection_set_config_owned(
         if let Some(ref tc) = inline.type_condition {
             if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
                 let ic = inline.inclusion_conditions.as_ref().unwrap();
-                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic);
+                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic, customizer);
                 let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 conditional_inline_selections.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::ConditionalInlineFragment {
@@ -622,7 +622,7 @@ fn build_selection_set_config_owned(
                     },
                 });
             } else {
-                let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+                let type_name = format!("As{}", naming::first_uppercased(customizer.custom_type_name(tc.name())));
                 selections.push(OwnedSelectionItem {
                     kind: OwnedSelectionKind::InlineFragment(type_name),
                 });
@@ -641,9 +641,9 @@ fn build_selection_set_config_owned(
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
                 let type_name = if needs_narrowing {
-                    conditional_inline_fragment_name(Some(ftc), ic)
+                    conditional_inline_fragment_name(Some(ftc), ic, customizer)
                 } else {
-                    conditional_inline_fragment_name(None, ic)
+                    conditional_inline_fragment_name(None, ic, customizer)
                 };
                 let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 conditional_frag_spread_selections.push(OwnedSelectionItem {
@@ -815,9 +815,10 @@ fn build_selection_set_config_owned(
     let mut inline_fragment_accessors: Vec<OwnedInlineFragmentAccessor> = Vec::new();
     // Add promoted inline fragment accessors first
     for promoted_type in &early_promoted_types {
-        let type_name = format!("As{}", naming::first_uppercased(promoted_type));
+        let custom_promoted = customizer.custom_type_name(promoted_type);
+        let type_name = format!("As{}", naming::first_uppercased(custom_promoted));
         inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
-            property_name: format!("as{}", naming::first_uppercased(promoted_type)),
+            property_name: format!("as{}", naming::first_uppercased(custom_promoted)),
             type_name,
         });
     }
@@ -831,14 +832,14 @@ fn build_selection_set_config_owned(
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
                 let type_name = if needs_narrowing {
-                    conditional_inline_fragment_name(Some(ftc), ic)
+                    conditional_inline_fragment_name(Some(ftc), ic, customizer)
                 } else {
-                    conditional_inline_fragment_name(None, ic)
+                    conditional_inline_fragment_name(None, ic, customizer)
                 };
                 let property_name = if needs_narrowing {
-                    conditional_inline_fragment_property(Some(ftc), ic)
+                    conditional_inline_fragment_property(Some(ftc), ic, customizer)
                 } else {
-                    conditional_inline_fragment_property(None, ic)
+                    conditional_inline_fragment_property(None, ic, customizer)
                 };
                 inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
                     property_name,
@@ -853,16 +854,17 @@ fn build_selection_set_config_owned(
         if let Some(ref tc) = inline.type_condition {
             if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
                 let ic = inline.inclusion_conditions.as_ref().unwrap();
-                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic);
-                let property_name = conditional_inline_fragment_property(Some(tc.name()), ic);
+                let type_name = conditional_inline_fragment_name(Some(tc.name()), ic, customizer);
+                let property_name = conditional_inline_fragment_property(Some(tc.name()), ic, customizer);
                 inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
                     property_name,
                     type_name,
                 });
             } else {
-                let type_name = format!("As{}", naming::first_uppercased(tc.name()));
+                let custom_tc = customizer.custom_type_name(tc.name());
+                let type_name = format!("As{}", naming::first_uppercased(custom_tc));
                 inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
-                    property_name: format!("as{}", naming::first_uppercased(tc.name())),
+                    property_name: format!("as{}", naming::first_uppercased(custom_tc)),
                     type_name,
                 });
             }
@@ -1095,7 +1097,7 @@ fn build_selection_set_config_owned(
                 }
             }
 
-            let parent_type_name = ef.selection_set.scope.parent_type.name();
+            let parent_type_name = customizer.custom_type_name(ef.selection_set.scope.parent_type.name());
             let doc_comment = if is_root {
                 format!("/// {}", child_name)
             } else {
@@ -1257,9 +1259,9 @@ fn build_selection_set_config_owned(
         if absorbed_inline_indices.contains(&inline_idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             let type_name = if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
-                conditional_inline_fragment_name(Some(tc.name()), inline.inclusion_conditions.as_ref().unwrap())
+                conditional_inline_fragment_name(Some(tc.name()), inline.inclusion_conditions.as_ref().unwrap(), customizer)
             } else {
-                format!("As{}", naming::first_uppercased(tc.name()))
+                format!("As{}", naming::first_uppercased(customizer.custom_type_name(tc.name())))
             };
             let child_qualified = format!("{}.{}", qualified_name, type_name);
             let child_root_entity = if is_root {
@@ -1980,7 +1982,7 @@ fn build_selection_set_config_owned(
                         if pre_promoted_fragment_names.contains(frag_name) {
                             let ftc = &frag_arc.type_condition_name;
                             // Add promoted scope OID
-                            let promoted_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(ftc));
+                            let promoted_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(ftc)));
                             if !init.fulfilled_fragments.contains(&promoted_qualified) {
                                 init.fulfilled_fragments.push(promoted_qualified);
                             }
@@ -2016,9 +2018,10 @@ fn build_selection_set_config_owned(
                             && is_supertype_of_current(tc, sibling_tc.name())
                         {
                             // Add scope OID
-                            let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()));
+                            let custom_sibling = customizer.custom_type_name(sibling_tc.name());
+                            let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(custom_sibling));
                             if !init.fulfilled_fragments.contains(&sibling_qualified)
-                                && !sibling_qualified.contains(&format!("As{}.As{}", naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(sibling_tc.name())))
+                                && !sibling_qualified.contains(&format!("As{}.As{}", naming::first_uppercased(custom_sibling), naming::first_uppercased(custom_sibling)))
                             {
                                 init.fulfilled_fragments.push(sibling_qualified.clone());
                             }
@@ -2027,7 +2030,7 @@ fn build_selection_set_config_owned(
                                 if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
                                     if sib_frag.type_condition_name == sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
-                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sib_frag.type_condition_name));
+                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(sibling_tc.name())), naming::first_uppercased(customizer.custom_type_name(&sib_frag.type_condition_name)));
                                         if !init.fulfilled_fragments.contains(&nested_promoted) {
                                             init.fulfilled_fragments.push(nested_promoted);
                                         }
@@ -2060,7 +2063,7 @@ fn build_selection_set_config_owned(
                                 if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
                                     if sib_frag.type_condition_name != sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
-                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()), naming::first_uppercased(&sib_frag.type_condition_name));
+                                        let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(sibling_tc.name())), naming::first_uppercased(customizer.custom_type_name(&sib_frag.type_condition_name)));
                                         if !init.fulfilled_fragments.contains(&nested_promoted) {
                                             init.fulfilled_fragments.push(nested_promoted);
                                         }
@@ -2200,7 +2203,7 @@ fn build_selection_set_config_owned(
                                             && !has_inclusion_conditions(inf.inclusion_conditions.as_ref())
                                     })
                                 };
-                                let root_scope = format!("{}.As{}", root_str, naming::first_uppercased(ftc));
+                                let root_scope = format!("{}.As{}", root_str, naming::first_uppercased(customizer.custom_type_name(ftc)));
                                 if (root_has_promoted || root_has_direct) && !init.fulfilled_fragments.contains(&root_scope) && type_satisfies_condition(tc, ftc) {
                                     let insert_pos = init.fulfilled_fragments.iter()
                                         .position(|f| f == frag_name)
@@ -2214,7 +2217,7 @@ fn build_selection_set_config_owned(
                                         // Skip if sub-fragment type matches root entity type
                                         if sub_frag.type_condition_name == root_entity_type_name { continue; }
                                         if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
-                                            let nested_scope = format!("{}.As{}.As{}", root_str, naming::first_uppercased(ftc), naming::first_uppercased(&sub_frag.type_condition_name));
+                                            let nested_scope = format!("{}.As{}.As{}", root_str, naming::first_uppercased(customizer.custom_type_name(ftc)), naming::first_uppercased(customizer.custom_type_name(&sub_frag.type_condition_name)));
                                             if !init.fulfilled_fragments.contains(&nested_scope) {
                                                 init.fulfilled_fragments.push(nested_scope);
                                             }
@@ -2235,7 +2238,7 @@ fn build_selection_set_config_owned(
                             for pds_inline in &pds.inline_fragments {
                                 if let Some(ref pds_tc) = pds_inline.type_condition {
                                     if is_supertype_of_current(tc, pds_tc.name()) || tc.name() == pds_tc.name() {
-                                        let pds_scope = format!("{}.As{}", root_str, naming::first_uppercased(pds_tc.name()));
+                                        let pds_scope = format!("{}.As{}", root_str, naming::first_uppercased(customizer.custom_type_name(pds_tc.name())));
                                         // Check this sibling's named fragment spreads for promoted fragments
                                         for sib_spread in &pds_inline.selection_set.direct_selections.named_fragments {
                                             if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
@@ -2243,7 +2246,7 @@ fn build_selection_set_config_owned(
                                                 if *sib_ftc != pds_tc.name().to_string()
                                                     && type_satisfies_condition(tc, sib_ftc)
                                                 {
-                                                    let promoted_scope = format!("{}.As{}", pds_scope, naming::first_uppercased(sib_ftc));
+                                                    let promoted_scope = format!("{}.As{}", pds_scope, naming::first_uppercased(customizer.custom_type_name(sib_ftc)));
                                                     if !init.fulfilled_fragments.contains(&promoted_scope) {
                                                         // Insert after AsPet scope OID, before remaining fragments
                                                         let insert_pos = init.fulfilled_fragments.iter()
@@ -2386,7 +2389,7 @@ fn build_selection_set_config_owned(
                 parent_type_comment: format!(
                     "///\n{}/// Parent Type: `{}`",
                     " ".repeat(indent + 2),
-                    tc.name()
+                    customizer.custom_type_name(tc.name())
                 ),
                 config: child_ss,
             });
@@ -2395,8 +2398,8 @@ fn build_selection_set_config_owned(
             // e.g., `... @include(if: $includeDetails) { name appearsIn }`
             // These generate IfVariableName wrapper structs.
             let ic = inline.inclusion_conditions.as_ref().unwrap();
-            let type_name = conditional_inline_fragment_name(None, ic);
-            let property_name = conditional_inline_fragment_property(None, ic);
+            let type_name = conditional_inline_fragment_name(None, ic, customizer);
+            let property_name = conditional_inline_fragment_property(None, ic, customizer);
             let child_qualified = format!("{}.{}", qualified_name, type_name);
             let child_root_entity = if is_root {
                 qualified_name.to_string()
@@ -2426,7 +2429,7 @@ fn build_selection_set_config_owned(
             });
 
             // Use the parent type as the type condition for this conditional wrapper
-            let parent_type_name = ir_ss.scope.parent_type.name().to_string();
+            let parent_type_name = customizer.custom_type_name(ir_ss.scope.parent_type.name()).to_string();
 
             // Build child selection set
             let child_ss = build_selection_set_config_owned(
@@ -2507,7 +2510,7 @@ fn build_selection_set_config_owned(
                 // (e.g., already handled by a direct inline fragment for the same type)
                 if !early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
                 promoted_fragment_names.push(spread.fragment_name.clone());
-                let type_name = format!("As{}", naming::first_uppercased(frag_type_condition));
+                let type_name = format!("As{}", naming::first_uppercased(customizer.custom_type_name(frag_type_condition)));
                 let child_qualified = format!("{}.{}", qualified_name, type_name);
                 let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
 
@@ -2910,7 +2913,7 @@ fn build_selection_set_config_owned(
                 // (after entity fields, before direct inline fragments)
                 nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
                     doc_comment: dc,
-                    parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), frag_type_condition),
+                    parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), customizer.custom_type_name(frag_type_condition)),
                     config: pss,
                 });
                 promoted_insert_index += 1;
@@ -2923,15 +2926,16 @@ fn build_selection_set_config_owned(
             for frag_inline in &frag_ds.inline_fragments {
                 if let Some(ref tc) = frag_inline.type_condition {
                     let tc_name = tc.name().to_string();
+                    let custom_tc_name = customizer.custom_type_name(&tc_name).to_string();
                     if direct_inline_type_names.contains(&tc_name) { continue; }
-                    if inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(&tc_name))) { continue; }
+                    if inline_fragment_accessors.iter().any(|a| a.type_name == format!("As{}", naming::first_uppercased(&custom_tc_name))) { continue; }
 
-                    let type_name = format!("As{}", naming::first_uppercased(&tc_name));
+                    let type_name = format!("As{}", naming::first_uppercased(&custom_tc_name));
                     let child_qualified = format!("{}.{}", qualified_name, type_name);
                     let child_root_entity = if is_root { qualified_name.to_string() } else { root_entity_type.unwrap_or(qualified_name).to_string() };
 
                     inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
-                        property_name: format!("as{}", naming::first_uppercased(&tc_name)),
+                        property_name: format!("as{}", naming::first_uppercased(&custom_tc_name)),
                         type_name: type_name.clone(),
                     });
 
@@ -2956,7 +2960,7 @@ fn build_selection_set_config_owned(
                         if let Some(ref other_tc) = other_frag_inline.type_condition {
                             let other_name = other_tc.name();
                             if other_name != tc_name && is_supertype_of_current(tc, other_name) {
-                                ms.push(format!("{}.As{}", spread.fragment_name, naming::first_uppercased(other_name)));
+                                ms.push(format!("{}.As{}", spread.fragment_name, naming::first_uppercased(customizer.custom_type_name(other_name))));
                             }
                         }
                     }
@@ -3006,7 +3010,7 @@ fn build_selection_set_config_owned(
                         if let Some(ref other_tc) = other_frag_inline.type_condition {
                             let other_name = other_tc.name();
                             if other_name != tc_name && is_supertype_of_current(tc, other_name) {
-                                extra_frag_fulfilled.push(format!("{}.As{}", spread.fragment_name, naming::first_uppercased(other_name)));
+                                extra_frag_fulfilled.push(format!("{}.As{}", spread.fragment_name, naming::first_uppercased(customizer.custom_type_name(other_name))));
                             }
                         }
                     }
@@ -3208,7 +3212,7 @@ fn build_selection_set_config_owned(
                         for sibling_inline in &ds.inline_fragments {
                             if let Some(ref sibling_tc) = sibling_inline.type_condition {
                                 if is_supertype_of_current(tc, sibling_tc.name()) {
-                                    let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(sibling_tc.name()));
+                                    let sibling_qualified = format!("{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(sibling_tc.name())));
                                     if !init.fulfilled_fragments.contains(&sibling_qualified) {
                                         init.fulfilled_fragments.push(sibling_qualified);
                                     }
@@ -3261,7 +3265,7 @@ fn build_selection_set_config_owned(
                     // Insert Case 2 promoted nested types at the correct position
                     nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
                         doc_comment: dc,
-                        parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), tc.name()),
+                        parent_type_comment: format!("///\n{}/// Parent Type: `{}`", " ".repeat(indent + 2), customizer.custom_type_name(tc.name())),
                         config: pss,
                     });
                     promoted_insert_index += 1;
@@ -3331,9 +3335,9 @@ fn build_selection_set_config_owned(
             let needs_narrowing = *ftc != ir_ss.scope.parent_type.name()
                 && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
             let type_name = if needs_narrowing {
-                conditional_inline_fragment_name(Some(ftc), ic)
+                conditional_inline_fragment_name(Some(ftc), ic, customizer)
             } else {
-                conditional_inline_fragment_name(None, ic)
+                conditional_inline_fragment_name(None, ic, customizer)
             };
             let child_qualified = format!("{}.{}", qualified_name, type_name);
             let child_root_entity = if is_root {
@@ -3572,7 +3576,7 @@ fn build_selection_set_config_owned(
                 api_target_name: api_target_name.to_string(),
             };
 
-            let parent_type_name = if needs_narrowing { ftc.as_str() } else { ir_ss.scope.parent_type.name() };
+            let parent_type_name = customizer.custom_type_name(if needs_narrowing { ftc.as_str() } else { ir_ss.scope.parent_type.name() });
             let dc = if is_root {
                 format!("/// {}", type_name)
             } else {
@@ -3835,7 +3839,7 @@ fn build_inline_fragment_entity_type(
     parent_has_entity_field: bool,  // Whether the parent scope actually has this entity field
     api_target_name: &str,
 ) -> OwnedNestedSelectionSet {
-    let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
+    let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
         GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
@@ -4178,7 +4182,7 @@ fn build_merged_entity_nested_type(
     customizer: &SchemaCustomizer,
     api_target_name: &str,
 ) -> OwnedNestedSelectionSet {
-    let parent_type_name = parent_entity_field.selection_set.scope.parent_type.name();
+    let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
         GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
@@ -4946,10 +4950,11 @@ fn inclusion_condition_suffix(conds: &InclusionConditions) -> String {
 /// Build a conditional struct name for an inline fragment with inclusion conditions.
 /// E.g., `... on Cat @include(if: $getCat)` -> "AsCatIfGetCat"
 /// For fragment spreads with conditions (no type condition): "IfNotSkipHeightInMeters"
-fn conditional_inline_fragment_name(type_condition: Option<&str>, conds: &InclusionConditions) -> String {
+/// When a schema customizer renames the type, uses the custom name (e.g., "AsCustomCatIfGetCat").
+fn conditional_inline_fragment_name(type_condition: Option<&str>, conds: &InclusionConditions, customizer: &SchemaCustomizer) -> String {
     let suffix = inclusion_condition_suffix(conds);
     if let Some(tc) = type_condition {
-        format!("As{}{}", naming::first_uppercased(tc), suffix)
+        format!("As{}{}", naming::first_uppercased(customizer.custom_type_name(tc)), suffix)
     } else {
         suffix
     }
@@ -4958,10 +4963,10 @@ fn conditional_inline_fragment_name(type_condition: Option<&str>, conds: &Inclus
 /// Build a conditional property name (camelCase) for an inline fragment accessor.
 /// E.g., "AsWarmBloodedIfGetWarmBlooded" -> "asWarmBloodedIfGetWarmBlooded"
 /// E.g., "IfNotSkipHeightInMeters" -> "ifNotSkipHeightInMeters"
-fn conditional_inline_fragment_property(type_condition: Option<&str>, conds: &InclusionConditions) -> String {
+fn conditional_inline_fragment_property(type_condition: Option<&str>, conds: &InclusionConditions, customizer: &SchemaCustomizer) -> String {
     let suffix = inclusion_condition_suffix(conds);
     if let Some(tc) = type_condition {
-        format!("as{}{}", naming::first_uppercased(tc), suffix)
+        format!("as{}{}", naming::first_uppercased(customizer.custom_type_name(tc)), suffix)
     } else {
         naming::first_lowercased(&suffix)
     }

@@ -479,12 +479,14 @@ fn generate_schema_files(
                 .filter(|v| !exclude_deprecated_enums || !v.is_deprecated)
                 .map(|v| {
                     let custom_case = customizer.custom_enum_case(&enum_t.name, &v.name);
+                    let is_renamed = custom_case != v.name;
                     templates::enum_type::EnumValue {
                         name: custom_case.to_string(),
                         raw_value: v.name.clone(), // GraphQL value stays original
                         description: if include_schema_docs { v.description.clone() } else { None },
                         is_deprecated: v.is_deprecated,
                         deprecation_reason: v.deprecation_reason.clone(),
+                        is_renamed,
                     }
                 })
                 .collect();
@@ -492,6 +494,7 @@ fn generate_schema_files(
             let enum_doc = if include_schema_docs { enum_t.description.as_deref() } else { None };
             let content = templates::enum_type::render(
                 swift_name,
+                &enum_t.name, // GraphQL schema name
                 &values,
                 access_mod,
                 api_target,
@@ -514,6 +517,7 @@ fn generate_schema_files(
                 .iter()
                 .map(|(fname, fdef)| {
                     let custom_field_name = customizer.custom_input_field(&input.name, fname);
+                    let is_renamed = custom_field_name != fname;
                     // Apply camelCase conversion if enabled and no explicit customization.
                     // Only converts snake_case names (containing '_'). Names already in
                     // camelCase (like ownerID) are left unchanged.
@@ -535,12 +539,14 @@ fn generate_schema_files(
                         rendered_init_type: init_type,
                         description: if include_schema_docs { fdef.description.clone() } else { None },
                         deprecation_reason: fdef.deprecation_reason.clone(),
+                        is_renamed,
                     }
                 })
                 .collect();
 
             let content = templates::input_object::render(
                 swift_name,
+                &input.name, // GraphQL schema name
                 &fields,
                 access_mod,
                 api_target,

@@ -116,6 +116,7 @@ fn enum_template_skin_covering() {
 
     let generated = apollo_codegen_render::templates::enum_type::render(
         "SkinCovering",
+        "SkinCovering",
         &[
             EnumValue {
                 name: "fur".to_string(),
@@ -123,6 +124,7 @@ fn enum_template_skin_covering() {
                 description: None,
                 is_deprecated: false,
                 deprecation_reason: None,
+                is_renamed: false,
             },
             EnumValue {
                 name: "hair".to_string(),
@@ -130,6 +132,7 @@ fn enum_template_skin_covering() {
                 description: None,
                 is_deprecated: false,
                 deprecation_reason: None,
+                is_renamed: false,
             },
             EnumValue {
                 name: "feathers".to_string(),
@@ -137,6 +140,7 @@ fn enum_template_skin_covering() {
                 description: None,
                 is_deprecated: false,
                 deprecation_reason: None,
+                is_renamed: false,
             },
             EnumValue {
                 name: "scales".to_string(),
@@ -144,6 +148,7 @@ fn enum_template_skin_covering() {
                 description: None,
                 is_deprecated: false,
                 deprecation_reason: None,
+                is_renamed: false,
             },
         ],
         "public ",

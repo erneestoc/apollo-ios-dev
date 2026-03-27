@@ -16,8 +16,14 @@ pub fn render(
     api_target_name: &str,
     description: Option<&str>,
 ) -> String {
+    let renamed_comment = if type_name != schema_name {
+        format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
+    } else {
+        String::new()
+    };
     let body = format!(
-        "static let {} = {}.Interface(name: \"{}\")",
+        "{}static let {} = {}.Interface(name: \"{}\")",
+        renamed_comment,
         crate::naming::first_uppercased(type_name),
         api_target_name,
         schema_name,

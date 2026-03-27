@@ -36,6 +36,11 @@ fn render_body(
     schema_namespace: &str,
     is_in_module: bool,
 ) -> String {
+    let renamed_comment = if type_name != schema_name {
+        format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
+    } else {
+        String::new()
+    };
     let prefix = if !is_in_module {
         format!("{}.", crate::naming::first_uppercased(schema_namespace))
     } else {
@@ -59,7 +64,8 @@ fn render_body(
     };
 
     format!(
-        "static let {} = Union(\n  name: \"{}\",\n  possibleTypes: {}\n)",
+        "{}static let {} = Union(\n  name: \"{}\",\n  possibleTypes: {}\n)",
+        renamed_comment,
         crate::naming::first_uppercased(type_name),
         schema_name,
         members_str,

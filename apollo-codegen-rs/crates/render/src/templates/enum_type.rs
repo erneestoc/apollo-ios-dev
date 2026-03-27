@@ -16,10 +16,13 @@ pub struct EnumValue {
     pub description: Option<String>,
     pub is_deprecated: bool,
     pub deprecation_reason: Option<String>,
+    /// Whether this case was explicitly renamed via schema customization.
+    pub is_renamed: bool,
 }
 
 pub fn render(
     type_name: &str,
+    schema_name: &str,
     values: &[EnumValue],
     access_modifier: &str,
     api_target_name: &str,
@@ -41,6 +44,14 @@ pub fn render(
         }
     }
 
+    // "Renamed from" comment for the enum type
+    if type_name != schema_name {
+        body.push_str(&format!(
+            "// Renamed from GraphQL schema value: '{}'\n",
+            schema_name
+        ));
+    }
+
     body.push_str(&format!(
         "{}enum {}: String, EnumType {{\n",
         access_modifier,
@@ -48,7 +59,10 @@ pub fn render(
     ));
 
     for value in values {
-        let case_name = if camel_case_conversion {
+        // When a case is explicitly renamed, do NOT apply camelCase conversion
+        let case_name = if value.is_renamed {
+            value.name.clone()
+        } else if camel_case_conversion {
             crate::naming::to_camel_case(&value.name)
         } else {
             value.name.clone()
@@ -78,6 +92,14 @@ pub fn render(
             } else {
                 body.push_str("  @available(*, deprecated)\n");
             }
+        }
+
+        // "Renamed from" comment for renamed cases
+        if value.is_renamed {
+            body.push_str(&format!(
+                "  // Renamed from GraphQL schema value: '{}'\n",
+                value.raw_value
+            ));
         }
 
         body.push_str(&format!(

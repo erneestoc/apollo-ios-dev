@@ -19,10 +19,13 @@ pub struct InputField {
     pub rendered_init_type: String, // type with default value for initializer
     pub description: Option<String>,
     pub deprecation_reason: Option<String>,
+    /// Whether this field was explicitly renamed via schema customization.
+    pub is_renamed: bool,
 }
 
 pub fn render(
     type_name: &str,
+    schema_name: &str,
     fields: &[InputField],
     access_modifier: &str,
     api_target_name: &str,
@@ -45,6 +48,14 @@ pub fn render(
                 }
             }
         }
+    }
+
+    // "Renamed from" comment for the input object type
+    if type_name != schema_name {
+        result.push_str(&format!(
+            "// Renamed from GraphQL schema value: '{}'\n",
+            schema_name
+        ));
     }
 
     let swift_name = crate::naming::first_uppercased(type_name);
@@ -123,6 +134,14 @@ pub fn render(
             result.push_str(&format!(
                 "  @available(*, deprecated, message: \"{}\")\n",
                 reason.replace('\"', "\\\"")
+            ));
+        }
+
+        // "Renamed from" comment for renamed fields
+        if field.is_renamed {
+            result.push_str(&format!(
+                "  // Renamed from GraphQL schema value: '{}'\n",
+                field.schema_name
             ));
         }
 

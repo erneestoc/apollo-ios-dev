@@ -57,6 +57,11 @@ fn render_body(
     schema_namespace: &str,
     is_in_module: bool,
 ) -> String {
+    let renamed_comment = if type_name != schema_name {
+        format!("// Renamed from GraphQL schema value: '{}'\n", schema_name)
+    } else {
+        String::new()
+    };
     let interfaces_str = if interfaces.is_empty() {
         "[]".to_string()
     } else {
@@ -86,7 +91,8 @@ fn render_body(
     };
 
     format!(
-        "static let {} = {}.Object(\n  typename: \"{}\",\n  implementedInterfaces: {}\n)",
+        "{}static let {} = {}.Object(\n  typename: \"{}\",\n  implementedInterfaces: {}\n)",
+        renamed_comment,
         crate::naming::first_uppercased(type_name),
         api_target_name,
         schema_name,
