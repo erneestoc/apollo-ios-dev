@@ -86,6 +86,8 @@ fn interface_template_animal() {
         "public ",
         "ApolloAPI",
         None,
+        "AnimalKingdomAPI",
+        true,
     );
     assert_matches_golden(&generated, "Interfaces/Animal.graphql.swift");
 }
@@ -243,6 +245,7 @@ fn schema_metadata_template() {
         ],
         "public ",
         "ApolloAPI",
+        false,
     );
     assert_matches_golden(&generated, "SchemaMetadata.graphql.swift");
 }
@@ -254,6 +257,7 @@ fn schema_configuration_template() {
     let generated = apollo_codegen_render::templates::schema_config::render(
         "public ",
         "ApolloAPI",
+        false,
     );
     let golden_path = golden_dir().join("SchemaConfiguration.swift");
     let expected = std::fs::read_to_string(&golden_path)
@@ -316,6 +320,7 @@ fn mock_interfaces_template() {
         ],
         "public ",
         "AnimalKingdomAPI",
+        "AnimalKingdomAPI",
     );
     let golden_path = golden_base()
         .join("TestMocks/MockObject+Interfaces.graphql.swift");
@@ -345,6 +350,7 @@ fn mock_unions_template() {
     let generated = apollo_codegen_render::templates::mock_unions::render(
         &["ClassroomPet".to_string()],
         "public ",
+        "AnimalKingdomAPI",
         "AnimalKingdomAPI",
     );
     let golden_path = golden_base()

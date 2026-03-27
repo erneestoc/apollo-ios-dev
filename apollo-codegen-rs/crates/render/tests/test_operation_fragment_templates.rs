@@ -123,6 +123,7 @@ fn fragment_template_dog_fragment() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
@@ -272,6 +273,7 @@ fn fragment_template_height_in_meters() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
@@ -458,6 +460,7 @@ fn fragment_template_pet_details() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
@@ -574,6 +577,7 @@ fn fragment_template_crocodile_fragment() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
@@ -685,6 +689,7 @@ fn fragment_template_warm_blooded_details() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
@@ -1093,6 +1098,7 @@ fn fragment_template_classroom_pet_details() {
             is_mutable: false,
             api_target_name: "ApolloAPI",
         },
+        include_definition: true,
     };
 
     let generated = fragment::render(&config);
