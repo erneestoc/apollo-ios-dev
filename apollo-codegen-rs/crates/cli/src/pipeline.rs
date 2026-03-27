@@ -368,7 +368,7 @@ pub fn generate_operation_manifest(
                     }
                 }));
             }
-            OperationManifestVersion::LegacyAPQ => {
+            OperationManifestVersion::Legacy => {
                 entries.push(serde_json::json!({
                     "operationIdentifier": hash,
                     "operationName": operation_name,
@@ -392,7 +392,7 @@ pub fn generate_operation_manifest(
                 "operations": entries,
             })
         }
-        OperationManifestVersion::LegacyAPQ => {
+        OperationManifestVersion::Legacy => {
             serde_json::Value::Array(entries)
         }
     };

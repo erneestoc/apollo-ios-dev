@@ -258,8 +258,8 @@ pub struct OperationManifestConfiguration {
 pub enum OperationManifestVersion {
     #[default]
     PersistedQueries,
-    #[serde(rename = "legacyAPQ")]
-    LegacyAPQ,
+    #[serde(alias = "legacyAPQ", rename = "legacy")]
+    Legacy,
 }
 
 // --- Common Types ---
