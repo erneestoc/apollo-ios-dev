@@ -1196,17 +1196,7 @@ fn build_selection_set_config_owned(
             }
 
             let parent_type_name = customizer.custom_type_name(ef.selection_set.scope.parent_type.name());
-            let doc_comment = if is_root {
-                format!("/// {}", child_name)
-            } else {
-                // Use full entity-relative path for doc comment
-                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                    &qualified_name[pos + 6..]
-                } else {
-                    struct_name
-                };
-                format!("/// {}.{}", doc_prefix, child_name)
-            };
+            let doc_comment = doc_comment_path(qualified_name, &child_name, is_root);
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
                 parent_type_comment: format!(
@@ -2482,16 +2472,7 @@ fn build_selection_set_config_owned(
             // Use the qualified_name to build a doc comment path.
             // For root selection sets (Data in operations, fragment roots), use just the type name.
             // For nested scopes, use the full entity-relative path.
-            let doc_comment = if is_root {
-                format!("/// {}", type_name)
-            } else {
-                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                    &qualified_name[pos + 6..]
-                } else {
-                    struct_name
-                };
-                format!("/// {}.{}", doc_prefix, type_name)
-            };
+            let doc_comment = doc_comment_path(qualified_name, &type_name, is_root);
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
                 parent_type_comment: format!(
@@ -2564,16 +2545,7 @@ fn build_selection_set_config_owned(
                 api_target_name,
             );
 
-            let doc_comment = if is_root {
-                format!("/// {}", type_name)
-            } else {
-                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                    &qualified_name[pos + 6..]
-                } else {
-                    struct_name
-                };
-                format!("/// {}.{}", doc_prefix, type_name)
-            };
+            let doc_comment = doc_comment_path(qualified_name, &type_name, is_root);
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
                 parent_type_comment: format!(
@@ -3009,16 +2981,7 @@ fn build_selection_set_config_owned(
                     nested_types: pnt, type_aliases: pta, type_alias_insert_index: pnt_len,
                     indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
                 };
-                let dc = if is_root {
-                    format!("/// {}", type_name)
-                } else {
-                    let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                        &qualified_name[pos + 6..]
-                    } else {
-                        struct_name
-                    };
-                    format!("/// {}.{}", doc_prefix, type_name)
-                };
+                let dc = doc_comment_path(qualified_name, &type_name, is_root);
                 // Insert promoted nested types at the correct position
                 // (after entity fields, before direct inline fragments)
                 nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
@@ -3364,16 +3327,7 @@ fn build_selection_set_config_owned(
                         nested_types: case2_nested, type_aliases: case2_aliases, type_alias_insert_index: case2_nested_len,
                         indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
                     };
-                    let dc = if is_root {
-                        format!("/// {}", type_name)
-                    } else {
-                        let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                            &qualified_name[pos + 6..]
-                        } else {
-                            struct_name
-                        };
-                        format!("/// {}.{}", doc_prefix, type_name)
-                    };
+                    let dc = doc_comment_path(qualified_name, &type_name, is_root);
                     // Insert Case 2 promoted nested types at the correct position
                     nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
                         doc_comment: dc,
@@ -3694,16 +3648,7 @@ fn build_selection_set_config_owned(
             };
 
             let parent_type_name = customizer.custom_type_name(if needs_narrowing { ftc.as_str() } else { ir_ss.scope.parent_type.name() });
-            let dc = if is_root {
-                format!("/// {}", type_name)
-            } else {
-                let doc_prefix = if let Some(pos) = qualified_name.find(".Data.") {
-                    &qualified_name[pos + 6..]
-                } else {
-                    struct_name
-                };
-                format!("/// {}.{}", doc_prefix, type_name)
-            };
+            let dc = doc_comment_path(qualified_name, &type_name, is_root);
             // Insert conditional fragment spread nested types at the promoted_insert_index
             // (after entity types and promoted fragments, before unconditional inline fragments)
             nested_types.insert(promoted_insert_index, OwnedNestedSelectionSet {
@@ -4270,6 +4215,8 @@ fn build_inline_fragment_entity_type(
     // Use full entity-relative path for doc comment (e.g., "AllAnimal.AsWarmBlooded.Height")
     let doc_path = if let Some(pos) = qualified_name.find(".Data.") {
         &qualified_name[pos + 6..]
+    } else if let Some(pos) = qualified_name.find('.') {
+        &qualified_name[pos + 1..]
     } else {
         struct_name
     };
@@ -5226,6 +5173,29 @@ fn collect_all_absorbed_types(config: &OwnedSelectionSetConfig) -> Vec<String> {
 
 fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetConfig<'_> {
     owned_to_ref_selection_set_with_absorbed(owned, &[])
+}
+
+/// Generate the doc comment path for a nested selection set.
+///
+/// Strips the root prefix (operation Data or fragment name) from the qualified_name
+/// to produce paths like `/// AllAnimal.AsPet.Owner` matching Swift's
+/// SelectionSetNameGenerator with `.omittingRoot` format.
+fn doc_comment_path(qualified_name: &str, child_name: &str, is_root: bool) -> String {
+    if is_root {
+        return format!("/// {}", child_name);
+    }
+    // Strip root: "MyQuery.Data.AllAnimal" → "AllAnimal"
+    // or "MyFragment.AllAnimal" → "AllAnimal"
+    let path = if let Some(pos) = qualified_name.find(".Data.") {
+        // Operation: strip through ".Data."
+        &qualified_name[pos + 6..]
+    } else if let Some(pos) = qualified_name.find('.') {
+        // Fragment: strip through first "."
+        &qualified_name[pos + 1..]
+    } else {
+        qualified_name
+    };
+    format!("/// {}.{}", path, child_name)
 }
 
 fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConfig, parent_absorbed: &[String]) -> SelectionSetConfig<'a> {

@@ -47,7 +47,7 @@ const SWIFT_RESERVED_WORDS: &[&str] = &[
     "required", "rethrows", "return", "right", "safe", "self", "set", "some",
     "static", "struct", "subscript", "super", "switch", "throw", "throws",
     "true", "try", "typealias", "unowned", "unsafe", "var", "weak", "where",
-    "while", "willSet",
+    "while", "willSet", "_",
 ];
 
 /// Escape a name if it's a Swift reserved word.
