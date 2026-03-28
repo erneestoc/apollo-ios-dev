@@ -1113,7 +1113,8 @@ fn fix_inline_argument_format(source: &str) -> String {
                     }
                     i = end;
                 } else {
-                    // All variables - leave unchanged
+                    // Variable-only argument list or variable definition list
+                    // Keep as-is (commas preserved for hash stability)
                     result.push(chars[i]);
                     i += 1;
                 }

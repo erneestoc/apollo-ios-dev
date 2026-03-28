@@ -922,7 +922,557 @@ def write_case(case_dir, namespace, schema, operations):
         f.write("\n")
 
 
-GENERATORS = [generate_case_0, generate_case_1]
+def generate_case_2(case_dir):
+    """Issue 1: Multi-argument fields for operationIdentifier hash testing."""
+    schema = '''\
+type Query {
+  user(id: ID!, name: String): User
+  search(query: String!, limit: Int, offset: Int, filter: SearchFilter): [Result!]!
+  node(id: ID!): Node
+}
+
+type User implements Node {
+  id: ID!
+  name: String!
+  email: String!
+  posts(first: Int, after: String, orderBy: PostOrder): PostConnection!
+}
+
+type Post implements Node {
+  id: ID!
+  title: String!
+  body: String!
+  author: User!
+  comments(first: Int, after: String): [Comment!]!
+}
+
+type Comment implements Node {
+  id: ID!
+  text: String!
+  author: User!
+}
+
+type PostConnection {
+  edges: [PostEdge!]!
+  pageInfo: PageInfo!
+}
+
+type PostEdge {
+  node: Post!
+  cursor: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Result {
+  id: ID!
+  title: String!
+  score: Float!
+}
+
+interface Node {
+  id: ID!
+}
+
+input SearchFilter {
+  category: String
+  minScore: Float
+}
+
+enum PostOrder {
+  NEWEST
+  OLDEST
+  TOP
+}
+'''
+
+    ops = []
+    # Query with multiple variable-only field arguments
+    ops.append('''\
+query UserPostsQuery($userId: ID!, $first: Int, $after: String, $orderBy: PostOrder) {
+  user(id: $userId) {
+    id
+    name
+    email
+    posts(first: $first, after: $after, orderBy: $orderBy) {
+      edges {
+        node {
+          id
+          title
+          body
+          comments(first: 3) {
+            id
+            text
+            author {
+              name
+            }
+          }
+        }
+        cursor
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+''')
+
+    # Query with inline literal arguments
+    ops.append('''\
+query SearchQuery($query: String!, $limit: Int, $offset: Int) {
+  search(query: $query, limit: $limit, offset: $offset, filter: {category: "tech", minScore: 0.5}) {
+    id
+    title
+    score
+  }
+}
+''')
+
+    write_case(case_dir, "MultiArgAPI", schema, ops)
+
+
+def generate_case_3(case_dir):
+    """Issue 3: Cross-union field merging and sibling accessors."""
+    schema = '''\
+type Query {
+  feed: [FeedItem!]!
+}
+
+union FeedItem = TextPost | ImagePost | VideoPost | Poll
+
+type TextPost {
+  id: ID!
+  title: String!
+  body: String!
+  author: Author!
+  likes: Int!
+}
+
+type ImagePost {
+  id: ID!
+  title: String!
+  imageUrl: String!
+  caption: String
+  author: Author!
+  likes: Int!
+}
+
+type VideoPost {
+  id: ID!
+  title: String!
+  videoUrl: String!
+  duration: Int!
+  author: Author!
+  likes: Int!
+}
+
+type Poll {
+  id: ID!
+  question: String!
+  options: [PollOption!]!
+  author: Author!
+  likes: Int!
+}
+
+type PollOption {
+  text: String!
+  votes: Int!
+}
+
+type Author {
+  id: ID!
+  name: String!
+  avatar: String
+}
+'''
+
+    ops = []
+    # Union query — each branch selects shared fields (id, title, author, likes)
+    # plus type-specific fields. Tests sibling accessor merging.
+    ops.append('''\
+query FeedQuery {
+  feed {
+    ... on TextPost {
+      id
+      title
+      body
+      author {
+        id
+        name
+        avatar
+      }
+      likes
+    }
+    ... on ImagePost {
+      id
+      title
+      imageUrl
+      caption
+      author {
+        id
+        name
+      }
+      likes
+    }
+    ... on VideoPost {
+      id
+      title
+      videoUrl
+      duration
+      author {
+        id
+        name
+      }
+      likes
+    }
+    ... on Poll {
+      id
+      question
+      options {
+        text
+        votes
+      }
+      author {
+        id
+        name
+      }
+      likes
+    }
+  }
+}
+''')
+
+    write_case(case_dir, "UnionMergeAPI", schema, ops)
+
+
+def generate_case_4(case_dir):
+    """Issue 4: Fragment spread with nested entity types (typealias merging)."""
+    schema = '''\
+type Query {
+  hero: Character
+}
+
+interface Character {
+  id: ID!
+  name: String!
+  friends: [Character!]!
+  homeWorld: Planet!
+}
+
+type Human implements Character {
+  id: ID!
+  name: String!
+  friends: [Character!]!
+  homeWorld: Planet!
+  height: Float
+}
+
+type Droid implements Character {
+  id: ID!
+  name: String!
+  friends: [Character!]!
+  homeWorld: Planet!
+  primaryFunction: String
+}
+
+type Planet {
+  id: ID!
+  name: String!
+  climate: String
+  population: Int
+}
+'''
+
+    ops = []
+    # Fragment with nested entity type — tests typealias generation
+    ops.append('''\
+fragment CharacterFields on Character {
+  id
+  name
+  homeWorld {
+    id
+    name
+    climate
+  }
+  friends {
+    id
+    name
+  }
+}
+
+query HeroQuery {
+  hero {
+    ...CharacterFields
+    ... on Human {
+      height
+      homeWorld {
+        population
+      }
+    }
+    ... on Droid {
+      primaryFunction
+    }
+  }
+}
+''')
+
+    write_case(case_dir, "TypealiasAPI", schema, ops)
+
+
+def generate_case_5(case_dir):
+    """Issue 5: Variable default values — Bool, Int, null, enum."""
+    schema = '''\
+type Query {
+  items(
+    includeHidden: Boolean! = false
+    limit: Int! = 10
+    filter: ItemFilter
+    sortBy: SortOrder = NEWEST
+  ): [Item!]!
+}
+
+type Item {
+  id: ID!
+  name: String!
+  hidden: Boolean!
+}
+
+input ItemFilter {
+  category: String = null
+  minPrice: Int = 0
+  active: Boolean = true
+}
+
+enum SortOrder {
+  NEWEST
+  OLDEST
+  ALPHABETICAL
+}
+'''
+
+    ops = []
+    ops.append('''\
+query ItemsQuery(
+  $includeHidden: Boolean! = false
+  $limit: Int! = 10
+  $filter: ItemFilter = null
+  $sortBy: SortOrder = NEWEST
+) {
+  items(
+    includeHidden: $includeHidden
+    limit: $limit
+    filter: $filter
+    sortBy: $sortBy
+  ) {
+    id
+    name
+    hidden
+  }
+}
+''')
+
+    write_case(case_dir, "DefaultValuesAPI", schema, ops)
+
+
+def generate_case_6(case_dir):
+    """Issue 6: Same-type inline fragment (should be absorbed, not wrapper)."""
+    schema = '''\
+type Query {
+  allAnimals: [Animal!]!
+}
+
+interface Animal {
+  id: ID!
+  species: String!
+  weight: Float!
+}
+
+interface Pet implements Animal {
+  id: ID!
+  species: String!
+  weight: Float!
+  name: String!
+  owner: Human!
+}
+
+type Dog implements Animal & Pet {
+  id: ID!
+  species: String!
+  weight: Float!
+  name: String!
+  owner: Human!
+  breed: String!
+}
+
+type Cat implements Animal & Pet {
+  id: ID!
+  species: String!
+  weight: Float!
+  name: String!
+  owner: Human!
+  indoor: Boolean!
+}
+
+type Human {
+  id: ID!
+  firstName: String!
+}
+'''
+
+    ops = []
+    # Inline fragment matching parent type should be absorbed
+    ops.append('''\
+query AllAnimalsQuery {
+  allAnimals {
+    id
+    species
+    ... on Animal {
+      weight
+    }
+    ... on Pet {
+      name
+      owner {
+        firstName
+      }
+    }
+    ... on Dog {
+      breed
+    }
+    ... on Cat {
+      indoor
+    }
+  }
+}
+''')
+
+    write_case(case_dir, "AbsorbedInlineAPI", schema, ops)
+
+
+def generate_case_7(case_dir):
+    """Issue 7: fulfilledFragments — fragment ObjectIdentifier inclusion."""
+    schema = '''\
+type Query {
+  node(id: ID!): Node
+}
+
+interface Node {
+  id: ID!
+}
+
+interface Displayable {
+  title: String!
+}
+
+type Article implements Node & Displayable {
+  id: ID!
+  title: String!
+  body: String!
+}
+
+type Image implements Node & Displayable {
+  id: ID!
+  title: String!
+  url: String!
+  width: Int!
+  height: Int!
+}
+'''
+
+    ops = []
+    ops.append('''\
+fragment NodeFields on Node {
+  id
+}
+
+fragment DisplayFields on Displayable {
+  title
+}
+
+query NodeQuery($id: ID!) {
+  node(id: $id) {
+    ...NodeFields
+    ...DisplayFields
+    ... on Article {
+      body
+    }
+    ... on Image {
+      url
+      width
+      height
+    }
+  }
+}
+''')
+
+    write_case(case_dir, "FulfilledFragsAPI", schema, ops)
+
+
+def generate_case_8(case_dir):
+    """Issue 8: _SelectionSet disambiguation with conflicting field names."""
+    schema = '''\
+type Query {
+  result: OperationResult!
+}
+
+type OperationResult {
+  success: Boolean!
+  "A field named 'errors' whose type will generate a struct named 'Error'"
+  errors: [Error!]!
+  "A field named 'string' whose type will generate a struct named 'String'"
+  string: StringWrapper
+  data: DataPayload
+}
+
+type Error {
+  code: Int!
+  message: String!
+}
+
+type StringWrapper {
+  value: String!
+  length: Int!
+}
+
+type DataPayload {
+  id: ID!
+  content: String!
+}
+'''
+
+    ops = []
+    ops.append('''\
+query ResultQuery {
+  result {
+    success
+    errors {
+      code
+      message
+    }
+    string {
+      value
+      length
+    }
+    data {
+      id
+      content
+    }
+  }
+}
+''')
+
+    write_case(case_dir, "DisambiguationAPI", schema, ops)
+
+
+GENERATORS = [
+    generate_case_0, generate_case_1, generate_case_2, generate_case_3,
+    generate_case_4, generate_case_5, generate_case_6, generate_case_7,
+    generate_case_8,
+]
 
 
 def main():
