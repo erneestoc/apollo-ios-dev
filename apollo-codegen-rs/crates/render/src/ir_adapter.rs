@@ -512,11 +512,26 @@ fn build_selection_set_config_owned(
     }
 
     // Determine whether __typename should appear in __selections.
-    // It is added for all selection sets EXCEPT:
-    //   - Inline fragments (they inherit __typename from the parent entity)
-    //   - Root operation Data structs (is_root && conformance == SelectionSet)
+    // Matches Swift's SelectionSetTemplate.__selections behavior:
+    //   - Skip for inline fragments (they inherit __typename from parent entity)
+    //   - Skip for root operation Data structs (the root query/mutation type)
+    //   - Skip for fragment roots on concrete object types with no type conditions
+    //     (no inline fragments, no named fragment spreads that need type discrimination)
     let is_root_operation_data = is_root && matches!(conformance, SelectionSetConformance::SelectionSet | SelectionSetConformance::MutableSelectionSet);
-    let should_add_typename = !is_inline_fragment && !is_root_operation_data;
+    // Swift omits __typename for fragments on concrete object types that don't
+    // implement any interfaces AND have no type conditions (inline fragments/spreads).
+    // Types implementing interfaces need __typename for type discrimination.
+    let is_fragment_on_plain_object = matches!(
+        conformance,
+        SelectionSetConformance::Fragment | SelectionSetConformance::MutableFragment
+    ) && match &ir_ss.scope.parent_type {
+        GraphQLCompositeType::Object(obj) => obj.interfaces.is_empty(),
+        _ => false,
+    } && ds.inline_fragments.is_empty()
+        && ds.named_fragments.is_empty();
+    let should_add_typename = !is_inline_fragment
+        && !is_root_operation_data
+        && !is_fragment_on_plain_object;
 
     // Build selections
     let mut selections = Vec::new();
