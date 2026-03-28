@@ -1164,7 +1164,7 @@ fn build_selection_set_config_owned(
             }
             // Merge entity sub-fields from sibling inline fragments in the parent scope.
             // E.g., when building AsIssue.Author, merge `login` from AsReactable.AsComment.author { login }.
-            // This ensures entity types include all fields from all paths across the entity.
+            // Also handles union branches: AsImagePost.Author gets `avatar` from AsTextPost.Author.
             if is_inline_fragment {
                 if let Some(pds) = parent_scope_ds {
                     // Collect matching entity fields from sibling inline fragments
@@ -1203,6 +1203,7 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
+
 
             let parent_type_name = customizer.custom_type_name(ef.selection_set.scope.parent_type.name());
             let doc_comment = doc_comment_path(qualified_name, &child_name, is_root);
@@ -4020,11 +4021,90 @@ fn build_inline_fragment_entity_type(
         }
     }
 
-    // NOTE: EntitySelectionTree field supplementation plumbed but not yet active.
-    // collect_all_entity_fields includes conditional fragment spread fields
-    // which causes regressions. Full ComputedSelectionSet with MergingStrategy
-    // needed to correctly scope merged fields. Infrastructure is ready.
+    // Supplement merged fields using scope-aware EntitySelectionTree query.
+    // Uses ComputedSelectionSetBuilder with MergingStrategy::ALL to correctly
+    // include only fields that would be merged at this entity's scope —
+    // excludes fields from conditional fragment spreads (@skip/@include).
+    if let Some(storage) = entity_storage {
+        let target_type = parent_entity_field.selection_set.scope.parent_type.name();
+        for (loc, entity) in &storage.entities {
+            if let Some(last) = loc.field_path.last() {
+                if last.name == field_key && last.type_name == target_type {
+                    // Build a scope-aware query using ComputedSelectionSetBuilder.
+                    // The entity's root scope is the entity type itself.
+                    use apollo_codegen_ir::entity_selection_tree::{
+                        ComputedSelectionSetBuilder, ScopeDescriptorRef,
+                    };
+                    use apollo_codegen_ir::merged_selections::{MergingStrategy, ScopeConditionKey};
 
+                    let type_name = target_type.to_string();
+                    let scope_key = ScopeConditionKey::new(Some(type_name.clone()));
+
+                    // Build scope path: one entry per entity depth in root_type_path
+                    let scope_refs: Vec<ScopeDescriptorRef> = entity.selection_tree.root_type_path
+                        .iter()
+                        .map(|t| ScopeDescriptorRef {
+                            type_name: t.clone(),
+                            scope_path: vec![ScopeConditionKey::new(Some(t.clone()))],
+                            matching_types: vec![t.clone()],
+                        })
+                        .collect();
+
+                    let entity_scope = vec![scope_key.clone()];
+
+                    // Direct field keys (already collected by ad-hoc code)
+                    let direct_keys: Vec<String> = if let Some(ief) = inline_entity_field {
+                        ief.selection_set.direct_selections.fields.keys().cloned().collect()
+                    } else {
+                        vec![]
+                    };
+
+                    let mut builder = ComputedSelectionSetBuilder::new(
+                        MergingStrategy::ANCESTORS,
+                        true, // is_entity_root
+                        direct_keys,
+                        vec![], // no direct fragments
+                        vec![], // no direct inline fragments
+                    );
+
+                    entity.selection_tree.add_merged_selections(
+                        &scope_refs,
+                        &entity_scope,
+                        &[type_name.clone()],
+                        &mut builder,
+                    );
+
+                    // Add merged scalar fields the ad-hoc code missed.
+                    // Only add if the field is selected WITHOUT inclusion conditions
+                    // somewhere in the tree (avoids conditional fragment spread fields).
+                    let tree_all = apollo_codegen_ir::entity_selection_tree::collect_all_entity_fields(
+                        &entity.selection_tree,
+                    );
+                    for (key, tree_field) in &builder.merged_fields {
+                        if key == "__typename" { continue; }
+                        if tree_field.is_entity { continue; }
+                        // Only add if the field exists unconditionally in the tree
+                        // (some instance of this field has no inclusion conditions)
+                        let is_unconditional = tree_all.get(key.as_str())
+                            .map(|f| f.inclusion_conditions.is_none())
+                            .unwrap_or(false);
+                        if !is_unconditional { continue; }
+                        if !merged_fields.iter().any(|f| f.name == *key) {
+                            let swift_type = render_graphql_type_as_swift(
+                                &tree_field.field_type, schema_namespace, type_kinds, customizer,
+                            );
+                            merged_fields.push(OwnedFieldAccessor {
+                                name: key.clone(),
+                                swift_type,
+                                description: tree_field.description.clone(),
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
     // Build fulfilled fragments
     // Order: self, root entity scope (if different from parent), then parent if same as root,
