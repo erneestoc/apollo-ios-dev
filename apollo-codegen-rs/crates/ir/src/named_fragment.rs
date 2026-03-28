@@ -1,5 +1,6 @@
 //! IR NamedFragment - represents a compiled named GraphQL fragment.
 
+use crate::entity_storage::DefinitionEntityStorage;
 use crate::fields::EntityField;
 use std::sync::Arc;
 
@@ -22,4 +23,6 @@ pub struct NamedFragment {
     pub file_path: String,
     /// Whether this fragment contains deferred fragments.
     pub contains_deferred_fragment: bool,
+    /// Entity storage tracking all entities and their selection trees.
+    pub entity_storage: Option<DefinitionEntityStorage>,
 }

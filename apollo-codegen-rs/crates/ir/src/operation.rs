@@ -1,9 +1,9 @@
 //! IR Operation - represents a compiled GraphQL operation.
 
+use crate::entity_storage::DefinitionEntityStorage;
 use crate::fields::EntityField;
 use crate::named_fragment::NamedFragment;
 use apollo_codegen_frontend::compilation_result::OperationType;
-use indexmap::IndexSet;
 use std::sync::Arc;
 
 /// A compiled GraphQL operation (query, mutation, or subscription).
@@ -27,6 +27,8 @@ pub struct Operation {
     pub contains_deferred_fragment: bool,
     /// Variable definitions.
     pub variables: Vec<VariableDefinition>,
+    /// Entity storage tracking all entities and their selection trees.
+    pub entity_storage: Option<DefinitionEntityStorage>,
 }
 
 /// A variable definition on an operation.

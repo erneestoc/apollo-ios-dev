@@ -896,7 +896,7 @@ impl GraphQLFrontend {
         // The Swift/JS compiler only includes types actually referenced by
         // operations and fragments. Unreferenced types are excluded from generation.
 
-        // Build the final list
+        // Build the final list in encounter order
         seen.iter()
             .map(|name| self.build_named_type(name.as_str(), schema))
             .collect()

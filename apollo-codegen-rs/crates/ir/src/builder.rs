@@ -1,12 +1,19 @@
 //! IR Builder - transforms CompilationResult into IR.
 
+use crate::entity::{EntityLocation, FieldPathComponent};
+use crate::entity_selection_tree::{
+    EntityTreeScopeSelections, FragmentSpreadInfo, ScopeDescriptorRef, TreeField,
+    TreeNamedFragment,
+};
+use crate::entity_storage::DefinitionEntityStorage;
 use crate::field_collector::{TypeKind, build_type_kinds};
 use crate::fields::{EntityField, ScalarField};
 use crate::inclusion::{InclusionCondition, InclusionConditions, InclusionOperator};
+use crate::merged_selections::{ConditionKey, MergedSource, ScopeConditionKey};
 use crate::named_fragment::NamedFragment;
 use crate::operation::{Operation, VariableDefinition};
 use crate::schema::Schema;
-use crate::scope::ScopeDescriptor;
+use crate::scope::{self, ScopeDescriptor};
 use crate::selection_set::{
     DirectSelections, FieldSelection, InlineFragmentSelection, NamedFragmentSpread, SelectionKind,
     SelectionSet,
@@ -101,9 +108,44 @@ impl IRBuilder {
     /// Build an operation from its definition.
     pub fn build_operation(&self, op_def: &apollo_codegen_frontend::compilation_result::OperationDefinition) -> Operation {
         let root_type = op_def.root_type.clone();
+        let root_type_name = root_type.name().to_string();
+
+        // Create entity storage for this operation
+        let mut entity_storage = DefinitionEntityStorage::new(
+            op_def.name.clone(),
+            root_type_name.clone(),
+        );
+
+        // Build the root scope descriptor
+        let root_scope = ScopeDescriptor::new_with_schema(
+            root_type.clone(),
+            &self.schema.referenced_types.objects,
+            &self.schema.referenced_types.interfaces,
+            &self.schema.referenced_types.unions,
+        );
+
+        // Build selection set and populate entity trees
         let selection_set = self.build_selection_set_from_compiled(
             &op_def.selection_set,
             &root_type,
+        );
+
+        // Populate entity trees from the built selection set
+        let root_entity_location = EntityLocation {
+            source_name: op_def.name.clone(),
+            field_path: vec![],
+        };
+        let root_scope_ref = root_scope.to_ref();
+        self.populate_entity_trees(
+            &selection_set,
+            &mut entity_storage,
+            &root_entity_location,
+            &[root_type_name.clone()],
+            &[root_scope_ref],
+            &root_scope,
+            &op_def.referenced_fragments.iter()
+                .filter_map(|name| self.fragments.get(name).cloned())
+                .collect::<Vec<_>>(),
         );
 
         let root_field = EntityField {
@@ -145,6 +187,7 @@ impl IRBuilder {
             file_path: op_def.file_path.clone(),
             contains_deferred_fragment: false, // TODO: detect @defer
             variables,
+            entity_storage: Some(entity_storage),
         }
     }
 
@@ -155,15 +198,52 @@ impl IRBuilder {
         _result: &CompilationResult,
     ) -> NamedFragment {
         let type_condition = frag_def.type_condition.clone();
+        let type_condition_name = type_condition.name().to_string();
+
+        // Create entity storage for this fragment
+        let mut entity_storage = DefinitionEntityStorage::new(
+            frag_def.name.clone(),
+            type_condition_name.clone(),
+        );
+
+        let root_scope = ScopeDescriptor::new_with_schema(
+            type_condition.clone(),
+            &self.schema.referenced_types.objects,
+            &self.schema.referenced_types.interfaces,
+            &self.schema.referenced_types.unions,
+        );
+
         let selection_set = self.build_selection_set_from_compiled(
             &frag_def.selection_set,
             &type_condition,
         );
 
+        // Populate entity trees
+        let root_entity_location = EntityLocation {
+            source_name: frag_def.name.clone(),
+            field_path: vec![],
+        };
+        let root_scope_ref = root_scope.to_ref();
+        let referenced_frags: Vec<Arc<NamedFragment>> = frag_def
+            .referenced_fragments
+            .iter()
+            .filter_map(|name| self.fragments.get(name).cloned())
+            .collect();
+
+        self.populate_entity_trees(
+            &selection_set,
+            &mut entity_storage,
+            &root_entity_location,
+            &[type_condition_name.clone()],
+            &[root_scope_ref],
+            &root_scope,
+            &referenced_frags,
+        );
+
         let root_field = EntityField {
             name: frag_def.name.clone(),
             alias: None,
-            field_type: GraphQLType::Named(type_condition.name().to_string()),
+            field_type: GraphQLType::Named(type_condition_name.clone()),
             arguments: vec![],
             inclusion_conditions: None,
             selection_set,
@@ -179,19 +259,240 @@ impl IRBuilder {
 
         NamedFragment {
             name: frag_def.name.clone(),
-            type_condition_name: type_condition.name().to_string(),
+            type_condition_name,
             root_field,
             referenced_fragments: referenced,
             is_local_cache_mutation: frag_def.is_local_cache_mutation,
             source: frag_def.source.clone(),
             file_path: frag_def.file_path.clone(),
             contains_deferred_fragment: false,
+            entity_storage: Some(entity_storage),
         }
     }
 
     /// Get all built fragments.
     pub fn fragments(&self) -> &HashMap<String, Arc<NamedFragment>> {
         &self.fragments
+    }
+
+    /// Walk a built selection set and populate entity selection trees.
+    ///
+    /// This mirrors Swift's RootFieldBuilder behavior: as selection sets are built,
+    /// their selections are merged into the entity's selection tree.
+    fn populate_entity_trees(
+        &self,
+        selection_set: &SelectionSet,
+        entity_storage: &mut DefinitionEntityStorage,
+        entity_location: &EntityLocation,
+        root_type_path: &[String],
+        scope_path: &[ScopeDescriptorRef],
+        current_scope: &ScopeDescriptor,
+        referenced_fragments: &[Arc<NamedFragment>],
+    ) {
+        let ds = &selection_set.direct_selections;
+
+        // Build EntityTreeScopeSelections from direct selections
+        let mut tree_selections = EntityTreeScopeSelections::default();
+        for (key, field_sel) in &ds.fields {
+            let tree_field = match field_sel {
+                FieldSelection::Scalar(f) => TreeField {
+                    response_key: key.clone(),
+                    name: f.name.clone(),
+                    alias: f.alias.clone(),
+                    field_type: f.field_type.clone(),
+                    is_entity: false,
+                    entity_type_name: None,
+                    arguments: f.arguments.clone(),
+                    inclusion_conditions: f.inclusion_conditions.clone(),
+                    deprecation_reason: f.deprecation_reason.clone(),
+                    description: f.description.clone(),
+                },
+                FieldSelection::Entity(f) => TreeField {
+                    response_key: key.clone(),
+                    name: f.name.clone(),
+                    alias: f.alias.clone(),
+                    field_type: f.field_type.clone(),
+                    is_entity: true,
+                    entity_type_name: Some(f.selection_set.scope.parent_type.name().to_string()),
+                    arguments: f.arguments.clone(),
+                    inclusion_conditions: f.inclusion_conditions.clone(),
+                    deprecation_reason: f.deprecation_reason.clone(),
+                    description: f.description.clone(),
+                },
+            };
+            tree_selections.fields.insert(key.clone(), tree_field);
+        }
+
+        for spread in &ds.named_fragments {
+            tree_selections.named_fragments.insert(
+                spread.fragment_name.clone(),
+                TreeNamedFragment {
+                    fragment_name: spread.fragment_name.clone(),
+                    inclusion_conditions: spread.inclusion_conditions.clone(),
+                },
+            );
+        }
+
+        // Create a MergedSource for these selections
+        let source = MergedSource {
+            scope_path: scope_path.iter().map(|s| {
+                ScopeConditionKey::new(Some(s.type_name.clone()))
+            }).collect(),
+            entity_scope_path: current_scope.entity_scope_path.clone(),
+            fragment_name: None,
+        };
+
+        // Merge into entity's selection tree
+        if let Some(entity) = entity_storage.entities.get_mut(entity_location) {
+            entity.selection_tree.merge_in_selections(
+                tree_selections,
+                source,
+                scope_path,
+                &current_scope.entity_scope_path,
+            );
+        }
+
+        // Recursively process entity fields
+        for (key, field_sel) in &ds.fields {
+            if let FieldSelection::Entity(ef) = field_sel {
+                let field_type_name = ef.selection_set.scope.parent_type.name().to_string();
+                let response_key = ef.response_key();
+
+                // Create child entity location
+                let child_location = entity_location.appending(FieldPathComponent {
+                    name: response_key.to_string(),
+                    type_name: field_type_name.clone(),
+                });
+
+                // Create child root type path
+                let mut child_root_type_path = root_type_path.to_vec();
+                child_root_type_path.push(field_type_name.clone());
+
+                // Ensure entity exists in storage
+                let _ = entity_storage.entity_for_field(
+                    response_key,
+                    &field_type_name,
+                    entity_location,
+                    root_type_path,
+                );
+
+                // Create child scope
+                let child_scope = ScopeDescriptor::new_with_schema(
+                    ef.selection_set.scope.parent_type.clone(),
+                    &self.schema.referenced_types.objects,
+                    &self.schema.referenced_types.interfaces,
+                    &self.schema.referenced_types.unions,
+                );
+
+                let mut child_scope_path = scope_path.to_vec();
+                child_scope_path.push(child_scope.to_ref());
+
+                // Recurse into entity field
+                self.populate_entity_trees(
+                    &ef.selection_set,
+                    entity_storage,
+                    &child_location,
+                    &child_root_type_path,
+                    &child_scope_path,
+                    &child_scope,
+                    referenced_fragments,
+                );
+            }
+        }
+
+        // Process inline fragments - merge their selections into the entity tree
+        for inline in &ds.inline_fragments {
+            let inline_scope = if let Some(ref tc) = inline.type_condition {
+                let cond_key = ScopeConditionKey::with_conditions(
+                    Some(tc.name().to_string()),
+                    scope::conditions_to_keys(&inline.inclusion_conditions),
+                );
+                current_scope.appending(
+                    &cond_key,
+                    Some(tc),
+                    &self.schema.referenced_types.objects,
+                    &self.schema.referenced_types.interfaces,
+                    &self.schema.referenced_types.unions,
+                )
+            } else {
+                let cond_key = ScopeConditionKey::with_conditions(
+                    None,
+                    scope::conditions_to_keys(&inline.inclusion_conditions),
+                );
+                current_scope.appending(
+                    &cond_key,
+                    None,
+                    &self.schema.referenced_types.objects,
+                    &self.schema.referenced_types.interfaces,
+                    &self.schema.referenced_types.unions,
+                )
+            };
+
+            // Recurse with the same entity but updated scope
+            self.populate_entity_trees(
+                &inline.selection_set,
+                entity_storage,
+                entity_location,
+                root_type_path,
+                scope_path,
+                &inline_scope,
+                referenced_fragments,
+            );
+        }
+
+        // Process named fragment spreads - merge fragment entity trees
+        for spread in &ds.named_fragments {
+            if spread.is_deferred {
+                continue;
+            }
+            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                if let Some(ref frag_entity_storage) = frag_arc.entity_storage {
+                    // Merge each entity from the fragment into our entity storage
+                    let spread_info = FragmentSpreadInfo {
+                        fragment_name: spread.fragment_name.clone(),
+                        type_condition_name: frag_arc.type_condition_name.clone(),
+                        inclusion_conditions: spread.inclusion_conditions.as_ref().map(|ic| {
+                            vec![ic.conditions.iter().map(|c| ConditionKey {
+                                variable: c.variable.clone(),
+                                is_inverted: c.is_inverted,
+                            }).collect()]
+                        }),
+                        scope_path: scope_path.to_vec(),
+                    };
+
+                    for (frag_entity_loc, frag_entity) in &frag_entity_storage.entities {
+                        // Map fragment entity to parent entity
+                        let parent_entity_loc = if frag_entity_loc.field_path.is_empty() {
+                            entity_location.clone()
+                        } else {
+                            entity_location.appending_path(&frag_entity_loc.field_path)
+                        };
+
+                        // Ensure parent entity exists
+                        if !entity_storage.entities.contains_key(&parent_entity_loc) {
+                            let mut parent_root_type_path = root_type_path.to_vec();
+                            for comp in &frag_entity_loc.field_path {
+                                parent_root_type_path.push(comp.type_name.clone());
+                            }
+                            let parent_entity = crate::entity::Entity::new(
+                                parent_entity_loc.clone(),
+                                parent_root_type_path,
+                            );
+                            entity_storage.entities.insert(parent_entity_loc.clone(), parent_entity);
+                        }
+
+                        // Merge fragment's entity tree into parent entity's tree
+                        if let Some(parent_entity) = entity_storage.entities.get_mut(&parent_entity_loc) {
+                            parent_entity.selection_tree.merge_in_tree(
+                                &frag_entity.selection_tree,
+                                &spread_info,
+                                &current_scope.entity_scope_path,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Build a SelectionSet from a compiled SelectionSet.
