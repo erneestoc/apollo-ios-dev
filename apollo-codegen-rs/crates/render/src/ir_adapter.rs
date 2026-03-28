@@ -450,6 +450,12 @@ fn build_selection_set_config_owned(
 
     let ds = &ir_ss.direct_selections;
 
+    // Build a lookup map for O(1) fragment resolution (avoids 74 linear scans)
+    let frag_map: HashMap<&str, &Arc<NamedFragment>> = referenced_fragments
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+
     // Absorb inline fragments whose type condition is always satisfied by the entity root type.
     // For example, `... on Animal` inside `... on Pet` when the entity root is `Animal` -
     // since the entity IS Animal, the `... on Animal` condition is always true and its
@@ -489,7 +495,7 @@ fn build_selection_set_config_owned(
         for spread in &ds.named_fragments {
             // Skip conditional fragment spreads - they get their own conditional inline fragment
             if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -706,7 +712,7 @@ fn build_selection_set_config_owned(
             // Conditional fragment spread -> wrapped in .include() as inline fragment
             let ic = frag_spread.inclusion_conditions.as_ref().expect("fragment spread missing expected inclusion conditions");
             // Check if the fragment needs type narrowing (type condition differs from parent)
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(frag_spread.fragment_name.as_str()) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -848,7 +854,7 @@ fn build_selection_set_config_owned(
     for spread in &ds.named_fragments {
         if early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
         if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+        if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                 if !fa_seen.contains(key.as_str()) {
                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
@@ -862,7 +868,7 @@ fn build_selection_set_config_owned(
             }
             // Also merge fields from the fragment's sub-fragments
             for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                     // Only merge if the sub-fragment's type condition is satisfied
                     // by the current parent type or is the same
                     let sub_tc = &sub_frag.type_condition_name;
@@ -903,7 +909,7 @@ fn build_selection_set_config_owned(
         if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
         if has_inclusion_conditions(frag_spread.inclusion_conditions.as_ref()) {
             let ic = frag_spread.inclusion_conditions.as_ref().expect("fragment spread missing expected inclusion conditions");
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(frag_spread.fragment_name.as_str()) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -967,7 +973,7 @@ fn build_selection_set_config_owned(
         if !early_promoted_fragment_names.contains(&spread.fragment_name)
             && has_inclusion_conditions(spread.inclusion_conditions.as_ref())
         {
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -989,11 +995,11 @@ fn build_selection_set_config_owned(
     for spread in &ds.named_fragments {
         if early_promoted_fragment_names.contains(&spread.fragment_name) { continue; }
         if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+        if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
             for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                 let sub_frag_type = naming::first_uppercased(&sub_spread.fragment_name);
                 if !fragment_spreads.iter().any(|fs| fs.fragment_type == sub_frag_type) {
-                    if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                    if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                         let sub_tc = &sub_frag.type_condition_name;
                         let current_type_name = ir_ss.scope.parent_type.name();
                         let should_include = sub_tc == current_type_name
@@ -1058,7 +1064,7 @@ fn build_selection_set_config_owned(
             // Skip conditional spreads - their entity fields belong inside the conditional inline fragment.
             for spread in &ds.named_fragments {
                 if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                     if let Some(FieldSelection::Entity(frag_ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(key) {
                         for (frag_key, frag_field) in &frag_ef.selection_set.direct_selections.fields {
                             if frag_key == "__typename" { continue; }
@@ -1095,7 +1101,7 @@ fn build_selection_set_config_owned(
                     }
                     // Also check sub-fragments
                     for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                        if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                             if let Some(FieldSelection::Entity(sub_ef)) = sub_frag.root_field.selection_set.direct_selections.fields.get(key) {
                                 for (frag_key, frag_field) in &sub_ef.selection_set.direct_selections.fields {
                                     if frag_key == "__typename" { continue; }
@@ -1284,7 +1290,7 @@ fn build_selection_set_config_owned(
         for spread in &ds.named_fragments {
             // Skip conditional fragment spreads - they get their own conditional inline fragment
             if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_pre
                     && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -1443,6 +1449,7 @@ fn build_selection_set_config_owned(
                 &ir_ss.scope.parent_type,
                 ancestor_fragments,
             );
+            let applicable_frags_set: std::collections::HashSet<&str> = applicable_frags.iter().map(|s| s.as_str()).collect();
 
             // Reorder applicable fragments for fragment spreads: hoist sub-fragments
             // to the front, preserving relative order otherwise.
@@ -1453,9 +1460,9 @@ fn build_selection_set_config_owned(
                 // Build a set of sub-fragment names
                 let mut is_sub_frag: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                            if applicable_frags.contains(&sub.fragment_name) {
+                            if applicable_frags_set.contains(sub.fragment_name.as_str()) {
                                 is_sub_frag.insert(sub.fragment_name.clone());
                             }
                         }
@@ -1501,7 +1508,7 @@ fn build_selection_set_config_owned(
                     if child_has_unconditional { continue; }
                     // Skip if the fragment requires type narrowing (its type condition differs from
                     // the parent scope's type). Such fragments need their own inline fragment scope.
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                         let parent_type_name = ir_ss.scope.parent_type.name();
                         if frag_arc.type_condition_name != parent_type_name
                             && !is_supertype_of_current(&ir_ss.scope.parent_type, &frag_arc.type_condition_name)
@@ -1529,9 +1536,9 @@ fn build_selection_set_config_owned(
                 let mut sub_frags_of: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
                 let mut is_sub_frag: std::collections::HashSet<String> = std::collections::HashSet::new();
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                            if applicable_frags.contains(&sub.fragment_name) {
+                            if applicable_frags_set.contains(sub.fragment_name.as_str()) {
                                 sub_frags_of.entry(frag_name.clone()).or_default().push(sub.fragment_name.clone());
                                 is_sub_frag.insert(sub.fragment_name.clone());
                             }
@@ -1539,13 +1546,16 @@ fn build_selection_set_config_owned(
                     }
                 }
                 let mut result = Vec::new();
+                let mut result_seen = std::collections::HashSet::new();
                 // First: parent fragments followed by their sub-fragments
                 for frag_name in &applicable_frags {
                     if sub_frags_of.contains_key(frag_name) && !is_sub_frag.contains(frag_name) {
-                        result.push(frag_name.clone());
+                        if result_seen.insert(frag_name.clone()) {
+                            result.push(frag_name.clone());
+                        }
                         if let Some(subs) = sub_frags_of.get(frag_name) {
                             for sub in subs {
-                                if !result.contains(sub) {
+                                if result_seen.insert(sub.clone()) {
                                     result.push(sub.clone());
                                 }
                             }
@@ -1554,7 +1564,7 @@ fn build_selection_set_config_owned(
                 }
                 // Then: remaining fragments (not parents, not sub-fragments)
                 for frag_name in &applicable_frags {
-                    if !result.contains(frag_name) {
+                    if result_seen.insert(frag_name.clone()) {
                         result.push(frag_name.clone());
                     }
                 }
@@ -1563,7 +1573,7 @@ fn build_selection_set_config_owned(
 
             // Add merged fields from applicable fragments
             for frag_name in &applicable_frags_for_fields {
-                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                     for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
                         if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
@@ -1573,7 +1583,7 @@ fn build_selection_set_config_owned(
                     }
                     // Also merge fields from sub-fragments
                     for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                        if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                        if let Some(inner) = frag_map.get(sub.fragment_name.as_str()) {
                             for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
                                 if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
@@ -1592,7 +1602,7 @@ fn build_selection_set_config_owned(
                     if sibling_tc.name() != tc.name() && is_supertype_of_current(tc, sibling_tc.name()) {
                         // Also merge fields from fragment spreads of this sibling
                         for spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                                 for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                     if key == "__typename" { continue; }
                                     if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
@@ -1601,7 +1611,7 @@ fn build_selection_set_config_owned(
                                     }
                                 }
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                    if let Some(inner) = frag_map.get(sub.fragment_name.as_str()) {
                                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                             if key == "__typename" { continue; }
                                             if !child_ss.field_accessors.iter().any(|f| f.name == *key) {
@@ -1632,7 +1642,7 @@ fn build_selection_set_config_owned(
                                 .map(|f| matches!(f, FieldSelection::Entity(_)))
                                 .unwrap_or(false)
                             || applicable_frags.iter().any(|frag_name| {
-                                referenced_fragments.iter().find(|f| f.name == *frag_name)
+                                frag_map.get(frag_name.as_str())
                                     .map(|frag_arc| {
                                         frag_arc.root_field.selection_set.direct_selections.fields.get(&fa.name)
                                             .map(|f| matches!(f, FieldSelection::Entity(_)))
@@ -1705,14 +1715,14 @@ fn build_selection_set_config_owned(
                 }
                 // Collect entity fields from applicable fragments
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                             if matches!(field, FieldSelection::Entity(_)) && !entity_field_keys.contains(key) {
                                 entity_field_keys.push(key.clone());
                             }
                         }
                         for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                            if let Some(inner) = frag_map.get(sub.fragment_name.as_str()) {
                                 for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                     if matches!(field, FieldSelection::Entity(_)) && !entity_field_keys.contains(key) {
                                         entity_field_keys.push(key.clone());
@@ -1753,7 +1763,7 @@ fn build_selection_set_config_owned(
                         })
                         .or_else(|| {
                             for frag_name in &applicable_frags {
-                                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                                if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                                     if let Some(FieldSelection::Entity(ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(field_key) {
                                         return Some(ef.field_type.is_list());
                                     }
@@ -1994,7 +2004,7 @@ fn build_selection_set_config_owned(
                     } else {
                         // Only from fragments - use typealias to the fragment's entity
                         for frag_name in &applicable_frags {
-                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                            if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                                 if frag_arc.root_field.selection_set.direct_selections.fields.contains_key(field_key) {
                                     child_ss.type_aliases.push(OwnedTypeAlias {
                                         name: entity_struct_name.clone(),
@@ -2003,7 +2013,7 @@ fn build_selection_set_config_owned(
                                     break;
                                 }
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                    if let Some(inner) = frag_map.get(sub.fragment_name.as_str()) {
                                         if inner.root_field.selection_set.direct_selections.fields.contains_key(field_key) {
                                             child_ss.type_aliases.push(OwnedTypeAlias {
                                                 name: entity_struct_name.clone(),
@@ -2021,7 +2031,7 @@ fn build_selection_set_config_owned(
                 // Add type aliases for entity fields from applicable fragments
                 // (e.g., Owner = PetDetails.Owner)
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                             if let FieldSelection::Entity(ef) = field {
                                 // Use singularized name for list fields to match the fragment's entity struct name
@@ -2056,7 +2066,7 @@ fn build_selection_set_config_owned(
                 // 1. Process promoted fragments first (e.g., AsWarmBlooded from WarmBloodedDetails)
                 let fulfilled_before_step1 = init.fulfilled_fragments.len();
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         if pre_promoted_fragment_names.contains(frag_name) {
                             let ftc = &frag_arc.type_condition_name;
                             // Add promoted scope OID
@@ -2075,7 +2085,7 @@ fn build_selection_set_config_owned(
                             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                                 let sub_uc = naming::first_uppercased(&sub.fragment_name);
                                 if !init.fulfilled_fragments.contains(&sub_uc) {
-                                    if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                    if let Some(sub_frag) = frag_map.get(sub.fragment_name.as_str()) {
                                         if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
                                             init.fulfilled_fragments.push(sub_uc);
                                         }
@@ -2107,7 +2117,7 @@ fn build_selection_set_config_owned(
                             }
                             // Pass 1: Add nested promoted OIDs for type-narrowing fragments first
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                if let Some(sib_frag) = frag_map.get(sib_spread.fragment_name.as_str()) {
                                     if sib_frag.type_condition_name == sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(sibling_tc.name())), naming::first_uppercased(customizer.custom_type_name(&sib_frag.type_condition_name)));
@@ -2119,7 +2129,7 @@ fn build_selection_set_config_owned(
                             }
                             // Pass 1: Add fragment OIDs for type-narrowing fragments
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                if let Some(sib_frag) = frag_map.get(sib_spread.fragment_name.as_str()) {
                                     if sib_frag.type_condition_name == sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         let uc = naming::first_uppercased(&sib_spread.fragment_name);
@@ -2130,7 +2140,7 @@ fn build_selection_set_config_owned(
                                         for sub in &sib_frag.root_field.selection_set.direct_selections.named_fragments {
                                             let sub_uc = naming::first_uppercased(&sub.fragment_name);
                                             if !init.fulfilled_fragments.contains(&sub_uc) {
-                                                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                                if let Some(sub_frag) = frag_map.get(sub.fragment_name.as_str()) {
                                                     if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
                                                         init.fulfilled_fragments.push(sub_uc);
                                                     }
@@ -2142,7 +2152,7 @@ fn build_selection_set_config_owned(
                             }
                             // Pass 2: Add nested promoted OIDs for matching-type fragments
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                if let Some(sib_frag) = frag_map.get(sib_spread.fragment_name.as_str()) {
                                     if sib_frag.type_condition_name != sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         let nested_promoted = format!("{}.As{}.As{}", qualified_name, naming::first_uppercased(customizer.custom_type_name(sibling_tc.name())), naming::first_uppercased(customizer.custom_type_name(&sib_frag.type_condition_name)));
@@ -2154,7 +2164,7 @@ fn build_selection_set_config_owned(
                             }
                             // Pass 2: Add fragment OIDs for matching-type fragments
                             for sib_spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                                if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                if let Some(sib_frag) = frag_map.get(sib_spread.fragment_name.as_str()) {
                                     if sib_frag.type_condition_name != sibling_tc.name() { continue; }
                                     if type_satisfies_condition(tc, &sib_frag.type_condition_name) {
                                         let uc = naming::first_uppercased(&sib_spread.fragment_name);
@@ -2175,7 +2185,7 @@ fn build_selection_set_config_owned(
                     .unwrap_or_else(|| ir_ss.scope.parent_type.name());
                 let parent_is_union = matches!(inline.selection_set.scope.parent_type, GraphQLCompositeType::Union(_));
                 for frag_name in &applicable_frags_for_fields {
-                    let should_fulfill = if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    let should_fulfill = if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         type_satisfies_condition(tc, &frag_arc.type_condition_name)
                             // For union parents, also include fragments whose type condition
                             // matches the entity root (build_initializer_config skips unions)
@@ -2221,9 +2231,9 @@ fn build_selection_set_config_owned(
                         // First pass: collect all fragments that are sub-fragments of other applicable fragments
                         let mut sub_fragment_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                         for frag_name in &applicable_frags {
-                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                            if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                    if applicable_frags.contains(&sub.fragment_name) {
+                                    if applicable_frags_set.contains(sub.fragment_name.as_str()) {
                                         sub_fragment_of.insert(sub.fragment_name.clone(), frag_name.clone());
                                     }
                                 }
@@ -2250,7 +2260,7 @@ fn build_selection_set_config_owned(
                         }
 
                         for frag_name in &applicable_frags {
-                            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                            if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                                 let ftc = &frag_arc.type_condition_name;
                                 // Skip if this fragment's type is the root entity type itself
                                 if *ftc == root_entity_type_name { continue; }
@@ -2296,7 +2306,7 @@ fn build_selection_set_config_owned(
 
                                 // Add nested promoted OIDs (e.g., AllAnimal.AsPet.AsWarmBlooded)
                                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                    if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                    if let Some(sub_frag) = frag_map.get(sub.fragment_name.as_str()) {
                                         // Skip if sub-fragment type matches root entity type
                                         if sub_frag.type_condition_name == root_entity_type_name { continue; }
                                         if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
@@ -2324,7 +2334,7 @@ fn build_selection_set_config_owned(
                                         let pds_scope = format!("{}.As{}", root_str, naming::first_uppercased(customizer.custom_type_name(pds_tc.name())));
                                         // Check this sibling's named fragment spreads for promoted fragments
                                         for sib_spread in &pds_inline.selection_set.direct_selections.named_fragments {
-                                            if let Some(sib_frag) = referenced_fragments.iter().find(|f| f.name == sib_spread.fragment_name) {
+                                            if let Some(sib_frag) = frag_map.get(sib_spread.fragment_name.as_str()) {
                                                 let sib_ftc = &sib_frag.type_condition_name;
                                                 if *sib_ftc != pds_tc.name().to_string()
                                                     && type_satisfies_condition(tc, sib_ftc)
@@ -2350,7 +2360,7 @@ fn build_selection_set_config_owned(
 
                 // Add entity type aliases from applicable ancestor fragments
                 for frag_name in &applicable_frags {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                    if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                         for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                             if let FieldSelection::Entity(ef) = field {
                                 // Use singularized name for list fields to match the fragment's entity struct name
@@ -2434,7 +2444,7 @@ fn build_selection_set_config_owned(
                             .map(|f| matches!(f, FieldSelection::Entity(_)))
                             .unwrap_or(false)
                             || applicable_frags.iter().any(|frag_name| {
-                                referenced_fragments.iter().find(|f| f.name == *frag_name)
+                                frag_map.get(frag_name.as_str())
                                     .map(|frag_arc| {
                                         frag_arc.root_field.selection_set.direct_selections.fields.get(&name_clone)
                                             .map(|f| matches!(f, FieldSelection::Entity(_)))
@@ -2576,7 +2586,7 @@ fn build_selection_set_config_owned(
     let mut promoted_fragment_names: Vec<String> = Vec::new();
 
     for spread in &ds.named_fragments {
-        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+        if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
             let frag_type_condition = &frag_arc.type_condition_name;
             let frag_ds = &frag_arc.root_field.selection_set.direct_selections;
 
@@ -2629,7 +2639,7 @@ fn build_selection_set_config_owned(
                     // If there IS overlap, keep parent-first order (fields are shared/merged).
                     let mut frag_field_names: Vec<String> = frag_ds.fields.keys().cloned().collect();
                     for fs in &frag_ds.named_fragments {
-                        if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                        if let Some(inner) = frag_map.get(fs.fragment_name.as_str()) {
                             for key in inner.root_field.selection_set.direct_selections.fields.keys() {
                                 frag_field_names.push(key.clone());
                             }
@@ -2654,7 +2664,7 @@ fn build_selection_set_config_owned(
                 }
                 // Add sub-fragment fields
                 for fs in &frag_ds.named_fragments {
-                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                    if let Some(inner) = frag_map.get(fs.fragment_name.as_str()) {
                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                             if !pfa.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
@@ -2669,7 +2679,7 @@ fn build_selection_set_config_owned(
                     let has_overlap_check = {
                         let mut frag_fn: Vec<String> = frag_ds.fields.keys().cloned().collect();
                         for fs in &frag_ds.named_fragments {
-                            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                            if let Some(inner) = frag_map.get(fs.fragment_name.as_str()) {
                                 for key in inner.root_field.selection_set.direct_selections.fields.keys() {
                                     frag_fn.push(key.clone());
                                 }
@@ -2726,7 +2736,7 @@ fn build_selection_set_config_owned(
                         is_optional: false,
                     });
                     // Also add fields from this parent fragment
-                    if let Some(parent_frag) = referenced_fragments.iter().find(|f| f.name == parent_spread.fragment_name) {
+                    if let Some(parent_frag) = frag_map.get(parent_spread.fragment_name.as_str()) {
                         for (key, field) in &parent_frag.root_field.selection_set.direct_selections.fields {
                             if !pfa.iter().any(|f| f.name == *key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
@@ -2765,7 +2775,7 @@ fn build_selection_set_config_owned(
                     }
                 }
                 for fs in &frag_ds.named_fragments {
-                    if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+                    if let Some(inner) = frag_map.get(fs.fragment_name.as_str()) {
                         for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                             if matches!(field, FieldSelection::Entity(_)) {
                                 if !entity_fields_from_frag.iter().any(|(k, _)| k == key) {
@@ -2950,7 +2960,7 @@ fn build_selection_set_config_owned(
                 // Add entity field type aliases from parent non-promoted fragments
                 // E.g., Owner = PetDetails.Owner when PetDetails is a parent scope fragment
                 for parent_frag_name in &parent_nonpromoted {
-                    if let Some(parent_frag) = referenced_fragments.iter().find(|f| f.name == *parent_frag_name) {
+                    if let Some(parent_frag) = frag_map.get(parent_frag_name.as_str()) {
                         for (key, field) in &parent_frag.root_field.selection_set.direct_selections.fields {
                             if matches!(field, FieldSelection::Entity(_)) {
                                 let entity_type = naming::first_uppercased(key);
@@ -3127,7 +3137,7 @@ fn build_selection_set_config_owned(
 
                     // Add merged fields from applicable fragments
                     for frag_name in &case2_applicable {
-                        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                 if key == "__typename" { continue; }
                                 if !pfa.iter().any(|f| f.name == *key) {
@@ -3150,14 +3160,14 @@ fn build_selection_set_config_owned(
                         }
                     }
                     for frag_name in &case2_applicable {
-                        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                 if matches!(field, FieldSelection::Entity(_)) && !case2_entity_keys.contains(key) {
                                     case2_entity_keys.push(key.clone());
                                 }
                             }
                             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                if let Some(inner) = frag_map.get(sub.fragment_name.as_str()) {
                                     for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                                         if matches!(field, FieldSelection::Entity(_)) && !case2_entity_keys.contains(key) {
                                             case2_entity_keys.push(key.clone());
@@ -3262,7 +3272,7 @@ fn build_selection_set_config_owned(
 
                     // Add type aliases for entity types from applicable fragments
                     for frag_name in &case2_applicable {
-                        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *frag_name) {
+                        if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                 if matches!(field, FieldSelection::Entity(_)) {
                                     let entity_type = naming::first_uppercased(key);
@@ -3314,7 +3324,7 @@ fn build_selection_set_config_owned(
                                     .map(|f| matches!(f, FieldSelection::Entity(_)))
                                     .unwrap_or(false)
                                     || case2_applicable.iter().any(|fn_| {
-                                        referenced_fragments.iter().find(|f| f.name == *fn_)
+                                        frag_map.get(fn_.as_str())
                                             .map(|fa| fa.root_field.selection_set.direct_selections.fields.get(&name_clone)
                                                 .map(|f| matches!(f, FieldSelection::Entity(_)))
                                                 .unwrap_or(false))
@@ -3386,13 +3396,13 @@ fn build_selection_set_config_owned(
         }
         for spread in &ds.named_fragments {
             if !promoted_fragment_names.contains(&spread.fragment_name) {
-                if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                     for (key, _) in &frag_arc.root_field.selection_set.direct_selections.fields {
                         fields_from_nonpromoted.insert(key.clone());
                     }
                     // Also check sub-fragment fields
                     for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                        if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                             for (key, _) in &sub_frag.root_field.selection_set.direct_selections.fields {
                                 fields_from_nonpromoted.insert(key.clone());
                             }
@@ -3419,7 +3429,7 @@ fn build_selection_set_config_owned(
     //   struct AsWarmBloodedIfGetWarmBlooded: InlineFragment { ... .fragment(WarmBloodedDetails.self) ... }
     for spread in &ds.named_fragments {
         if !has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
-        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+        if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
             let ic = spread.inclusion_conditions.as_ref().expect("spread missing expected inclusion conditions");
             let ftc = &frag_arc.type_condition_name;
             let needs_narrowing = *ftc != ir_ss.scope.parent_type.name()
@@ -3466,7 +3476,7 @@ fn build_selection_set_config_owned(
             }
             // Add sub-fragment fields
             for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                     for (key, field) in &sub_frag.root_field.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
                         if !cond_fa.iter().any(|f: &OwnedFieldAccessor| f.name == *key) {
@@ -3576,7 +3586,7 @@ fn build_selection_set_config_owned(
             }
             // Also check sub-fragments for entity fields
             for sub_spread in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub_spread.fragment_name) {
+                if let Some(sub_frag) = frag_map.get(sub_spread.fragment_name.as_str()) {
                     for (key, field) in &sub_frag.root_field.selection_set.direct_selections.fields {
                         if matches!(field, FieldSelection::Entity(_)) {
                             let entity_name = naming::first_uppercased(key);
@@ -3815,6 +3825,13 @@ fn collect_applicable_fragments(
     ancestor_fragments: &[String],
 ) -> Vec<String> {
     let mut applicable = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Build a lookup map for O(1) fragment resolution
+    let frag_map: std::collections::HashMap<&str, &Arc<NamedFragment>> = referenced_fragments
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
 
     // 1. Non-promoted parent-scope fragments are always applicable to child inline fragments
     //    (the parent scope already guarantees the fragment's type condition).
@@ -3824,14 +3841,13 @@ fn collect_applicable_fragments(
         if promoted_fragment_names.contains(&spread.fragment_name) {
             // This fragment was promoted to an inline fragment because its type condition
             // differs from the parent - check if the current type satisfies it
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                 if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
-                    if !applicable.contains(&spread.fragment_name) {
+                    if seen.insert(spread.fragment_name.clone()) {
                         applicable.push(spread.fragment_name.clone());
                     }
-                    // Also include sub-fragments of this fragment
                     for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                        if !applicable.contains(&sub.fragment_name) {
+                        if seen.insert(sub.fragment_name.clone()) {
                             applicable.push(sub.fragment_name.clone());
                         }
                     }
@@ -3839,18 +3855,17 @@ fn collect_applicable_fragments(
             }
         } else {
             // Non-promoted fragment - always applicable
-            if !applicable.contains(&spread.fragment_name) {
+            if seen.insert(spread.fragment_name.clone()) {
                 applicable.push(spread.fragment_name.clone());
             }
-            // Also include sub-fragments
-            if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+            if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                    if !applicable.contains(&sub.fragment_name) {
-                        // Check if sub-fragment's type condition is satisfied
-                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                    if !seen.contains(&sub.fragment_name) {
+                        if let Some(sub_frag) = frag_map.get(sub.fragment_name.as_str()) {
                             if type_satisfies_condition(tc, &sub_frag.type_condition_name)
                                 || sub_frag.type_condition_name == parent_type_name
                             {
+                                seen.insert(sub.fragment_name.clone());
                                 applicable.push(sub.fragment_name.clone());
                             }
                         }
@@ -3864,16 +3879,14 @@ fn collect_applicable_fragments(
     for sibling_inline in &ds.inline_fragments {
         if let Some(ref sibling_tc) = sibling_inline.type_condition {
             if sibling_tc.name() != tc.name() && is_supertype_of_current(tc, sibling_tc.name()) {
-                // This sibling's type is a supertype - collect its fragment spreads
                 for spread in &sibling_inline.selection_set.direct_selections.named_fragments {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
                         if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
-                            if !applicable.contains(&spread.fragment_name) {
+                            if seen.insert(spread.fragment_name.clone()) {
                                 applicable.push(spread.fragment_name.clone());
                             }
-                            // Sub-fragments too
                             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                                if !applicable.contains(&sub.fragment_name) {
+                                if seen.insert(sub.fragment_name.clone()) {
                                     applicable.push(sub.fragment_name.clone());
                                 }
                             }
@@ -3885,18 +3898,17 @@ fn collect_applicable_fragments(
     }
 
     // 3. Fragments from ancestor scopes whose type condition is satisfied by this type.
-    // These are fragments spread at grandparent or higher scopes that weren't directly
-    // visible in the current scope's ds.named_fragments.
     for ancestor_frag_name in ancestor_fragments {
-        if applicable.contains(ancestor_frag_name) { continue; }
+        if seen.contains(ancestor_frag_name) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *ancestor_frag_name) {
             if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
+                seen.insert(ancestor_frag_name.clone());
                 applicable.push(ancestor_frag_name.clone());
-                // Sub-fragments too
                 for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                    if !applicable.contains(&sub.fragment_name) {
-                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                    if !seen.contains(&sub.fragment_name) {
+                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                             if type_satisfies_condition(tc, &sub_frag.type_condition_name) {
+                                seen.insert(sub.fragment_name.clone());
                                 applicable.push(sub.fragment_name.clone());
                             }
                         }
@@ -4000,7 +4012,7 @@ fn build_inline_fragment_entity_type(
             }
             // Check sub-fragments too
             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                     if let Some(FieldSelection::Entity(inner_ef)) = inner.root_field.selection_set.direct_selections.fields.get(field_key) {
                         for (key, field) in &inner_ef.selection_set.direct_selections.fields {
                             if key == "__typename" { continue; }
@@ -4073,7 +4085,7 @@ fn build_inline_fragment_entity_type(
                 }
             }
             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                     if inner.root_field.selection_set.direct_selections.fields.contains_key(field_key) {
                         let sub_entity = format!("{}.{}", sub.fragment_name, struct_name);
                         if !fulfilled.contains(&sub_entity) {
@@ -4299,7 +4311,7 @@ fn build_merged_entity_nested_type(
     } else {
         naming::first_uppercased(field_key)
     };
-    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == source_frag_name) {
+    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *source_frag_name) {
         // Check the fragment's own entity fields
         if let Some(FieldSelection::Entity(frag_ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(field_key) {
             for (key, field) in &frag_ef.selection_set.direct_selections.fields {
@@ -4312,7 +4324,7 @@ fn build_merged_entity_nested_type(
         }
         // Also check sub-fragment entity fields
         for fs in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == *fs.fragment_name) {
                 if let Some(FieldSelection::Entity(inner_ef)) = inner.root_field.selection_set.direct_selections.fields.get(field_key) {
                     for (key, field) in &inner_ef.selection_set.direct_selections.fields {
                         if key == "__typename" { continue; }
@@ -4333,10 +4345,10 @@ fn build_merged_entity_nested_type(
         parent_height_qualified.clone(),
     ];
     // Add fragment's entity type OID
-    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == source_frag_name) {
+    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *source_frag_name) {
         // Check sub-fragments for entity fields too
         for fs in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == fs.fragment_name) {
+            if let Some(inner) = referenced_fragments.iter().find(|f| f.name == *fs.fragment_name) {
                 if inner.root_field.selection_set.direct_selections.fields.contains_key(field_key) {
                     let frag_entity_qualified = format!("{}.{}", fs.fragment_name, frag_struct_name);
                     if !fulfilled.contains(&frag_entity_qualified) {
@@ -4441,7 +4453,7 @@ fn build_type_aliases(
     let mut aliases = Vec::new();
 
     for spread in &ds.named_fragments {
-        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+        if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                 if let FieldSelection::Entity(ef) = field {
                     // Use singularized name for list fields to match the fragment's entity struct name
@@ -4463,7 +4475,7 @@ fn build_type_aliases(
             }
             // Also check sub-fragments for entity fields
             for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
-                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                if let Some(inner) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                     for (key, field) in &inner.root_field.selection_set.direct_selections.fields {
                         if let FieldSelection::Entity(ef) = field {
                             // Use singularized name for list fields to match the fragment's entity struct name
@@ -4584,7 +4596,7 @@ fn build_initializer_config(
         if !is_entity {
             // Check fragment spreads for entity fields
             'outer: for spread in &ds.named_fragments {
-                if let Some(frag) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                if let Some(frag) = referenced_fragments.iter().find(|f| f.name == *spread.fragment_name) {
                     if let Some(field) = frag.root_field.selection_set.direct_selections.fields.get(&accessor.name) {
                         if matches!(field, FieldSelection::Entity(_)) {
                             is_entity = true;
@@ -4593,7 +4605,7 @@ fn build_initializer_config(
                     }
                     // Also check sub-fragments
                     for sub in &frag.root_field.selection_set.direct_selections.named_fragments {
-                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                        if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                             if let Some(field) = sub_frag.root_field.selection_set.direct_selections.fields.get(&accessor.name) {
                                 if matches!(field, FieldSelection::Entity(_)) {
                                     is_entity = true;
@@ -4660,7 +4672,7 @@ fn build_initializer_config(
                 // condition is satisfied AND it doesn't have overlapping entity fields.
                 let should_include = if is_fragment_definition || is_inline_fragment {
                     true
-                } else if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                } else if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *spread.fragment_name) {
                     // First check: type condition must be satisfied
                     if !type_satisfies_condition(parent_type, &frag_arc.type_condition_name) {
                         false
@@ -4689,11 +4701,11 @@ fn build_initializer_config(
                 // Also add sub-fragment names if their type condition is satisfied
                 // and they don't have overlapping entity fields
                 if should_include {
-                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
+                    if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == *spread.fragment_name) {
                         for sub in &frag_arc.root_field.selection_set.direct_selections.named_fragments {
                             let sub_uc = naming::first_uppercased(&sub.fragment_name);
                             if !fulfilled_fragments.contains(&sub_uc) {
-                                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == sub.fragment_name) {
+                                if let Some(sub_frag) = referenced_fragments.iter().find(|f| f.name == *sub.fragment_name) {
                                     if type_satisfies_condition(parent_type, &sub_frag.type_condition_name) {
                                         // For non-fragment-definition/non-inline-fragment, also check entity overlap
                                         let sub_ok = if is_fragment_definition || is_inline_fragment {
