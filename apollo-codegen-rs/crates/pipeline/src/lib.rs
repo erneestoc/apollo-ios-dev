@@ -1657,7 +1657,7 @@ fn generate_operation_files(
             op_id.as_deref(),
             query_string_format,
             api_target,
-            false,
+            config.options.mark_operation_definitions_as_final,
             &var_prefix,
             init_mod,
         );
@@ -1951,7 +1951,7 @@ fn generate_operation_files_filtered(
             &operation, ns, access_mod, generate_init, type_kinds, customizer,
             config.options.operation_document_format.definition,
             op_id.as_deref(), query_string_format, api_target,
-            false, &var_prefix, init_mod,
+            config.options.mark_operation_definitions_as_final, &var_prefix, init_mod,
         );
         if !include_schema_docs {
             content = strip_parent_type_comments(&content);

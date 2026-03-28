@@ -1040,11 +1040,11 @@ fn build_selection_set_config_owned(
             // Singularize the response key to get the struct name for list types
             // (e.g., "allAnimals" → "AllAnimal", "predators" → "Predator")
             // Non-list types use the response key directly (e.g., "starship" → "Starship")
-            let child_name = if ef.field_type.is_list() {
+            let child_name = naming::as_selection_set_name(&if ef.field_type.is_list() {
                 naming::first_uppercased(&naming::singularize(key))
             } else {
                 naming::first_uppercased(key)
-            };
+            });
             let child_qualified = format!("{}.{}", qualified_name, child_name);
             let child_conformance = if is_mutable {
                 SelectionSetConformance::MutableSelectionSet

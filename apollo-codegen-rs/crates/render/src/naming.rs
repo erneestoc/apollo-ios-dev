@@ -3,6 +3,37 @@
 use apollo_codegen_config::types::InflectionRule;
 use regex::Regex;
 
+/// Type names that conflict with Swift/ApolloAPI built-in types.
+/// When a nested selection set struct would have one of these names,
+/// it gets suffixed with `_SelectionSet` to avoid the collision.
+/// Matches Swift's `SwiftKeywords.TypeNamesToSuffix`.
+const TYPE_NAMES_TO_SUFFIX: &[&str] = &[
+    "Any", "DataDict", "DocumentType", "Fragments", "FragmentContainer",
+    "ParentType", "Protocol", "Schema", "Selection", "Self", "String",
+    "Bool", "Int", "Float", "Double", "ID", "Type", "Error", "_",
+];
+
+/// If a selection set struct name conflicts with Swift built-ins,
+/// suffix it with `_SelectionSet` to disambiguate.
+pub fn as_selection_set_name(name: &str) -> String {
+    if TYPE_NAMES_TO_SUFFIX.contains(&name) {
+        format!("{}_SelectionSet", name)
+    } else {
+        name.to_string()
+    }
+}
+
+/// If a fragment name conflicts with Swift built-ins,
+/// suffix it with `_Fragment` to disambiguate.
+pub fn as_fragment_name(name: &str) -> String {
+    let uppercased = first_uppercased(name);
+    if TYPE_NAMES_TO_SUFFIX.contains(&uppercased.as_str()) {
+        format!("{}_Fragment", uppercased)
+    } else {
+        uppercased
+    }
+}
+
 /// Swift reserved words that must be escaped with backticks.
 const SWIFT_RESERVED_WORDS: &[&str] = &[
     "Any", "Protocol", "Self", "Type", "actor", "as", "associatedtype", "associativity",

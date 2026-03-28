@@ -93,7 +93,12 @@ fn build_members_str(
         })
         .collect();
 
-    // Always multi-line format: 6 spaces for items (2 extension + 4 body), 4 spaces for closing bracket
-    let indented: Vec<String> = items.iter().map(|i| format!("      {}", i)).collect();
-    format!("[\n{}\n    ]", indented.join(",\n"))
+    // Single-member: inline `[Objects.Cat.self]`
+    // Multi-member: multi-line with 6-space indent for items, 4-space for closing bracket
+    if items.len() == 1 {
+        format!("[{}]", items[0])
+    } else {
+        let indented: Vec<String> = items.iter().map(|i| format!("      {}", i)).collect();
+        format!("[\n{}\n    ]", indented.join(",\n"))
+    }
 }
