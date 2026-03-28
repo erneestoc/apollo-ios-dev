@@ -322,6 +322,99 @@ pub fn write_work_response<W: Write>(
     Ok(())
 }
 
+/// Write a length-delimited WorkRequest to a writer.
+/// Used for testing — Bazel normally produces these, not us.
+pub fn write_work_request<W: Write>(
+    writer: &mut W,
+    request: &WorkRequest,
+) -> io::Result<()> {
+    let mut body = Vec::new();
+
+    // field 1: repeated string arguments
+    for arg in &request.arguments {
+        write_varint(&mut body, encode_tag(1, WIRE_LENGTH_DELIMITED))?;
+        write_varint(&mut body, arg.len() as u64)?;
+        body.write_all(arg.as_bytes())?;
+    }
+
+    // field 2: repeated Input inputs
+    for input in &request.inputs {
+        let mut input_body = Vec::new();
+        // Input.path (field 1)
+        write_varint(&mut input_body, encode_tag(1, WIRE_LENGTH_DELIMITED))?;
+        write_varint(&mut input_body, input.path.len() as u64)?;
+        input_body.write_all(input.path.as_bytes())?;
+        // Input.digest (field 2)
+        if !input.digest.is_empty() {
+            write_varint(&mut input_body, encode_tag(2, WIRE_LENGTH_DELIMITED))?;
+            write_varint(&mut input_body, input.digest.len() as u64)?;
+            input_body.write_all(&input.digest)?;
+        }
+
+        write_varint(&mut body, encode_tag(2, WIRE_LENGTH_DELIMITED))?;
+        write_varint(&mut body, input_body.len() as u64)?;
+        body.write_all(&input_body)?;
+    }
+
+    // field 3: int32 request_id
+    if request.request_id != 0 {
+        write_varint(&mut body, encode_tag(3, WIRE_VARINT))?;
+        write_varint(&mut body, request.request_id as u64)?;
+    }
+
+    // Write length prefix + body
+    write_varint(writer, body.len() as u64)?;
+    writer.write_all(&body)?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+/// Read a length-delimited WorkResponse from a reader.
+pub fn read_work_response<R: Read>(reader: &mut R) -> io::Result<Option<WorkResponse>> {
+    let msg_len = match read_varint(reader)? {
+        Some(len) => len as usize,
+        None => return Ok(None),
+    };
+
+    let mut buf = vec![0u8; msg_len];
+    reader.read_exact(&mut buf)?;
+
+    let mut exit_code: i32 = 0;
+    let mut output = String::new();
+    let mut request_id: i32 = 0;
+    let mut pos = 0;
+
+    while pos < buf.len() {
+        let tag = read_varint_from_slice(&buf, &mut pos)?;
+        let (field_num, wire_type) = decode_tag(tag);
+
+        match (field_num, wire_type) {
+            (1, WIRE_VARINT) => {
+                exit_code = read_varint_from_slice(&buf, &mut pos)? as i32;
+            }
+            (2, WIRE_LENGTH_DELIMITED) => {
+                let len = read_varint_from_slice(&buf, &mut pos)? as usize;
+                output = String::from_utf8(buf[pos..pos + len].to_vec())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                pos += len;
+            }
+            (3, WIRE_VARINT) => {
+                request_id = read_varint_from_slice(&buf, &mut pos)? as i32;
+            }
+            (_, wt) => {
+                skip_field(&buf, &mut pos, wt)?;
+            }
+        }
+    }
+
+    Ok(Some(WorkResponse {
+        exit_code,
+        output,
+        request_id,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,7 +503,80 @@ mod tests {
     #[test]
     fn test_eof_returns_none() {
         let empty: &[u8] = &[];
-        let result = read_work_request(&mut empty.clone()).unwrap();
+        let result = read_work_request(&mut &empty[..]).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_work_request_roundtrip() {
+        let request = WorkRequest {
+            arguments: vec![
+                "--mode=operations".into(),
+                "--config=/tmp/config.json".into(),
+                "--concat=/tmp/out.swift".into(),
+            ],
+            inputs: vec![
+                Input { path: "schema.graphqls".into(), digest: vec![0x01, 0x02, 0x03] },
+                Input { path: "ops/Query.graphql".into(), digest: vec![0xAA, 0xBB] },
+            ],
+            request_id: 42,
+        };
+
+        // Encode
+        let mut buf = Vec::new();
+        write_work_request(&mut buf, &request).unwrap();
+
+        // Decode
+        let decoded = read_work_request(&mut buf.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.arguments, request.arguments);
+        assert_eq!(decoded.inputs.len(), 2);
+        assert_eq!(decoded.inputs[0].path, "schema.graphqls");
+        assert_eq!(decoded.inputs[0].digest, vec![0x01, 0x02, 0x03]);
+        assert_eq!(decoded.inputs[1].path, "ops/Query.graphql");
+        assert_eq!(decoded.inputs[1].digest, vec![0xAA, 0xBB]);
+        assert_eq!(decoded.request_id, 42);
+    }
+
+    #[test]
+    fn test_work_response_full_roundtrip() {
+        let response = WorkResponse {
+            exit_code: 1,
+            output: "Error: file not found".into(),
+            request_id: 99,
+        };
+
+        let mut buf = Vec::new();
+        write_work_response(&mut buf, &response).unwrap();
+
+        let decoded = read_work_response(&mut buf.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.exit_code, 1);
+        assert_eq!(decoded.output, "Error: file not found");
+        assert_eq!(decoded.request_id, 99);
+    }
+
+    #[test]
+    fn test_multiple_requests_in_stream() {
+        // Simulate Bazel sending 3 requests back-to-back then closing stdin
+        let requests = vec![
+            WorkRequest { arguments: vec!["req1".into()], inputs: vec![], request_id: 1 },
+            WorkRequest { arguments: vec!["req2".into()], inputs: vec![], request_id: 2 },
+            WorkRequest { arguments: vec!["req3".into()], inputs: vec![], request_id: 3 },
+        ];
+
+        let mut buf = Vec::new();
+        for req in &requests {
+            write_work_request(&mut buf, req).unwrap();
+        }
+
+        let mut reader = buf.as_slice();
+        for expected in &requests {
+            let decoded = read_work_request(&mut reader).unwrap().unwrap();
+            assert_eq!(decoded.request_id, expected.request_id);
+            assert_eq!(decoded.arguments, expected.arguments);
+        }
+
+        // After all requests, should get None (EOF)
+        let eof = read_work_request(&mut reader).unwrap();
+        assert!(eof.is_none());
     }
 }
