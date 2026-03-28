@@ -1112,9 +1112,33 @@ fn fix_inline_argument_format(source: &str) -> String {
                         result.push(')');
                     }
                     i = end;
+                } else if !is_var_def_list {
+                    // All-variable field argument list: graphql-js drops commas and
+                    // adds spaces around parens when the line exceeds 80 chars.
+                    let field_start = {
+                        let mut fs = start;
+                        while fs > 0 && (chars[fs - 1].is_alphanumeric() || chars[fs - 1] == '_') {
+                            fs -= 1;
+                        }
+                        fs
+                    };
+                    let full_line_len = (start - field_start) + 1 + arg_content.len() + 1;
+
+                    if full_line_len > 80 {
+                        // Multi-line format: spaces around parens, remove commas
+                        let without_commas = remove_top_level_commas(&arg_content);
+                        result.push_str("( ");
+                        result.push_str(&without_commas);
+                        result.push_str(" )");
+                    } else {
+                        // Compact format: keep commas, no spaces
+                        result.push('(');
+                        result.push_str(&arg_content);
+                        result.push(')');
+                    }
+                    i = end;
                 } else {
-                    // Variable-only argument list or variable definition list
-                    // Keep as-is (commas preserved for hash stability)
+                    // Variable definition list — keep as-is
                     result.push(chars[i]);
                     i += 1;
                 }

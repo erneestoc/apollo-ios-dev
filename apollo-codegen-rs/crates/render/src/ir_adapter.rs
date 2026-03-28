@@ -1205,7 +1205,7 @@ fn build_selection_set_config_owned(
             }
 
 
-            let parent_type_name = customizer.custom_type_name(ef.selection_set.scope.parent_type.name());
+            let parent_type_name = disambiguated_type_name(&ef.selection_set.scope.parent_type, customizer);
             let doc_comment = doc_comment_path(qualified_name, &child_name, is_root);
             nested_types.push(OwnedNestedSelectionSet {
                 doc_comment,
@@ -2011,12 +2011,21 @@ fn build_selection_set_config_owned(
                         // Remove any type alias that conflicts with this nested type
                         child_ss.type_aliases.retain(|ta| ta.name != entity_struct_name);
                     } else if !sibling_entity.is_empty() {
-                        // Entity comes from sibling only - use typealias
-                        // (This shouldn't normally happen for Height but handle it)
+                        // Entity comes from sibling only - use typealias with relative path.
+                        // Swift uses relative paths like "AsPet.Owner" not absolute
+                        // "MyQuery.Data.AllAnimal.AsPet.Owner".
                         for (sib_qualified, _) in &sibling_entity {
+                            // Extract relative path: take last N components that differ from current scope
+                            let parts: Vec<&str> = sib_qualified.split('.').collect();
+                            let current_parts: Vec<&str> = qualified_name.split('.').collect();
+                            // Find where paths diverge
+                            let common = parts.iter().zip(current_parts.iter())
+                                .take_while(|(a, b)| a == b).count();
+                            let relative = parts[common..].join(".");
+                            let target = if relative.is_empty() { sib_qualified.clone() } else { relative };
                             child_ss.type_aliases.push(OwnedTypeAlias {
                                 name: entity_struct_name.clone(),
-                                target: sib_qualified.clone(),
+                                target,
                             });
                             break;
                         }
@@ -3934,7 +3943,7 @@ fn build_inline_fragment_entity_type(
     entity_storage: Option<&apollo_codegen_ir::entity_storage::DefinitionEntityStorage>,
     entity_field_path: &[apollo_codegen_ir::entity::FieldPathComponent],
 ) -> OwnedNestedSelectionSet {
-    let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
+    let parent_type_name = disambiguated_type_name(&parent_entity_field.selection_set.scope.parent_type, customizer);
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
         GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
@@ -4021,90 +4030,7 @@ fn build_inline_fragment_entity_type(
         }
     }
 
-    // Supplement merged fields using scope-aware EntitySelectionTree query.
-    // Uses ComputedSelectionSetBuilder with MergingStrategy::ALL to correctly
-    // include only fields that would be merged at this entity's scope —
-    // excludes fields from conditional fragment spreads (@skip/@include).
-    if let Some(storage) = entity_storage {
-        let target_type = parent_entity_field.selection_set.scope.parent_type.name();
-        for (loc, entity) in &storage.entities {
-            if let Some(last) = loc.field_path.last() {
-                if last.name == field_key && last.type_name == target_type {
-                    // Build a scope-aware query using ComputedSelectionSetBuilder.
-                    // The entity's root scope is the entity type itself.
-                    use apollo_codegen_ir::entity_selection_tree::{
-                        ComputedSelectionSetBuilder, ScopeDescriptorRef,
-                    };
-                    use apollo_codegen_ir::merged_selections::{MergingStrategy, ScopeConditionKey};
 
-                    let type_name = target_type.to_string();
-                    let scope_key = ScopeConditionKey::new(Some(type_name.clone()));
-
-                    // Build scope path: one entry per entity depth in root_type_path
-                    let scope_refs: Vec<ScopeDescriptorRef> = entity.selection_tree.root_type_path
-                        .iter()
-                        .map(|t| ScopeDescriptorRef {
-                            type_name: t.clone(),
-                            scope_path: vec![ScopeConditionKey::new(Some(t.clone()))],
-                            matching_types: vec![t.clone()],
-                        })
-                        .collect();
-
-                    let entity_scope = vec![scope_key.clone()];
-
-                    // Direct field keys (already collected by ad-hoc code)
-                    let direct_keys: Vec<String> = if let Some(ief) = inline_entity_field {
-                        ief.selection_set.direct_selections.fields.keys().cloned().collect()
-                    } else {
-                        vec![]
-                    };
-
-                    let mut builder = ComputedSelectionSetBuilder::new(
-                        MergingStrategy::ANCESTORS,
-                        true, // is_entity_root
-                        direct_keys,
-                        vec![], // no direct fragments
-                        vec![], // no direct inline fragments
-                    );
-
-                    entity.selection_tree.add_merged_selections(
-                        &scope_refs,
-                        &entity_scope,
-                        &[type_name.clone()],
-                        &mut builder,
-                    );
-
-                    // Add merged scalar fields the ad-hoc code missed.
-                    // Only add if the field is selected WITHOUT inclusion conditions
-                    // somewhere in the tree (avoids conditional fragment spread fields).
-                    let tree_all = apollo_codegen_ir::entity_selection_tree::collect_all_entity_fields(
-                        &entity.selection_tree,
-                    );
-                    for (key, tree_field) in &builder.merged_fields {
-                        if key == "__typename" { continue; }
-                        if tree_field.is_entity { continue; }
-                        // Only add if the field exists unconditionally in the tree
-                        // (some instance of this field has no inclusion conditions)
-                        let is_unconditional = tree_all.get(key.as_str())
-                            .map(|f| f.inclusion_conditions.is_none())
-                            .unwrap_or(false);
-                        if !is_unconditional { continue; }
-                        if !merged_fields.iter().any(|f| f.name == *key) {
-                            let swift_type = render_graphql_type_as_swift(
-                                &tree_field.field_type, schema_namespace, type_kinds, customizer,
-                            );
-                            merged_fields.push(OwnedFieldAccessor {
-                                name: key.clone(),
-                                swift_type,
-                                description: tree_field.description.clone(),
-                            });
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
 
     // Build fulfilled fragments
     // Order: self, root entity scope (if different from parent), then parent if same as root,
@@ -4182,7 +4108,7 @@ fn build_inline_fragment_entity_type(
     }
 
     let is_parent_object = matches!(entity_parent_type, OwnedParentTypeRef::Object(_));
-    let custom_parent_name = customizer.custom_type_name(parent_type_name);
+    let custom_parent_name = customizer.custom_type_name(&parent_type_name);
     let typename_value = if is_parent_object {
         OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
     } else {
@@ -4364,7 +4290,7 @@ fn build_merged_entity_nested_type(
     customizer: &SchemaCustomizer,
     api_target_name: &str,
 ) -> OwnedNestedSelectionSet {
-    let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
+    let parent_type_name = disambiguated_type_name(&parent_entity_field.selection_set.scope.parent_type, customizer);
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
         GraphQLCompositeType::Interface(i) => OwnedParentTypeRef::Interface(customizer.custom_type_name(&i.name).to_string()),
@@ -4440,7 +4366,7 @@ fn build_merged_entity_nested_type(
     }
 
     let is_parent_object = matches!(entity_parent_type, OwnedParentTypeRef::Object(_));
-    let custom_parent_name = customizer.custom_type_name(parent_type_name);
+    let custom_parent_name = customizer.custom_type_name(&parent_type_name);
     let typename_value = if is_parent_object {
         OwnedTypenameValue::Fixed(format!("{}.Objects.{}.typename", schema_namespace, naming::first_uppercased(custom_parent_name)))
     } else {
@@ -5293,6 +5219,17 @@ fn owned_to_ref_selection_set(owned: &OwnedSelectionSetConfig) -> SelectionSetCo
 /// Strips the root prefix (operation Data or fragment name) from the qualified_name
 /// to produce paths like `/// AllAnimal.AsPet.Owner` matching Swift's
 /// SelectionSetNameGenerator with `.omittingRoot` format.
+/// Get the disambiguated parent type name for display (e.g., "Error_Object").
+fn disambiguated_type_name(parent_type: &GraphQLCompositeType, customizer: &SchemaCustomizer) -> String {
+    let base = customizer.custom_type_name(parent_type.name());
+    let suffix = match parent_type {
+        GraphQLCompositeType::Object(_) => "_Object",
+        GraphQLCompositeType::Interface(_) => "_Interface",
+        GraphQLCompositeType::Union(_) => "_Union",
+    };
+    naming::as_schema_type_name(base, suffix)
+}
+
 fn doc_comment_path(qualified_name: &str, child_name: &str, is_root: bool) -> String {
     if is_root {
         return format!("/// {}", child_name);

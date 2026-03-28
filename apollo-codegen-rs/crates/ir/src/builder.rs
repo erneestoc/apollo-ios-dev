@@ -717,6 +717,10 @@ impl IRBuilder {
         };
 
         if is_nullable {
+            // Null on nullable type → .null (not .init(nil))
+            if matches!(val, GraphQLValue::Null) {
+                return ".null".to_string();
+            }
             let is_complex = matches!(val, GraphQLValue::Object(_));
             if is_complex {
                 // Multi-line .init() wrapper for complex values
