@@ -114,17 +114,31 @@ fn render_type_header(type_name: &str, schema_name: &str, description: Option<&s
     // Documentation comments
     if let Some(desc) = description {
         if !desc.is_empty() {
-            for line in desc.lines() {
-                if line.is_empty() {
+            // Use split('\n') instead of lines() to preserve \r characters.
+            // Swift's template engine writes \r bytes literally into output.
+            // When a line ends with \r, the carriage return overwrites the
+            // "/// " prefix of the current line, and the NEXT line gets no
+            // prefix because Swift's TemplateString doesn't re-emit it.
+            // We reproduce this for byte-for-byte matching.
+            let parts: Vec<&str> = desc.split('\n').collect();
+            let last_idx = parts.len() - 1;
+            let mut prev_had_cr = false;
+            for (i, line) in parts.iter().enumerate() {
+                if i == last_idx && line.is_empty() {
+                    header.push_str("///\n");
+                    continue;
+                }
+                if prev_had_cr {
+                    // Previous line had \r — this line gets no /// prefix
+                    // (matches Swift's buggy \r behavior)
+                    header.push_str(&format!("{}\n", line));
+                    prev_had_cr = line.ends_with('\r');
+                } else if line.is_empty() {
                     header.push_str("///\n");
                 } else {
                     header.push_str(&format!("/// {}\n", line));
+                    prev_had_cr = line.ends_with('\r');
                 }
-            }
-            // Rust's str::lines() strips trailing \n, but Swift preserves it
-            // as an empty `///` line. Match Swift's behavior.
-            if desc.ends_with('\n') {
-                header.push_str("///\n");
             }
         }
     }
