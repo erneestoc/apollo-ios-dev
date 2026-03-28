@@ -16,3 +16,4 @@ anyhow.workspace = true
 glob.workspace = true
 indexmap.workspace = true
 serde_json.workspace = true
+rayon.workspace = true

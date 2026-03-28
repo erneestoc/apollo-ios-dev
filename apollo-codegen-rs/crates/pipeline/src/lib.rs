@@ -1604,20 +1604,20 @@ fn generate_operation_files(
         _ => None,
     };
 
-    for op_def in &compilation.operations {
+    // Render operations — parallel for large sets, serial for small ones.
+    // Rayon's thread pool startup costs ~10ms which dominates on small APIs.
+    use rayon::prelude::*;
+
+    let use_parallel = compilation.operations.len() >= 20;
+
+    let render_one = |op_def: &apollo_codegen_frontend::compilation_result::OperationDefinition| -> (PathBuf, String) {
         let mut operation = ir.build_operation(op_def);
-        // Apply schema customization to variable default values
         for var in &mut operation.variables {
             if let Some(ref mut dv) = var.default_value {
                 *dv = customizer.customize_default_value(dv);
             }
             var.type_str = customizer.customize_variable_type(&var.type_str);
         }
-        // Determine whether to generate initializers based on config.
-        // Mirrors Swift's shouldGenerateSelectionSetInitializers(for:):
-        //   guard experimentalFeatures.fieldMerging == .all else { return false }
-        //   if isLocalCacheMutation { return true }  // always generate inits
-        //   else check selectionSetInitializers.operations
         let generate_init = if !config.experimental_features.field_merging.is_all() {
             false
         } else if operation.is_local_cache_mutation {
@@ -1625,14 +1625,10 @@ fn generate_operation_files(
         } else {
             config.options.selection_set_initializers.operations
         };
-        // Compute operation identifier (SHA256 hash of source) when configured
         let op_id = if config.options.operation_document_format.operation_identifier {
             let mut hasher = Sha256::new();
-            // Hash the operation source + all referenced fragment sources (matching Swift's rawSource format).
-            // Swift's convertedToSingleLine() splits by newlines, trims whitespace, joins with spaces.
             let single_line = convert_to_single_line(&operation.source);
             hasher.update(single_line.as_bytes());
-            // Sort referenced fragments alphabetically by name (matching Swift's allReferencedFragments)
             let mut sorted_frags: Vec<_> = operation.referenced_fragments.iter().collect();
             sorted_frags.sort_by(|a, b| a.name.cmp(&b.name));
             for frag in &sorted_frags {
@@ -1644,14 +1640,11 @@ fn generate_operation_files(
         } else {
             None
         };
-        // When operations are not in the schema module (relative/absolute),
-        // variable types need the schema namespace prefix (e.g., "MySchemaModule.ID")
         let var_prefix = if !ops_in_schema_module {
             format!("{}.", ns)
         } else {
             String::new()
         };
-        // For embeddedInTarget, init/variables/__variables always need "public "
         let init_mod: Option<&str> = if is_embedded { Some("public ") } else { None };
         let mut content = ir_adapter::render_operation(
             &operation,
@@ -1664,23 +1657,20 @@ fn generate_operation_files(
             op_id.as_deref(),
             query_string_format,
             api_target,
-            false, // markOperationDefinitionsAsFinal
+            false,
             &var_prefix,
             init_mod,
         );
 
-        // Strip parent type doc comments when schema docs excluded
         if !include_schema_docs {
             content = strip_parent_type_comments(&content);
         }
 
-        // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
         if is_embedded && ops_in_schema_module {
             content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
                 &content, ns, access_mod,
             );
         } else if !ops_in_schema_module {
-            // When operations are outside the schema module, add import for the schema module
             if is_embedded {
                 if let Some(target) = embedded_target_name {
                     content = add_module_import(&content, target);
@@ -1695,8 +1685,6 @@ fn generate_operation_files(
             OperationType::Mutation => "Mutations",
             OperationType::Subscription => "Subscriptions",
         };
-
-        // File name uses operation name + type suffix (e.g., "ClassroomPetsQuery")
         let type_suffix = match op_def.operation_type {
             OperationType::Query => "Query",
             OperationType::Mutation => "Mutation",
@@ -1708,49 +1696,43 @@ fn generate_operation_files(
             format!("{}{}", operation.name, type_suffix)
         };
 
-        if operation.is_local_cache_mutation {
-            // Local cache mutations use the operation name without type suffix
+        let file_path = if operation.is_local_cache_mutation {
             if let Some(ref subpath_opt) = relative_subpath {
                 let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
-                let file_path = if let Some(subpath) = subpath_opt {
+                if let Some(subpath) = subpath_opt {
                     source_dir.join(subpath).join(format!("{}.graphql.swift", operation.name))
                 } else {
                     source_dir.join(format!("{}.graphql.swift", operation.name))
-                };
-                result.add_file(file_path, content);
+                }
             } else if let Some(ref abs_path) = absolute_ops_path {
-                let file_path = abs_path
-                    .join("LocalCacheMutations")
-                    .join(format!("{}.graphql.swift", operation.name));
-                result.add_file(file_path, content);
+                abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name))
             } else {
-                let file_path = sources_path
-                    .join("LocalCacheMutations")
-                    .join(format!("{}.graphql.swift", operation.name));
-                result.add_file(file_path, content);
+                sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name))
             }
+        } else if let Some(ref subpath_opt) = relative_subpath {
+            let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
+            if let Some(subpath) = subpath_opt {
+                source_dir.join(subpath).join(format!("{}.graphql.swift", file_name))
+            } else {
+                source_dir.join(format!("{}.graphql.swift", file_name))
+            }
+        } else if let Some(ref abs_path) = absolute_ops_path {
+            abs_path.join(subdir).join(format!("{}.graphql.swift", file_name))
         } else {
-            if let Some(ref subpath_opt) = relative_subpath {
-                // Relative mode: place file next to .graphql source file
-                let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
-                let file_path = if let Some(subpath) = subpath_opt {
-                    source_dir.join(subpath).join(format!("{}.graphql.swift", file_name))
-                } else {
-                    source_dir.join(format!("{}.graphql.swift", file_name))
-                };
-                result.add_file(file_path, content);
-            } else if let Some(ref abs_path) = absolute_ops_path {
-                let file_path = abs_path
-                    .join(subdir)
-                    .join(format!("{}.graphql.swift", file_name));
-                result.add_file(file_path, content);
-            } else {
-                let file_path = sources_path
-                    .join(format!("Operations/{}", subdir))
-                    .join(format!("{}.graphql.swift", file_name));
-                result.add_file(file_path, content);
-            }
-        }
+            sources_path.join(format!("Operations/{}", subdir)).join(format!("{}.graphql.swift", file_name))
+        };
+
+        (file_path, content)
+    };
+
+    let rendered_ops: Vec<(PathBuf, String)> = if use_parallel {
+        compilation.operations.par_iter().map(render_one).collect()
+    } else {
+        compilation.operations.iter().map(render_one).collect()
+    };
+
+    for (path, content) in rendered_ops {
+        result.add_file(path, content);
     }
 }
 
@@ -1788,99 +1770,91 @@ fn generate_fragment_files(
         _ => None,
     };
 
-    for frag_def in &compilation.fragments {
-        if let Some(frag) = ir.fragments().get(&frag_def.name) {
-            // Determine whether to generate initializers based on config.
-            // Mirrors Swift's shouldGenerateSelectionSetInitializers(for:):
-            //   guard experimentalFeatures.fieldMerging == .all else { return false }
-            //   if namedFragments flag { return true }
-            //   if isLocalCacheMutation { return true }  // always generate inits
-            //   else check per-definition name
-            let generate_init = if !config.experimental_features.field_merging.is_all() {
-                false
-            } else if config.options.selection_set_initializers.named_fragments {
-                true
-            } else if frag.is_local_cache_mutation {
-                true
-            } else {
-                false
-            };
-            let mut content = ir_adapter::render_fragment(
-                frag,
-                ns,
-                access_mod,
-                generate_init,
-                type_kinds,
-                customizer,
-                query_string_format,
-                api_target,
-                config.options.operation_document_format.definition,
+    // Render fragments — parallel for large sets, serial for small ones.
+    use rayon::prelude::*;
+
+    let frag_pairs: Vec<_> = compilation.fragments.iter()
+        .filter_map(|frag_def| ir.fragments().get(&frag_def.name).map(|frag| (frag_def, frag)))
+        .collect();
+
+    let use_parallel_frags = frag_pairs.len() >= 20;
+
+    let render_one_frag = |(frag_def, frag): &(&apollo_codegen_frontend::compilation_result::FragmentDefinition, &std::sync::Arc<apollo_codegen_ir::named_fragment::NamedFragment>)| -> (PathBuf, String) {
+        let generate_init = if !config.experimental_features.field_merging.is_all() {
+            false
+        } else if config.options.selection_set_initializers.named_fragments {
+            true
+        } else {
+            frag.is_local_cache_mutation
+        };
+        let mut content = ir_adapter::render_fragment(
+            frag,
+            ns,
+            access_mod,
+            generate_init,
+            type_kinds,
+            customizer,
+            query_string_format,
+            api_target,
+            config.options.operation_document_format.definition,
+        );
+
+        if !include_schema_docs {
+            content = strip_parent_type_comments(&content);
+        }
+
+        if is_embedded && ops_in_schema_module {
+            content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
+                &content, ns, access_mod,
             );
-
-            // Strip parent type doc comments when schema docs excluded
-            if !include_schema_docs {
-                content = strip_parent_type_comments(&content);
-            }
-
-            // Wrap in namespace extension for embeddedInTarget with inSchemaModule operations
-            if is_embedded && ops_in_schema_module {
-                content = apollo_codegen_render::templates::header::wrap_in_namespace_extension(
-                    &content, ns, access_mod,
-                );
-            } else if !ops_in_schema_module {
-                // When operations are outside the schema module, add import for the schema module
-                if is_embedded {
-                    if let Some(target) = embedded_target_name {
+        } else if !ops_in_schema_module {
+            if is_embedded {
+                if let Some(target) = embedded_target_name {
                     content = add_module_import(&content, target);
                 }
-                } else {
-                    content = add_module_import(&content, ns);
-                }
-            }
-
-            let frag_file_name = naming::first_uppercased(&frag.name);
-            if frag.is_local_cache_mutation {
-                if let Some(ref subpath_opt) = relative_subpath {
-                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
-                    let file_path = if let Some(subpath) = subpath_opt {
-                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
-                    } else {
-                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
-                    };
-                    result.add_file(file_path, content);
-                } else if let Some(ref abs_path) = absolute_ops_path {
-                    let file_path = abs_path
-                        .join("LocalCacheMutations")
-                        .join(format!("{}.graphql.swift", frag_file_name));
-                    result.add_file(file_path, content);
-                } else {
-                    let file_path = sources_path
-                        .join("LocalCacheMutations")
-                        .join(format!("{}.graphql.swift", frag_file_name));
-                    result.add_file(file_path, content);
-                }
             } else {
-                if let Some(ref subpath_opt) = relative_subpath {
-                    let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
-                    let file_path = if let Some(subpath) = subpath_opt {
-                        source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
-                    } else {
-                        source_dir.join(format!("{}.graphql.swift", frag_file_name))
-                    };
-                    result.add_file(file_path, content);
-                } else if let Some(ref abs_path) = absolute_ops_path {
-                    let file_path = abs_path
-                        .join("Fragments")
-                        .join(format!("{}.graphql.swift", frag_file_name));
-                    result.add_file(file_path, content);
-                } else {
-                    let file_path = sources_path
-                        .join("Fragments")
-                        .join(format!("{}.graphql.swift", frag_file_name));
-                    result.add_file(file_path, content);
-                }
+                content = add_module_import(&content, ns);
             }
         }
+
+        let frag_file_name = naming::first_uppercased(&frag.name);
+        let file_path = if frag.is_local_cache_mutation {
+            if let Some(ref subpath_opt) = relative_subpath {
+                let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+                if let Some(subpath) = subpath_opt {
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
+                } else {
+                    source_dir.join(format!("{}.graphql.swift", frag_file_name))
+                }
+            } else if let Some(ref abs_path) = absolute_ops_path {
+                abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", frag_file_name))
+            } else {
+                sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", frag_file_name))
+            }
+        } else if let Some(ref subpath_opt) = relative_subpath {
+            let source_dir = Path::new(&frag_def.file_path).parent().unwrap_or(Path::new(""));
+            if let Some(subpath) = subpath_opt {
+                source_dir.join(subpath).join(format!("{}.graphql.swift", frag_file_name))
+            } else {
+                source_dir.join(format!("{}.graphql.swift", frag_file_name))
+            }
+        } else if let Some(ref abs_path) = absolute_ops_path {
+            abs_path.join("Fragments").join(format!("{}.graphql.swift", frag_file_name))
+        } else {
+            sources_path.join("Fragments").join(format!("{}.graphql.swift", frag_file_name))
+        };
+
+        (file_path, content)
+    };
+
+    let rendered_frags: Vec<(PathBuf, String)> = if use_parallel_frags {
+        frag_pairs.par_iter().map(render_one_frag).collect()
+    } else {
+        frag_pairs.iter().map(render_one_frag).collect()
+    };
+
+    for (path, content) in rendered_frags {
+        result.add_file(path, content);
     }
 }
 
