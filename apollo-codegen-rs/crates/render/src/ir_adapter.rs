@@ -314,6 +314,58 @@ struct OwnedFieldAccessor {
     description: Option<String>,
 }
 
+/// A deduplicating Vec of field accessors with O(1) membership checks.
+/// Replaces the O(n) `.iter().any(|f| f.name == key)` pattern.
+#[derive(Clone)]
+struct FieldAccessorSet {
+    entries: Vec<OwnedFieldAccessor>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl FieldAccessorSet {
+    fn new() -> Self {
+        Self { entries: Vec::new(), seen: std::collections::HashSet::new() }
+    }
+
+    fn from_vec(v: Vec<OwnedFieldAccessor>) -> Self {
+        let seen = v.iter().map(|f| f.name.clone()).collect();
+        Self { entries: v, seen }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.seen.contains(name)
+    }
+
+    fn push(&mut self, accessor: OwnedFieldAccessor) {
+        if self.seen.insert(accessor.name.clone()) {
+            self.entries.push(accessor);
+        }
+    }
+
+    /// Push without dedup check (caller guarantees uniqueness or wants duplicates).
+    fn push_unchecked(&mut self, accessor: OwnedFieldAccessor) {
+        self.seen.insert(accessor.name.clone());
+        self.entries.push(accessor);
+    }
+
+    fn insert(&mut self, index: usize, accessor: OwnedFieldAccessor) {
+        self.seen.insert(accessor.name.clone());
+        self.entries.insert(index, accessor);
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, OwnedFieldAccessor> {
+        self.entries.iter()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn into_vec(self) -> Vec<OwnedFieldAccessor> {
+        self.entries
+    }
+}
+
 struct OwnedInlineFragmentAccessor {
     property_name: String,
     type_name: String,
@@ -489,7 +541,7 @@ fn build_selection_set_config_owned(
         let conds = field_inclusion_conditions(field);
         let has_original_conditions = has_inclusion_conditions(conds);
         let effective_conditions = if has_original_conditions {
-            let ic = conds.unwrap();
+            let ic = conds.expect("inclusion conditions verified by has_inclusion_conditions");
             !conditions_satisfied_by_scope(ic, scope_conditions)
         } else {
             false
@@ -500,7 +552,7 @@ fn build_selection_set_config_owned(
             (key.to_string(), None)
         };
         if effective_conditions {
-            let ic = conds.unwrap();
+            let ic = conds.expect("inclusion conditions verified by has_inclusion_conditions");
             let owned_conds: Vec<OwnedConditionEntry> = ic.conditions.iter().map(|c| OwnedConditionEntry {
                 variable: c.variable.clone(),
                 is_inverted: c.is_inverted,
@@ -629,7 +681,7 @@ fn build_selection_set_config_owned(
         if absorbed_inline_indices.contains(&idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
-                let ic = inline.inclusion_conditions.as_ref().unwrap();
+                let ic = inline.inclusion_conditions.as_ref().expect("inline fragment missing expected inclusion conditions");
                 let type_name = conditional_inline_fragment_name(Some(tc.name()), ic, customizer);
                 let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 conditional_inline_selections.push(OwnedSelectionItem {
@@ -652,7 +704,7 @@ fn build_selection_set_config_owned(
         if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
         if has_inclusion_conditions(frag_spread.inclusion_conditions.as_ref()) {
             // Conditional fragment spread -> wrapped in .include() as inline fragment
-            let ic = frag_spread.inclusion_conditions.as_ref().unwrap();
+            let ic = frag_spread.inclusion_conditions.as_ref().expect("fragment spread missing expected inclusion conditions");
             // Check if the fragment needs type narrowing (type condition differs from parent)
             if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
                 let ftc = &frag_arc.type_condition_name;
@@ -715,10 +767,11 @@ fn build_selection_set_config_owned(
     // is already satisfied by the enclosing scope's conditions.
     // Use source_order to interleave direct fields and absorbed inline fragment fields.
     let mut field_accessors: Vec<OwnedFieldAccessor> = Vec::new();
+    let mut fa_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let build_field_accessor = |key: &str, field: &FieldSelection| -> OwnedFieldAccessor {
         let (mut swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
         let conds = field_inclusion_conditions(field);
-        if has_inclusion_conditions(conds) && !conditions_satisfied_by_scope(conds.unwrap(), scope_conditions) {
+        if has_inclusion_conditions(conds) && !conditions_satisfied_by_scope(conds.expect("inclusion conditions verified by has_inclusion_conditions"), scope_conditions) {
             if !swift_type.ends_with('?') {
                 swift_type.push('?');
             }
@@ -735,7 +788,9 @@ fn build_selection_set_config_owned(
                 IrSelectionKind::Field(key) => {
                     if key == "__typename" { continue; }
                     if let Some(field) = ds.fields.get(key) {
-                        field_accessors.push(build_field_accessor(key, field));
+                        let fa = build_field_accessor(key, field);
+                        fa_seen.insert(fa.name.clone());
+                        field_accessors.push(fa);
                     }
                 }
                 IrSelectionKind::InlineFragment(idx) => {
@@ -744,9 +799,9 @@ fn build_selection_set_config_owned(
                         for (key, field) in &inline.selection_set.direct_selections.fields {
                             if key == "__typename" { continue; }
                             if ds.fields.contains_key(key) { continue; }
-                            if !field_accessors.iter().any(|f| f.name == *key) {
+                            if !fa_seen.contains(key) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                                field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                                fa_seen.insert(key.to_string()); field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
                             }
                         }
                     }
@@ -765,9 +820,9 @@ fn build_selection_set_config_owned(
             for (key, field) in &inline.selection_set.direct_selections.fields {
                 if key == "__typename" { continue; }
                 if ds.fields.contains_key(key) { continue; }
-                if !field_accessors.iter().any(|f| f.name == *key) {
+                if !fa_seen.contains(key) {
                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
-                    field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                    fa_seen.insert(key.to_string()); field_accessors.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
                 }
             }
         }
@@ -777,7 +832,8 @@ fn build_selection_set_config_owned(
     if is_inline_fragment {
         if let Some(parent) = parent_fields {
             for pf in parent {
-                if pf.name != "__typename" && !field_accessors.iter().any(|f| f.name == pf.name) {
+                if pf.name != "__typename" && !fa_seen.contains(&pf.name) {
+                    fa_seen.insert(pf.name.clone());
                     field_accessors.push(pf.clone());
                 }
             }
@@ -794,8 +850,9 @@ fn build_selection_set_config_owned(
         if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
-                if !field_accessors.iter().any(|f| f.name == *key) {
+                if !fa_seen.contains(key.as_str()) {
                     let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                    fa_seen.insert(key.clone());
                     field_accessors.push(OwnedFieldAccessor {
                         name: key.clone(),
                         swift_type,
@@ -814,8 +871,9 @@ fn build_selection_set_config_owned(
                         || is_supertype_of_current(&ir_ss.scope.parent_type, sub_tc);
                     if should_merge {
                         for (key, field) in &sub_frag.root_field.selection_set.direct_selections.fields {
-                            if !field_accessors.iter().any(|f| f.name == *key) {
+                            if !fa_seen.contains(key.as_str()) {
                                 let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                fa_seen.insert(key.clone());
                                 field_accessors.push(OwnedFieldAccessor {
                                     name: key.clone(),
                                     swift_type,
@@ -844,7 +902,7 @@ fn build_selection_set_config_owned(
     for frag_spread in &ds.named_fragments {
         if early_promoted_fragment_names.contains(&frag_spread.fragment_name) { continue; }
         if has_inclusion_conditions(frag_spread.inclusion_conditions.as_ref()) {
-            let ic = frag_spread.inclusion_conditions.as_ref().unwrap();
+            let ic = frag_spread.inclusion_conditions.as_ref().expect("fragment spread missing expected inclusion conditions");
             if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == frag_spread.fragment_name) {
                 let ftc = &frag_arc.type_condition_name;
                 let needs_narrowing = *ftc != current_parent_type_name_early
@@ -871,7 +929,7 @@ fn build_selection_set_config_owned(
         if absorbed_inline_indices.contains(&idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
-                let ic = inline.inclusion_conditions.as_ref().unwrap();
+                let ic = inline.inclusion_conditions.as_ref().expect("inline fragment missing expected inclusion conditions");
                 let type_name = conditional_inline_fragment_name(Some(tc.name()), ic, customizer);
                 let property_name = conditional_inline_fragment_property(Some(tc.name()), ic, customizer);
                 inline_fragment_accessors.push(OwnedInlineFragmentAccessor {
@@ -1278,7 +1336,7 @@ fn build_selection_set_config_owned(
         if absorbed_inline_indices.contains(&inline_idx) { continue; }
         if let Some(ref tc) = inline.type_condition {
             let type_name = if has_inclusion_conditions(inline.inclusion_conditions.as_ref()) {
-                conditional_inline_fragment_name(Some(tc.name()), inline.inclusion_conditions.as_ref().unwrap(), customizer)
+                conditional_inline_fragment_name(Some(tc.name()), inline.inclusion_conditions.as_ref().expect("inline fragment missing expected inclusion conditions"), customizer)
             } else {
                 format!("As{}", naming::first_uppercased(customizer.custom_type_name(tc.name())))
             };
@@ -2422,7 +2480,7 @@ fn build_selection_set_config_owned(
             // Conditional inline fragment WITHOUT a type condition
             // e.g., `... @include(if: $includeDetails) { name appearsIn }`
             // These generate IfVariableName wrapper structs.
-            let ic = inline.inclusion_conditions.as_ref().unwrap();
+            let ic = inline.inclusion_conditions.as_ref().expect("inline fragment missing expected inclusion conditions");
             let type_name = conditional_inline_fragment_name(None, ic, customizer);
             let property_name = conditional_inline_fragment_property(None, ic, customizer);
             let child_qualified = format!("{}.{}", qualified_name, type_name);
@@ -3362,7 +3420,7 @@ fn build_selection_set_config_owned(
     for spread in &ds.named_fragments {
         if !has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
         if let Some(frag_arc) = referenced_fragments.iter().find(|f| f.name == spread.fragment_name) {
-            let ic = spread.inclusion_conditions.as_ref().unwrap();
+            let ic = spread.inclusion_conditions.as_ref().expect("spread missing expected inclusion conditions");
             let ftc = &frag_arc.type_condition_name;
             let needs_narrowing = *ftc != ir_ss.scope.parent_type.name()
                 && !is_supertype_of_current(&ir_ss.scope.parent_type, ftc);
@@ -4107,7 +4165,7 @@ fn build_inline_fragment_entity_type(
                 (key.clone(), None)
             };
             if has_inclusion_conditions(conds) {
-                let ic = conds.unwrap();
+                let ic = conds.expect("inclusion conditions verified by has_inclusion_conditions");
                 let (owned_conds, operator) = inclusion_conditions_to_owned(ic);
                 let conds_match = |group_conds: &Vec<OwnedConditionEntry>, group_op: &OwnedConditionOperator| -> bool {
                     if owned_conds.len() != group_conds.len() { return false; }
@@ -4899,10 +4957,10 @@ fn render_argument_value(value: &GraphQLValue) -> String {
                 .map(|(k, v)| format!("\"{}\": {}", k, render_argument_value(v)))
                 .collect();
             if entries.len() > 1 {
-                Some(format!("[\n{}\n]", entries.join(",\n")))
+                format!("[\n{}\n]", entries.join(",\n"))
             } else {
-                Some(format!("[{}]", entries.join(", ")))
-            }.unwrap()
+                format!("[{}]", entries.join(", "))
+            }
         }
     }
 }

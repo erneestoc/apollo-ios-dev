@@ -178,11 +178,29 @@ fn handle_request_inner(
         eprintln!("[worker] Schema cache hit");
     }
 
-    // 6. Compute options hash for compilation key
+    // 6. Compute options hash for compilation key.
+    // Must include ALL options that affect generated output to prevent stale cache hits.
     let options_hash = format!(
-        "mode={:?},reduce={}",
+        "mode={:?},reduce={},schema_doc={:?},sel_init_ops={},sel_init_frags={},sel_init_lcm={},\
+         enum_case={:?},input_obj={:?},query_fmt={:?},op_doc_def={},op_doc_id={},\
+         cocoapods={},field_merging={:?},legacy_safelisting={},\
+         skip_schema_config={},skip_custom_scalars={}",
         args.mode,
         config.options.reduce_generated_schema_types,
+        config.options.schema_documentation,
+        config.options.selection_set_initializers.operations,
+        config.options.selection_set_initializers.named_fragments,
+        config.options.selection_set_initializers.local_cache_mutations,
+        config.options.conversion_strategies.enum_cases,
+        config.options.conversion_strategies.input_objects,
+        config.options.query_string_literal_format,
+        config.options.operation_document_format.definition,
+        config.options.operation_document_format.operation_identifier,
+        config.options.cocoapods_compatible_import_statements,
+        config.experimental_features.field_merging,
+        config.experimental_features.legacy_safelisting_compatible_operations,
+        args.skip_schema_configuration,
+        args.skip_custom_scalars,
     );
 
     // 7. Check/populate compilation cache
