@@ -1,0 +1,21 @@
+load("//bazel:apollo_codegen.bzl", "apollo_codegen", "apollo_library")
+
+package(default_visibility = ["//visibility:public"])
+
+apollo_codegen(
+    name = "star_wars_all",
+    schema = ["starwars-graphql/schema.graphqls"],
+    operations = glob(["starwars-graphql/*.graphql"]),
+    schema_namespace = "StarWarsAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)
+
+apollo_library(
+    name = "StarWarsAPI",
+    schema = ["starwars-graphql/schema.graphqls"],
+    operations = glob(["starwars-graphql/*.graphql"]),
+    schema_namespace = "StarWarsAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)

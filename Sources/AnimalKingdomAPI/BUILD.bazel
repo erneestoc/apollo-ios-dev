@@ -1,0 +1,91 @@
+load("//bazel:apollo_codegen.bzl", "apollo_codegen", "apollo_library", "apollo_operations", "apollo_schema_types")
+
+package(default_visibility = ["//visibility:public"])
+
+# ============================================================
+# Simple: generate everything in one action
+# ============================================================
+
+apollo_codegen(
+    name = "animal_kingdom_all",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)
+
+# ============================================================
+# Modular: split schema types from operations
+# ============================================================
+
+# Schema types (shared, generated once)
+apollo_schema_types(
+    name = "animal_kingdom_schema",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)
+
+# All operations (single target)
+apollo_operations(
+    name = "animal_kingdom_operations",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)
+
+# ============================================================
+# Per-module operations (example: split queries from mutations)
+# ============================================================
+
+# Queries only
+apollo_operations(
+    name = "animal_kingdom_queries",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*Query.graphql"]),
+    all_operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+)
+
+# Mutations only
+apollo_operations(
+    name = "animal_kingdom_mutations",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*Mutation.graphql"]),
+    all_operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+)
+
+# Fragments only
+apollo_operations(
+    name = "animal_kingdom_fragments",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob([
+        "animalkingdom-graphql/*Details.graphql",
+        "animalkingdom-graphql/*Fragment.graphql",
+        "animalkingdom-graphql/HeightInMeters.graphql",
+    ]),
+    all_operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+)
+
+# ============================================================
+# Convenience macro: schema + ops + swift_library filegroup
+# ============================================================
+
+apollo_library(
+    name = "AnimalKingdomAPI",
+    schema = ["animalkingdom-graphql/AnimalSchema.graphqls"],
+    operations = glob(["animalkingdom-graphql/*.graphql"]),
+    schema_namespace = "AnimalKingdomAPI",
+    schema_documentation = True,
+    selection_set_initializers = True,
+)

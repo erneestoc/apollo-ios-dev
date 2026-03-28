@@ -1,0 +1,10 @@
+load("//bazel:apollo_codegen.bzl", "apollo_codegen")
+
+package(default_visibility = ["//visibility:public"])
+
+apollo_codegen(
+    name = "upload_all",
+    schema = ["graphql/schema.graphqls"],
+    operations = glob(["graphql/*.graphql"]),
+    schema_namespace = "UploadAPI",
+)

@@ -1,0 +1,17 @@
+load("//bazel:apollo_codegen.bzl", "apollo_codegen", "apollo_library")
+
+package(default_visibility = ["//visibility:public"])
+
+apollo_codegen(
+    name = "github_all",
+    schema = ["graphql/schema.graphqls"],
+    operations = glob(["graphql/*.graphql"]),
+    schema_namespace = "GitHubAPI",
+)
+
+apollo_library(
+    name = "GitHubAPI",
+    schema = ["graphql/schema.graphqls"],
+    operations = glob(["graphql/*.graphql"]),
+    schema_namespace = "GitHubAPI",
+)

@@ -1,0 +1,16 @@
+# Apollo iOS Bazel configuration
+
+# Use persistent workers for codegen (keeps schema/IR cached in memory)
+build --strategy=ApolloSchemaCodegen=worker
+build --strategy=ApolloOperationCodegen=worker
+build --strategy=ApolloCodegen=worker
+
+# Worker verbosity (uncomment for debugging)
+# build --worker_verbose
+
+# Sensible defaults
+build --verbose_failures
+build --incompatible_strict_action_env
+
+# macOS / iOS defaults
+build --apple_platform_type=macos

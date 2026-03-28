@@ -1,0 +1,45 @@
+# Build target for the Apollo codegen CLI tool (used as a persistent worker).
+#
+# This is the Rust binary that Bazel invokes for code generation.
+# It supports --persistent_worker for staying hot across build actions.
+
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# Pre-built binary target — use this if you have the binary checked in or
+# built externally. Point _codegen_tool in apollo_codegen.bzl to this.
+#
+# For development, you can also use a rust_binary rule to build from source:
+#
+# rust_binary(
+#     name = "codegen_tool_from_source",
+#     srcs = glob(["../apollo-codegen-rs/crates/cli/src/**/*.rs"]),
+#     # ... crate dependencies ...
+# )
+
+# Default: reference a pre-built binary.
+# Override this with --@//bazel:codegen_tool=/path/to/binary for custom builds.
+filegroup(
+    name = "codegen_tool",
+    srcs = ["codegen_tool_bin"],
+    visibility = ["//visibility:public"],
+)
+
+# Symlink or copy your built binary here, or use a genrule:
+genrule(
+    name = "codegen_tool_bin",
+    srcs = [],
+    outs = ["apollo-ios-cli-rs"],
+    cmd = """
+        # Build the Rust CLI in release mode
+        cd $$(dirname $(location @//apollo-codegen-rs:Cargo.toml) 2>/dev/null || echo ".")
+        if command -v cargo >/dev/null 2>&1; then
+            cargo build --release -p apollo-codegen-cli 2>&1
+            cp target/release/apollo-ios-cli-rs $@
+        else
+            echo "ERROR: cargo not found. Build the CLI manually and place at bazel/apollo-ios-cli-rs" >&2
+            exit 1
+        fi
+    """,
+    visibility = ["//visibility:public"],
+    tags = ["no-sandbox"],  # Needs cargo/rustc from host
+)

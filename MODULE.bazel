@@ -1,0 +1,12 @@
+"""Apollo iOS development workspace with Rust codegen persistent worker."""
+
+module(
+    name = "apollo-ios-dev",
+    version = "1.15.1",
+)
+
+# Rules for building Rust binaries (if building codegen from source)
+bazel_dep(name = "rules_rust", version = "0.56.0")
+
+# Rules for building Swift libraries (if using swift_library targets)
+bazel_dep(name = "rules_swift", version = "2.7.0")
