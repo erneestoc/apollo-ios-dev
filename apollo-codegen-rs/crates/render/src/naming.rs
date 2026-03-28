@@ -47,25 +47,76 @@ pub fn first_lowercased(s: &str) -> String {
 }
 
 /// Convert a SCREAMING_SNAKE_CASE or snake_case name to camelCase.
+/// Convert a GraphQL enum value name to Swift camelCase.
+///
+/// Matches Swift's `String.convertToCamelCase()` exactly:
+/// 1. **Has underscores?** Split by `_`, `.capitalized` each segment
+///    (capitalize first char, lowercase rest), rejoin, then `firstLowercased`.
+/// 2. **No underscores, ALL uppercase?** Lowercase everything.
+/// 3. **No underscores, has lowercase?** Only lowercase the first cased character
+///    (preserve all other casing). This is Swift's `.firstLowercased`.
+///
+/// Examples:
+///   "FyRFJCm33OKsz80" → "fyRFJCm33OKsz80"  (case 3: firstLowercased)
+///   "ALL_CAPS_VALUE"   → "allCapsValue"       (case 1: split + capitalize + firstLower)
+///   "PENDING"          → "pending"             (case 2: all uppercase → all lowercase)
+///   "camelCase"        → "camelCase"           (case 3: already starts lowercase)
+///   "adP6xzG5CDa6_90" → "adp6xzg5cda690"     (case 1: has underscore)
 pub fn to_camel_case(s: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-    let mut first = true;
+    let has_underscore = s.contains('_');
+
+    if !has_underscore {
+        // No underscores — check if ALL uppercase or has lowercase
+        let has_lowercase = s.chars().any(|c| c.is_lowercase());
+        if has_lowercase {
+            // Case 3: just firstLowercased (lowercase only the first cased character)
+            first_lowercased(s)
+        } else {
+            // Case 2: ALL uppercase → all lowercase
+            s.to_lowercase()
+        }
+    } else {
+        // Case 1: has underscores → split, .capitalized each segment, rejoin, firstLowercased.
+        // Foundation's .capitalized treats digit-to-letter transitions as word boundaries:
+        //   "abc123DEF" → "Abc123Def" (capitalize after digits)
+        //   "9UQ1" → "9Uq1" (capitalize first letter after leading digits)
+        let joined: String = s
+            .split('_')
+            .map(|segment| {
+                if segment.is_empty() {
+                    "_".to_string()
+                } else {
+                    foundation_capitalized(segment)
+                }
+            })
+            .collect();
+        first_lowercased(&joined)
+    }
+}
+
+/// Emulate Foundation's `.capitalized` property on String.
+///
+/// Word boundaries are: start of string, after any non-letter character (digits, symbols).
+/// At each word boundary, the first letter is uppercased and subsequent letters are lowercased
+/// until the next boundary.
+fn foundation_capitalized(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut at_word_start = true;
 
     for c in s.chars() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_uppercase().next().unwrap_or(c));
-            capitalize_next = false;
-        } else if first {
-            result.push(c.to_lowercase().next().unwrap_or(c));
-            first = false;
+        if c.is_alphabetic() {
+            if at_word_start {
+                result.extend(c.to_uppercase());
+                at_word_start = false;
+            } else {
+                result.extend(c.to_lowercase());
+            }
         } else {
-            result.push(c.to_lowercase().next().unwrap_or(c));
+            // Non-letter (digit, symbol, etc.) → next letter starts a new word
+            result.push(c);
+            at_word_start = true;
         }
     }
-
     result
 }
 

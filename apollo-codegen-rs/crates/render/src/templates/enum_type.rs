@@ -40,6 +40,9 @@ struct EnumTypeTemplate<'a> {
     /// Pre-rendered type header: doc comments + renamed comment, with trailing newline.
     type_header: String,
     values: Vec<TemplateEnumValue>,
+    /// Whether camelCase conversion is applied (determines if raw value literal is needed).
+    /// Swift always includes ` = "value"` when conversionStrategies.enumCases != .none.
+    camel_case_conversion: bool,
 }
 
 pub fn render(
@@ -93,6 +96,7 @@ pub fn render(
         swift_type_name,
         type_header,
         values: template_values,
+        camel_case_conversion,
     };
 
     let mut output = template.render().expect("enum_type template render failed");

@@ -25,7 +25,9 @@ import {{ api_target_name }}
 {%- if v.is_renamed %}
   // Renamed from GraphQL schema value: '{{ v.raw_value }}'
 {%- endif %}
-{%- if v.case_name == v.raw_value %}
+{%- if camel_case_conversion %}
+  case {{ v.case_name }} = "{{ v.raw_value }}"
+{%- else if v.case_name == v.raw_value %}
   case {{ v.case_name }}
 {%- else %}
   case {{ v.case_name }} = "{{ v.raw_value }}"

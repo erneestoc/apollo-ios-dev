@@ -5030,7 +5030,8 @@ fn render_named_type_as_swift(
         "Boolean" => "Bool?".to_string(),
         "ID" => format!("{}.ID?", schema_namespace),
         _ => {
-            let swift_name = customizer.custom_type_name(name);
+            // Swift type names are always first-uppercased (e.g., enum "myEnum" → "MyEnum")
+            let swift_name = naming::first_uppercased(customizer.custom_type_name(name));
             let kind = type_kinds
                 .get(name)
                 .copied()
