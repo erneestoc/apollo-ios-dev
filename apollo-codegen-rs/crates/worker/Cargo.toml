@@ -1,0 +1,14 @@
+[package]
+name = "apollo-codegen-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bazel persistent worker for Apollo iOS code generation"
+
+[dependencies]
+apollo-codegen-config.workspace = true
+apollo-codegen-frontend.workspace = true
+apollo-codegen-pipeline.workspace = true
+sha2.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

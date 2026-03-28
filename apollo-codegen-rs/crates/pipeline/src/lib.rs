@@ -1,6 +1,7 @@
-//! Full code generation pipeline.
+//! Shared code generation pipeline.
 //!
 //! Wires together: config → glob → frontend → IR → templates → file output.
+//! Used by both the CLI binary and the Bazel persistent worker.
 
 use apollo_codegen_config::types::*;
 use apollo_codegen_frontend::compilation_result::CompilationResult;
@@ -61,6 +62,319 @@ pub struct GenerateOptions {
     pub skip_schema_configuration: bool,
     pub skip_custom_scalars: bool,
 }
+
+// ==========================================================================
+// Shared Pipeline Stages - usable by both CLI and persistent worker
+// ==========================================================================
+
+use apollo_codegen_ir::field_collector::TypeKind;
+use std::collections::HashMap;
+
+/// The compiled artifacts from the frontend pipeline.
+/// This is the cacheable unit for the persistent worker.
+pub struct CompiledArtifacts {
+    pub compilation_result: CompilationResult,
+    pub ir_builder: IRBuilder,
+    pub type_kinds: HashMap<String, TypeKind>,
+}
+
+/// Stage 1: Load and validate a GraphQL schema from source files.
+///
+/// Returns the frontend which holds the validated schema and can be reused
+/// across multiple compile() calls (e.g., when only operations change).
+pub fn load_schema(
+    schema_sources: &[(String, String)],
+) -> anyhow::Result<GraphQLFrontend> {
+    GraphQLFrontend::load_schema(schema_sources)
+        .map_err(|errs| anyhow::anyhow!("Schema errors: {}", errs.join(", ")))
+}
+
+/// Stage 2: Parse operations and compile against a loaded schema.
+///
+/// Returns the compilation result, IR builder, and type kinds map.
+/// These can be cached and reused for rendering.
+pub fn compile(
+    frontend: &GraphQLFrontend,
+    op_sources: &[(String, String)],
+    config: &ApolloCodegenConfiguration,
+) -> anyhow::Result<CompiledArtifacts> {
+    let source_map: BTreeMap<String, (String, String)> = op_sources
+        .iter()
+        .map(|(content, path)| (path.clone(), (content.clone(), path.clone())))
+        .collect();
+
+    let doc = frontend
+        .parse_operations(op_sources)
+        .map_err(|errs| anyhow::anyhow!("Parse errors: {}", errs.join(", ")))?;
+
+    let compile_options = CompileOptions {
+        legacy_safelisting_compatible_operations: config
+            .experimental_features
+            .legacy_safelisting_compatible_operations,
+        reduce_generated_schema_types: config.options.reduce_generated_schema_types,
+    };
+
+    let compilation_result = frontend
+        .compile(&doc, &source_map, &compile_options)
+        .map_err(|errs| anyhow::anyhow!("Compilation errors: {}", errs.join(", ")))?;
+
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+    let ir_builder = IRBuilder::build(&compilation_result, camel_case_enums);
+    let type_kinds = apollo_codegen_ir::field_collector::build_type_kinds(&compilation_result);
+
+    Ok(CompiledArtifacts {
+        compilation_result,
+        ir_builder,
+        type_kinds,
+    })
+}
+
+/// Stage 3: Render output files from compiled artifacts.
+///
+/// This is the output-configuration + rendering stage. It produces the
+/// GenerationResult which contains all files to be written.
+///
+/// `mode` controls which files are generated:
+/// - `RenderMode::All` — schema types + operations + fragments + mocks
+/// - `RenderMode::SchemaOnly` — schema types + module files + mocks only
+/// - `RenderMode::OperationsOnly { paths }` — filtered operations/fragments only
+pub fn render(
+    artifacts: &mut CompiledArtifacts,
+    config: &ApolloCodegenConfiguration,
+    root_url: &Path,
+    options: &GenerateOptions,
+    mode: RenderMode,
+) -> anyhow::Result<GenerationResult> {
+    let ns = naming::first_uppercased(&config.schema_namespace);
+    let api_target = if config.options.cocoapods_compatible_import_statements {
+        "Apollo"
+    } else {
+        "ApolloAPI"
+    };
+    let access_mod = determine_access_modifier(config);
+    let is_in_module = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::SwiftPackageManager(_)
+    ) || matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::Other(_)
+    );
+    let is_embedded = matches!(
+        config.output.schema_types.module_type,
+        SchemaModuleType::EmbeddedInTarget(_)
+    );
+    let ops_in_schema_module = matches!(
+        config.output.operations,
+        OperationsFileOutput::InSchemaModule(_)
+    );
+    let ops_access_mod = if is_embedded && !ops_in_schema_module {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
+    let mock_access_mod = if is_embedded {
+        "public ".to_string()
+    } else {
+        access_mod.clone()
+    };
+    let embedded_target_name = if let SchemaModuleType::EmbeddedInTarget(ref c) = config.output.schema_types.module_type {
+        Some(c.name.clone())
+    } else {
+        None
+    };
+    let include_schema_docs = matches!(
+        config.options.schema_documentation,
+        SchemaDocumentation::Include
+    );
+    if !include_schema_docs {
+        artifacts.ir_builder.clear_field_descriptions();
+    }
+    let query_string_format = match config.options.query_string_literal_format {
+        QueryStringLiteralFormat::SingleLine => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::SingleLine
+        }
+        QueryStringLiteralFormat::Multiline => {
+            apollo_codegen_render::templates::operation::QueryStringFormat::Multiline
+        }
+    };
+    let camel_case_input_objects = matches!(
+        config.options.conversion_strategies.input_objects,
+        apollo_codegen_config::types::InputObjectConversionStrategy::CamelCase
+    );
+
+    let schema_output_path = resolve_path(root_url, &config.output.schema_types.path);
+    let customizer = SchemaCustomizer::new(&config.options.schema_customization);
+    let camel_case_enums = matches!(
+        config.options.conversion_strategies.enum_cases,
+        EnumCaseConversionStrategy::CamelCase
+    );
+
+    let mut result = GenerationResult::new();
+
+    // Namespace file for embeddedInTarget
+    let needs_namespace = is_embedded && !matches!(mode, RenderMode::OperationsOnly { .. });
+    if needs_namespace {
+        let namespace_content = format!(
+            "{}\n\n{}enum {} {{ }}\n",
+            apollo_codegen_render::templates::header::HEADER,
+            &access_mod,
+            &ns,
+        );
+        result.add_file(
+            schema_output_path.join(format!("{}.graphql.swift", &ns)),
+            namespace_content,
+        );
+    }
+
+    // Schema types
+    if !matches!(mode, RenderMode::OperationsOnly { .. }) {
+        generate_schema_files(
+            &mut result,
+            &artifacts.compilation_result,
+            &artifacts.ir_builder,
+            &schema_output_path,
+            &ns,
+            api_target,
+            &access_mod,
+            is_in_module,
+            camel_case_enums,
+            camel_case_input_objects,
+            config,
+            &artifacts.type_kinds,
+            &customizer,
+            include_schema_docs,
+            is_embedded,
+            ops_in_schema_module,
+            options.skip_schema_configuration,
+            options.skip_custom_scalars,
+        );
+
+        generate_module_files(&mut result, config, &schema_output_path, &ns);
+    }
+
+    // Operations and fragments
+    match mode {
+        RenderMode::All => {
+            generate_operation_files(
+                &mut result,
+                &artifacts.compilation_result,
+                &artifacts.ir_builder,
+                &schema_output_path,
+                &ns,
+                &ops_access_mod,
+                config,
+                &artifacts.type_kinds,
+                &customizer,
+                query_string_format,
+                api_target,
+                is_embedded,
+                root_url,
+                ops_in_schema_module,
+                embedded_target_name.as_deref(),
+                include_schema_docs,
+            );
+            generate_fragment_files(
+                &mut result,
+                &artifacts.compilation_result,
+                &artifacts.ir_builder,
+                &schema_output_path,
+                &ns,
+                &ops_access_mod,
+                config,
+                &artifacts.type_kinds,
+                &customizer,
+                query_string_format,
+                api_target,
+                is_embedded,
+                root_url,
+                ops_in_schema_module,
+                embedded_target_name.as_deref(),
+                include_schema_docs,
+            );
+        }
+        RenderMode::OperationsOnly { ref paths } => {
+            let path_matchers: Vec<glob::Pattern> = paths
+                .iter()
+                .filter_map(|p| glob::Pattern::new(p).ok())
+                .collect();
+            generate_operation_files_filtered(
+                &mut result,
+                &artifacts.compilation_result,
+                &artifacts.ir_builder,
+                &schema_output_path,
+                &ns,
+                &ops_access_mod,
+                config,
+                &artifacts.type_kinds,
+                &customizer,
+                query_string_format,
+                api_target,
+                is_embedded,
+                root_url,
+                ops_in_schema_module,
+                embedded_target_name.as_deref(),
+                include_schema_docs,
+                &path_matchers,
+            );
+            generate_fragment_files_filtered(
+                &mut result,
+                &artifacts.compilation_result,
+                &artifacts.ir_builder,
+                &schema_output_path,
+                &ns,
+                &ops_access_mod,
+                config,
+                &artifacts.type_kinds,
+                &customizer,
+                query_string_format,
+                api_target,
+                is_embedded,
+                root_url,
+                ops_in_schema_module,
+                embedded_target_name.as_deref(),
+                include_schema_docs,
+                &path_matchers,
+            );
+        }
+        RenderMode::SchemaOnly => {
+            // No operations or fragments
+        }
+    }
+
+    // Test mocks (for All and SchemaOnly modes)
+    if !matches!(mode, RenderMode::OperationsOnly { .. }) {
+        generate_test_mock_files(
+            &mut result,
+            &artifacts.compilation_result,
+            config,
+            root_url,
+            &ns,
+            api_target,
+            &mock_access_mod,
+            &customizer,
+            embedded_target_name.as_deref(),
+        );
+    }
+
+    Ok(result)
+}
+
+/// Controls which files the render stage produces.
+pub enum RenderMode {
+    /// Generate everything: schema types + operations + fragments + mocks.
+    All,
+    /// Generate only schema types + module files + mocks.
+    SchemaOnly,
+    /// Generate only operations/fragments, optionally filtered to specific paths.
+    OperationsOnly { paths: Vec<String> },
+}
+
+// ==========================================================================
+// Convenience functions (CLI entry points) - thin wrappers over the stages
+// ==========================================================================
 
 /// Run the full code generation pipeline.
 pub fn generate(config: &ApolloCodegenConfiguration, root_url: &Path, options: &GenerateOptions) -> anyhow::Result<GenerationResult> {

@@ -103,7 +103,9 @@ dependencies = [
  "apollo-codegen-frontend",
  "apollo-codegen-glob",
  "apollo-codegen-ir",
+ "apollo-codegen-pipeline",
  "apollo-codegen-render",
+ "apollo-codegen-worker",
  "clap",
  "glob",
  "indexmap",
@@ -180,6 +182,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "apollo-codegen-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apollo-codegen-config",
+ "apollo-codegen-frontend",
+ "apollo-codegen-glob",
+ "apollo-codegen-ir",
+ "apollo-codegen-render",
+ "glob",
+ "indexmap",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "apollo-codegen-render"
 version = "0.1.0"
 dependencies = [
@@ -190,6 +208,18 @@ dependencies = [
  "indexmap",
  "regex",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "apollo-codegen-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "apollo-codegen-config",
+ "apollo-codegen-frontend",
+ "apollo-codegen-pipeline",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

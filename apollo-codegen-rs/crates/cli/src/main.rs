@@ -1,6 +1,8 @@
 mod fetch_schema;
 mod init_command;
-mod pipeline;
+
+// Re-export pipeline from lib crate
+use apollo_codegen_cli::pipeline;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -247,6 +249,12 @@ fn load_config(
 }
 
 fn main() -> anyhow::Result<()> {
+    // Check for Bazel persistent worker mode BEFORE clap parsing.
+    // Bazel passes --persistent_worker as the only arg when starting a worker.
+    if std::env::args().any(|a| a == "--persistent_worker") {
+        return apollo_codegen_worker::run_worker_loop();
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

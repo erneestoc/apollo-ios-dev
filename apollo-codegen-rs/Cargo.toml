@@ -7,7 +7,9 @@ members = [
     "crates/ir",
     "crates/render",
     "crates/cache",
+    "crates/pipeline",
     "crates/cli",
+    "crates/worker",
     "crates/golden-test",
     "crates/fuzz-test",
 ]
@@ -69,3 +71,6 @@ apollo-codegen-frontend = { path = "crates/frontend" }
 apollo-codegen-ir = { path = "crates/ir" }
 apollo-codegen-render = { path = "crates/render" }
 apollo-codegen-cache = { path = "crates/cache" }
+apollo-codegen-pipeline = { path = "crates/pipeline" }
+apollo-codegen-cli = { path = "crates/cli" }
+apollo-codegen-worker = { path = "crates/worker" }

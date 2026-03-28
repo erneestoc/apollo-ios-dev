@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "CLI for Apollo iOS code generation (Rust implementation)"
 
+[lib]
+name = "apollo_codegen_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "apollo-ios-cli-rs"
 path = "src/main.rs"
@@ -16,6 +20,8 @@ apollo-codegen-frontend.workspace = true
 apollo-codegen-ir.workspace = true
 apollo-codegen-render.workspace = true
 apollo-codegen-cache.workspace = true
+apollo-codegen-pipeline.workspace = true
+apollo-codegen-worker.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 glob.workspace = true

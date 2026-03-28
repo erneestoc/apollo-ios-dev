@@ -1,0 +1,18 @@
+[package]
+name = "apollo-codegen-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared code generation pipeline stages for Apollo iOS (used by CLI and worker)"
+
+[dependencies]
+apollo-codegen-config.workspace = true
+apollo-codegen-glob.workspace = true
+apollo-codegen-frontend.workspace = true
+apollo-codegen-ir.workspace = true
+apollo-codegen-render.workspace = true
+sha2.workspace = true
+anyhow.workspace = true
+glob.workspace = true
+indexmap.workspace = true
+serde_json.workspace = true
