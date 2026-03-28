@@ -14,6 +14,9 @@ import {{ api_target_name }}
   /// {{ line }}
 {%- endif %}
 {%- endfor %}
+{%- if desc.ends_with('\n') %}
+  ///
+{%- endif %}
 {%- endif %}
 {%- if v.is_deprecated %}
 {%- if let Some(reason) = v.deprecation_reason %}
@@ -27,10 +30,12 @@ import {{ api_target_name }}
 {%- endif %}
 {%- if camel_case_conversion %}
   case {{ v.case_name }} = "{{ v.raw_value }}"
-{%- else if v.case_name == v.raw_value %}
+{%- else %}
+{%- if v.case_name == v.raw_value %}
   case {{ v.case_name }}
 {%- else %}
   case {{ v.case_name }} = "{{ v.raw_value }}"
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 }

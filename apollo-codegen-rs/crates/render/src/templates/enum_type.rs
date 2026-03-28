@@ -121,6 +121,11 @@ fn render_type_header(type_name: &str, schema_name: &str, description: Option<&s
                     header.push_str(&format!("/// {}\n", line));
                 }
             }
+            // Rust's str::lines() strips trailing \n, but Swift preserves it
+            // as an empty `///` line. Match Swift's behavior.
+            if desc.ends_with('\n') {
+                header.push_str("///\n");
+            }
         }
     }
 
