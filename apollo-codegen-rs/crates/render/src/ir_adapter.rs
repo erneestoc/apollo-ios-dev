@@ -470,11 +470,13 @@ fn build_selection_set_config_owned(
     // entity field selections become nested types).
     let mut absorbed_inline_indices: Vec<usize> = Vec::new();
     let mut absorbed_type_names: Vec<String> = Vec::new();
-    if let Some(entity_root_type) = entity_root_graphql_type {
+    {
+        let effective_root = entity_root_graphql_type
+            .unwrap_or_else(|| ir_ss.scope.parent_type.name());
         for (idx, inline) in ds.inline_fragments.iter().enumerate() {
             if let Some(ref tc) = inline.type_condition {
                 let tc_name = tc.name();
-                let should_absorb = tc_name == entity_root_type
+                let should_absorb = tc_name == effective_root
                     || is_supertype_of_current(&ir_ss.scope.parent_type, tc_name);
                 if should_absorb {
                     absorbed_inline_indices.push(idx);
@@ -4882,12 +4884,13 @@ fn render_field_swift_type(
         }
         FieldSelection::Entity(ef) => {
             // Entity fields use the singularized struct name from the response key for list types
-            // Non-list types use the response key directly
-            let struct_name = if ef.field_type.is_list() {
+            // Non-list types use the response key directly.
+            // Apply _SelectionSet disambiguation for names that collide with Swift built-ins.
+            let struct_name = naming::as_selection_set_name(&if ef.field_type.is_list() {
                 naming::first_uppercased(&naming::singularize(ef.response_key()))
             } else {
                 naming::first_uppercased(ef.response_key())
-            };
+            });
             let swift_type = wrap_type_with_struct_name(&ef.field_type, &struct_name);
             (swift_type, true)
         }

@@ -51,7 +51,7 @@ pub fn render(
         "Objects".to_string()
     };
 
-    let swift_name = crate::naming::first_uppercased(type_name);
+    let swift_name = crate::naming::as_schema_type_name(type_name, "_Object");
 
     // Build the interfaces string with correct indentation
     // This will appear at 4-space indent level inside the template

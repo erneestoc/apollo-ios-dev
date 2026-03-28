@@ -67,13 +67,13 @@ impl<'a> ParentTypeRef<'a> {
     pub fn render(&self, schema_namespace: &str) -> String {
         match self {
             ParentTypeRef::Object(name) => {
-                format!("{}.Objects.{}", schema_namespace, naming::first_uppercased(name))
+                format!("{}.Objects.{}", schema_namespace, naming::as_schema_type_name(name, "_Object"))
             }
             ParentTypeRef::Interface(name) => {
-                format!("{}.Interfaces.{}", schema_namespace, naming::first_uppercased(name))
+                format!("{}.Interfaces.{}", schema_namespace, naming::as_schema_type_name(name, "_Interface"))
             }
             ParentTypeRef::Union(name) => {
-                format!("{}.Unions.{}", schema_namespace, naming::first_uppercased(name))
+                format!("{}.Unions.{}", schema_namespace, naming::as_schema_type_name(name, "_Union"))
             }
         }
     }

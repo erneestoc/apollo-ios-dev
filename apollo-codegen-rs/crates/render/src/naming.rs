@@ -23,6 +23,17 @@ pub fn as_selection_set_name(name: &str) -> String {
     }
 }
 
+/// Disambiguate a schema type name with a type-specific suffix.
+/// Matches Swift's `GraphQLNamedType.render(as: .typename)` behavior.
+pub fn as_schema_type_name(name: &str, suffix: &str) -> String {
+    let uppercased = first_uppercased(name);
+    if TYPE_NAMES_TO_SUFFIX.contains(&uppercased.as_str()) {
+        format!("{}{}", uppercased, suffix)
+    } else {
+        uppercased
+    }
+}
+
 /// If a fragment name conflicts with Swift built-ins,
 /// suffix it with `_Fragment` to disambiguate.
 pub fn as_fragment_name(name: &str) -> String {
