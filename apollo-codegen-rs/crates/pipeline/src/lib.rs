@@ -1787,6 +1787,17 @@ fn generate_fragment_files(
         } else {
             frag.is_local_cache_mutation
         };
+        // Collect schema root type names for __typename exclusion in fragment roots
+        let schema_root_type_names: Vec<String> = {
+            let mut names = vec![compilation.root_types.query_type.name().to_string()];
+            if let Some(ref mt) = compilation.root_types.mutation_type {
+                names.push(mt.name().to_string());
+            }
+            if let Some(ref st) = compilation.root_types.subscription_type {
+                names.push(st.name().to_string());
+            }
+            names
+        };
         let mut content = ir_adapter::render_fragment(
             frag,
             ns,
@@ -1797,6 +1808,7 @@ fn generate_fragment_files(
             query_string_format,
             api_target,
             config.options.operation_document_format.definition,
+            &schema_root_type_names,
         );
 
         if !include_schema_docs {
@@ -2086,10 +2098,21 @@ fn generate_fragment_files_filtered(
             } else {
                 false
             };
+            let schema_root_type_names: Vec<String> = {
+                let mut names = vec![compilation.root_types.query_type.name().to_string()];
+                if let Some(ref mt) = compilation.root_types.mutation_type {
+                    names.push(mt.name().to_string());
+                }
+                if let Some(ref st) = compilation.root_types.subscription_type {
+                    names.push(st.name().to_string());
+                }
+                names
+            };
             let mut content = ir_adapter::render_fragment(
                 frag, ns, access_mod, generate_init, type_kinds, customizer,
                 query_string_format, api_target,
                 config.options.operation_document_format.definition,
+                &schema_root_type_names,
             );
             if !include_schema_docs {
                 content = strip_parent_type_comments(&content);

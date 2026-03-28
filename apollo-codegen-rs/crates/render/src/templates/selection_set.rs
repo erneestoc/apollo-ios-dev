@@ -51,6 +51,8 @@ pub struct SelectionSetConfig<'a> {
     pub is_mutable: bool,
     /// The API target name for fully-qualified type references (default: "ApolloAPI").
     pub api_target_name: &'a str,
+    /// Deprecated argument warnings: (field_name, arg_name, reason).
+    pub deprecated_arg_warnings: Vec<(&'a str, &'a str, &'a str)>,
 }
 
 /// Parent type reference, mapping to Objects, Interfaces, or Unions namespace.
@@ -294,6 +296,24 @@ pub fn render(config: &SelectionSetConfig) -> String {
             ));
         }
         result.push_str(&format!("{}] }}\n", inner_indent));
+    }
+
+    // #warning directives for deprecated arguments
+    // Rendered before __selections, matching Swift's SelectionSetTemplate
+    for (field_name, arg_name, reason) in &config.deprecated_arg_warnings {
+        // Escape special characters in the reason text
+        let escaped = reason
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\'', "\\'")
+            .replace('\t', "\\t")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\0', "\\0");
+        result.push_str(&format!(
+            "{}#warning(\"Argument '{}' of field '{}' is deprecated. Reason: '{}'\")\n",
+            inner_indent, arg_name, field_name, escaped
+        ));
     }
 
     // __selections

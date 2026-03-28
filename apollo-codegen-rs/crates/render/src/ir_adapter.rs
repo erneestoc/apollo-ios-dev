@@ -117,6 +117,7 @@ pub fn render_operation(
         None,  // no parent scope DS for root
         None,  // no scope conditions for root
         api_target_name,
+        &[],   // operations don't need root type check for __typename
     );
 
     let class_keyword = if mark_definitions_as_final {
@@ -158,6 +159,7 @@ pub fn render_fragment(
     query_string_format: crate::templates::operation::QueryStringFormat,
     api_target_name: &str,
     include_definition: bool,
+    schema_root_type_names: &[String],
 ) -> String {
     let frag_conformance = if frag.is_local_cache_mutation {
         SelectionSetConformance::MutableFragment
@@ -187,6 +189,7 @@ pub fn render_fragment(
         None, // no parent scope DS for fragment root
         None, // no scope conditions for fragment root
         api_target_name,
+        schema_root_type_names,
     );
 
     let config = OwnedFragmentConfig {
@@ -269,6 +272,9 @@ struct OwnedSelectionSetConfig {
     is_mutable: bool,
     /// Type names that were absorbed (e.g., "AsAnimal" absorbed into AsPet)
     absorbed_type_names: Vec<String>,
+    /// Deprecated argument warnings: (field_name, arg_name, reason)
+    /// Rendered as #warning("Argument 'x' of field 'y' is deprecated. Reason: 'z'")
+    deprecated_arg_warnings: Vec<(String, String, String)>,
     /// The API target name for fully-qualified type references.
     api_target_name: String,
 }
@@ -441,6 +447,7 @@ fn build_selection_set_config_owned(
     parent_scope_ds: Option<&DirectSelections>,
     scope_conditions: Option<&InclusionConditions>,
     api_target_name: &str,
+    schema_root_type_names: &[String],
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -518,20 +525,15 @@ fn build_selection_set_config_owned(
     //   - Skip for fragment roots on concrete object types with no type conditions
     //     (no inline fragments, no named fragment spreads that need type discrimination)
     let is_root_operation_data = is_root && matches!(conformance, SelectionSetConformance::SelectionSet | SelectionSetConformance::MutableSelectionSet);
-    // Swift omits __typename for fragments on concrete object types that don't
-    // implement any interfaces AND have no type conditions (inline fragments/spreads).
-    // Types implementing interfaces need __typename for type discrimination.
-    let is_fragment_on_plain_object = matches!(
-        conformance,
-        SelectionSetConformance::Fragment | SelectionSetConformance::MutableFragment
-    ) && match &ir_ss.scope.parent_type {
-        GraphQLCompositeType::Object(obj) => obj.interfaces.is_empty(),
-        _ => false,
-    } && ds.inline_fragments.is_empty()
-        && ds.named_fragments.is_empty();
+    // Match Swift's shouldIncludeTypenameSelection:
+    //   scopePath.count == 1 && !isRootType
+    // For fragment root (scopePath.count == 1): include unless parent type is schema root
+    // For inline fragments (scopePath.count > 1): exclude (inherit from parent)
+    // For operation root Data: exclude
+    let is_schema_root_type = schema_root_type_names.contains(&ir_ss.scope.parent_type.name().to_string());
     let should_add_typename = !is_inline_fragment
         && !is_root_operation_data
-        && !is_fragment_on_plain_object;
+        && !is_schema_root_type;
 
     // Build selections
     let mut selections = Vec::new();
@@ -1073,6 +1075,7 @@ fn build_selection_set_config_owned(
                 None, // entity fields start a new scope
                 None, // no scope conditions for entity fields
                 api_target_name,
+                schema_root_type_names,
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -1419,6 +1422,7 @@ fn build_selection_set_config_owned(
                 Some(ds), // pass parent scope's direct selections
                 inline.inclusion_conditions.as_ref(), // pass inline fragment's conditions to strip from children
                 api_target_name,
+                schema_root_type_names,
             );
 
             // When this inline fragment is nested inside a conditional scope (e.g., AsDroid
@@ -2543,6 +2547,7 @@ fn build_selection_set_config_owned(
                 Some(ds),
                 inline.inclusion_conditions.as_ref(),
                 api_target_name,
+                schema_root_type_names,
             );
 
             let doc_comment = doc_comment_path(qualified_name, &type_name, is_root);
@@ -2979,7 +2984,7 @@ fn build_selection_set_config_owned(
                     field_accessors: pfa, inline_fragment_accessors: vec![],
                     fragment_spreads: pfs, initializer: pinit,
                     nested_types: pnt, type_aliases: pta, type_alias_insert_index: pnt_len,
-                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
+                    indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], deprecated_arg_warnings: vec![], api_target_name: api_target_name.to_string(),
                 };
                 let dc = doc_comment_path(qualified_name, &type_name, is_root);
                 // Insert promoted nested types at the correct position
@@ -3325,7 +3330,7 @@ fn build_selection_set_config_owned(
                         field_accessors: pfa, inline_fragment_accessors: vec![],
                         fragment_spreads: pfs, initializer: pinit,
                         nested_types: case2_nested, type_aliases: case2_aliases, type_alias_insert_index: case2_nested_len,
-                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
+                        indent: indent + 2, access_modifier: access_modifier.to_string(), is_mutable, absorbed_type_names: vec![], deprecated_arg_warnings: vec![], api_target_name: api_target_name.to_string(),
                     };
                     let dc = doc_comment_path(qualified_name, &type_name, is_root);
                     // Insert Case 2 promoted nested types at the correct position
@@ -3643,7 +3648,7 @@ fn build_selection_set_config_owned(
                 indent: indent + 2,
                 access_modifier: access_modifier.to_string(),
                 is_mutable,
-                absorbed_type_names: vec![],
+                absorbed_type_names: vec![], deprecated_arg_warnings: vec![],
                 api_target_name: api_target_name.to_string(),
             };
 
@@ -3717,6 +3722,7 @@ fn build_selection_set_config_owned(
         access_modifier: access_modifier.to_string(),
         is_mutable,
         absorbed_type_names,
+        deprecated_arg_warnings: vec![], // TODO: collect from field arguments when warningsOnDeprecatedUsage is enabled
         api_target_name: api_target_name.to_string(),
     }
 }
@@ -4209,7 +4215,7 @@ fn build_inline_fragment_entity_type(
         type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
+        is_mutable, absorbed_type_names: vec![], deprecated_arg_warnings: vec![], api_target_name: api_target_name.to_string(),
     };
 
     // Use full entity-relative path for doc comment (e.g., "AllAnimal.AsWarmBlooded.Height")
@@ -4393,7 +4399,7 @@ fn build_merged_entity_nested_type(
         type_alias_insert_index: 0,
         indent,
         access_modifier: access_modifier.to_string(),
-        is_mutable, absorbed_type_names: vec![], api_target_name: api_target_name.to_string(),
+        is_mutable, absorbed_type_names: vec![], deprecated_arg_warnings: vec![], api_target_name: api_target_name.to_string(),
     };
 
     let doc_path = if let Some(pos) = qualified_name.find(".Data.") {
@@ -5383,5 +5389,9 @@ fn owned_to_ref_selection_set_with_absorbed<'a>(owned: &'a OwnedSelectionSetConf
         access_modifier: &owned.access_modifier,
         is_mutable: owned.is_mutable,
         api_target_name: &owned.api_target_name,
+        deprecated_arg_warnings: owned.deprecated_arg_warnings
+            .iter()
+            .map(|(f, a, r)| (f.as_str(), a.as_str(), r.as_str()))
+            .collect(),
     }
 }
