@@ -25,10 +25,14 @@ pub struct EnumValue {
 struct TemplateEnumValue {
     case_name: String,
     raw_value: String,
-    description: Option<String>,
+    /// Pre-rendered description lines (handles \r for Swift byte-for-byte match).
+    rendered_description: Option<String>,
     is_deprecated: bool,
     deprecation_reason: Option<String>,
     is_renamed: bool,
+    /// When true, the case line should have no leading indent (2 spaces stripped).
+    /// This happens when the description ends with \r which resets cursor position.
+    strip_case_indent: bool,
 }
 
 #[derive(Template)]
@@ -79,13 +83,30 @@ pub fn render(
                 .as_ref()
                 .map(|r| r.replace('"', "\\\""));
 
+            // Pre-render description with \r handling for byte-for-byte Swift match.
+            // When description ends with \r\n, Swift's template loses the case indent.
+            let rendered_description = v.description.as_ref().map(|desc| {
+                render_description_lines(desc)
+            });
+            let strip_case_indent = v.description.as_ref()
+                .map(|desc| {
+                    // Check if the last non-\n line ends with \r
+                    desc.split('\n')
+                        .filter(|l| !l.is_empty())
+                        .last()
+                        .map(|l| l.ends_with('\r'))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
             TemplateEnumValue {
                 case_name: escaped_name,
                 raw_value: v.raw_value.clone(),
-                description: v.description.clone(),
+                rendered_description,
                 is_deprecated: v.is_deprecated,
                 deprecation_reason,
                 is_renamed: v.is_renamed,
+                strip_case_indent,
             }
         })
         .collect();
@@ -108,6 +129,35 @@ pub fn render(
 }
 
 /// Render the type-level header: doc comments and "renamed from" comment.
+/// Render description lines with \r handling for byte-for-byte Swift match.
+/// When a line ends with \r, the next line loses its /// prefix (Swift bug reproduction).
+fn render_description_lines(desc: &str) -> String {
+    let mut result = String::new();
+    let parts: Vec<&str> = desc.split('\n').collect();
+    let last_idx = parts.len() - 1;
+    let mut prev_had_cr = false;
+    for (i, line) in parts.iter().enumerate() {
+        if i == last_idx && line.is_empty() {
+            result.push_str("  ///\n");
+            continue;
+        }
+        if prev_had_cr {
+            result.push_str(&format!("{}\n", line));
+            prev_had_cr = line.ends_with('\r');
+        } else if line.is_empty() {
+            result.push_str("  ///\n");
+        } else {
+            result.push_str(&format!("  /// {}\n", line));
+            prev_had_cr = line.ends_with('\r');
+        }
+    }
+    // Remove trailing newline (template adds its own)
+    if result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
 fn render_type_header(type_name: &str, schema_name: &str, description: Option<&str>) -> String {
     let mut header = String::new();
 

@@ -6,17 +6,8 @@ import {{ api_target_name }}
 {{ type_header -}}
 {{ access_modifier }}enum {{ swift_type_name }}: String, EnumType {
 {%- for v in values %}
-{%- if let Some(desc) = v.description %}
-{%- for line in desc.lines() %}
-{%- if line.is_empty() %}
-  ///
-{%- else %}
-  /// {{ line }}
-{%- endif %}
-{%- endfor %}
-{%- if desc.ends_with('\n') %}
-  ///
-{%- endif %}
+{%- if let Some(desc) = v.rendered_description %}
+{{ desc }}
 {%- endif %}
 {%- if v.is_deprecated %}
 {%- if let Some(reason) = v.deprecation_reason %}
@@ -28,6 +19,17 @@ import {{ api_target_name }}
 {%- if v.is_renamed %}
   // Renamed from GraphQL schema value: '{{ v.raw_value }}'
 {%- endif %}
+{%- if v.strip_case_indent %}
+{%- if camel_case_conversion %}
+case {{ v.case_name }} = "{{ v.raw_value }}"
+{%- else %}
+{%- if v.case_name == v.raw_value %}
+case {{ v.case_name }}
+{%- else %}
+case {{ v.case_name }} = "{{ v.raw_value }}"
+{%- endif %}
+{%- endif %}
+{%- else %}
 {%- if camel_case_conversion %}
   case {{ v.case_name }} = "{{ v.raw_value }}"
 {%- else %}
@@ -35,6 +37,7 @@ import {{ api_target_name }}
   case {{ v.case_name }}
 {%- else %}
   case {{ v.case_name }} = "{{ v.raw_value }}"
+{%- endif %}
 {%- endif %}
 {%- endif %}
 {%- endfor %}
