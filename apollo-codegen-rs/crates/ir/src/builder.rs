@@ -83,7 +83,7 @@ impl IRBuilder {
             camel_case_enums,
             input_object_fields,
             field_descriptions,
-            build_entity_trees: false,
+            build_entity_trees: true,
         };
 
         // Build fragments in dependency order (leaves first) so that when a fragment
