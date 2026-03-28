@@ -256,6 +256,65 @@ impl EntitySelectionTree {
     }
 }
 
+/// Collect ALL fields from ALL scopes in the entity's selection tree.
+/// This provides the complete set of fields that any scope selects on this entity,
+/// deduplicated by response key.
+pub fn collect_all_entity_fields(tree: &EntitySelectionTree) -> IndexMap<String, TreeField> {
+    let mut fields = IndexMap::new();
+    collect_fields_recursive(&tree.root_node, &mut fields);
+    fields
+}
+
+fn collect_fields_recursive(node: &EntityNode, fields: &mut IndexMap<String, TreeField>) {
+    match &node.child {
+        Some(EntityNodeChild::Entity(child)) => {
+            collect_fields_recursive(child, fields);
+        }
+        Some(EntityNodeChild::Selections(sel_map)) => {
+            for (_, scope_selections) in sel_map {
+                for (key, field) in &scope_selections.fields {
+                    if !fields.contains_key(key) {
+                        fields.insert(key.clone(), field.clone());
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+    // Also collect from scope condition children (inline fragment scopes)
+    for (_, cond_node) in &node.scope_conditions {
+        collect_fields_recursive(cond_node, fields);
+    }
+    // And from merged fragment trees
+    for merged_frag in &node.merged_fragment_trees {
+        collect_fields_from_snapshot(&merged_frag.tree_root_node_snapshot, fields);
+    }
+}
+
+fn collect_fields_from_snapshot(node: &EntityNodeSnapshot, fields: &mut IndexMap<String, TreeField>) {
+    match &node.child {
+        Some(EntityNodeChildSnapshot::Entity(child)) => {
+            collect_fields_from_snapshot(child, fields);
+        }
+        Some(EntityNodeChildSnapshot::Selections(sel_map)) => {
+            for (_, scope_selections) in sel_map {
+                for (key, field) in &scope_selections.fields {
+                    if !fields.contains_key(key) {
+                        fields.insert(key.clone(), field.clone());
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+    for (_, cond_node) in &node.scope_conditions {
+        collect_fields_from_snapshot(cond_node, fields);
+    }
+    for merged_frag in &node.merged_fragment_trees {
+        collect_fields_from_snapshot(&merged_frag.tree_root_node_snapshot, fields);
+    }
+}
+
 /// A node in the entity selection tree.
 #[derive(Debug)]
 pub struct EntityNode {

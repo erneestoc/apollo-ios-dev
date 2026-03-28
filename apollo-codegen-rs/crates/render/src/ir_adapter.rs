@@ -118,6 +118,7 @@ pub fn render_operation(
         None,  // no scope conditions for root
         api_target_name,
         &[],   // operations don't need root type check for __typename
+        op.entity_storage.as_ref(),
     );
 
     let class_keyword = if mark_definitions_as_final {
@@ -190,6 +191,7 @@ pub fn render_fragment(
         None, // no scope conditions for fragment root
         api_target_name,
         schema_root_type_names,
+        frag.entity_storage.as_ref(),
     );
 
     let config = OwnedFragmentConfig {
@@ -448,6 +450,7 @@ fn build_selection_set_config_owned(
     scope_conditions: Option<&InclusionConditions>,
     api_target_name: &str,
     schema_root_type_names: &[String],
+    entity_storage: Option<&apollo_codegen_ir::entity_storage::DefinitionEntityStorage>,
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -1078,6 +1081,7 @@ fn build_selection_set_config_owned(
                 None, // no scope conditions for entity fields
                 api_target_name,
                 schema_root_type_names,
+                entity_storage,
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -1425,6 +1429,7 @@ fn build_selection_set_config_owned(
                 inline.inclusion_conditions.as_ref(), // pass inline fragment's conditions to strip from children
                 api_target_name,
                 schema_root_type_names,
+                entity_storage,
             );
 
             // When this inline fragment is nested inside a conditional scope (e.g., AsDroid
@@ -1973,6 +1978,8 @@ fn build_selection_set_config_owned(
                             parent_has_this_entity,
                             api_target_name,
                             generate_initializers,
+                            entity_storage,
+                            &[],  // entity_field_path placeholder
                         );
                         let mut merged_config = merged;
                         // If inline fragment has direct selections, add those fields too
@@ -2550,6 +2557,7 @@ fn build_selection_set_config_owned(
                 inline.inclusion_conditions.as_ref(),
                 api_target_name,
                 schema_root_type_names,
+                entity_storage,
             );
 
             let doc_comment = doc_comment_path(qualified_name, &type_name, is_root);
@@ -2941,6 +2949,8 @@ fn build_selection_set_config_owned(
                                 parent_has,
                                 api_target_name,
                                 generate_initializers,
+                                entity_storage,
+                                &[],  // entity_field_path placeholder
                             );
                             pnt.push(merged_struct);
                         } else {
@@ -3250,6 +3260,8 @@ fn build_selection_set_config_owned(
                                 parent_has,
                                 api_target_name,
                                 generate_initializers,
+                                entity_storage,
+                                &[],  // entity_field_path placeholder
                             );
                             case2_nested.push(merged_entity);
                         }
@@ -3548,6 +3560,8 @@ fn build_selection_set_config_owned(
                                 true,
                                 api_target_name,
                                 generate_initializers,
+                                entity_storage,
+                                &[],  // entity_field_path placeholder
                             );
                             cond_nested.push(merged);
                         }
@@ -3608,6 +3622,8 @@ fn build_selection_set_config_owned(
                                             true,
                                             api_target_name,
                                             generate_initializers,
+                                            entity_storage,
+                                            &[],  // entity_field_path placeholder
                                         );
                                         cond_nested.push(merged);
                                     } else {
@@ -3914,6 +3930,8 @@ fn build_inline_fragment_entity_type(
     parent_has_entity_field: bool,  // Whether the parent scope actually has this entity field
     api_target_name: &str,
     generate_initializers: bool,
+    entity_storage: Option<&apollo_codegen_ir::entity_storage::DefinitionEntityStorage>,
+    entity_field_path: &[apollo_codegen_ir::entity::FieldPathComponent],
 ) -> OwnedNestedSelectionSet {
     let parent_type_name = customizer.custom_type_name(parent_entity_field.selection_set.scope.parent_type.name());
     let entity_parent_type = match &parent_entity_field.selection_set.scope.parent_type {
@@ -4001,6 +4019,12 @@ fn build_inline_fragment_entity_type(
             merged_fields.push(OwnedFieldAccessor { name: key.clone(), swift_type: swift_type.clone(), description: None });
         }
     }
+
+    // NOTE: EntitySelectionTree field supplementation plumbed but not yet active.
+    // collect_all_entity_fields includes conditional fragment spread fields
+    // which causes regressions. Full ComputedSelectionSet with MergingStrategy
+    // needed to correctly scope merged fields. Infrastructure is ready.
+
 
     // Build fulfilled fragments
     // Order: self, root entity scope (if different from parent), then parent if same as root,
