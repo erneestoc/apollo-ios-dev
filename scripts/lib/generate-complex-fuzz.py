@@ -1468,10 +1468,217 @@ query ResultQuery {
     write_case(case_dir, "DisambiguationAPI", schema, ops)
 
 
+def write_case_with_initializers(case_dir, namespace, schema, operations):
+    """Write a test case with selectionSetInitializers + operationDocumentFormat enabled."""
+    ops_dir = os.path.join(case_dir, "operations")
+    os.makedirs(ops_dir, exist_ok=True)
+
+    schema_path = os.path.join(case_dir, "schema.graphqls")
+    with open(schema_path, "w") as f:
+        f.write(schema)
+
+    for i, op in enumerate(operations):
+        op_path = os.path.join(ops_dir, f"op-{i:03d}.graphql")
+        with open(op_path, "w") as f:
+            f.write(op)
+
+    config = {
+        "schemaNamespace": namespace,
+        "input": {
+            "schemaSearchPaths": [schema_path],
+            "operationSearchPaths": [os.path.join(ops_dir, "*.graphql")],
+        },
+        "output": {
+            "testMocks": {"none": {}},
+            "schemaTypes": {
+                "path": os.path.join(case_dir, "Generated"),
+                "moduleType": {"swiftPackageManager": {}},
+            },
+            "operations": {"inSchemaModule": {}},
+        },
+        "options": {
+            "schemaDocumentation": "include",
+            "pruneGeneratedFiles": False,
+            "operationDocumentFormat": ["definition", "operationId"],
+            "selectionSetInitializers": {
+                "operations": True,
+                "namedFragments": True,
+            },
+            "markOperationDefinitionsAsFinal": True,
+        },
+    }
+
+    config_path = os.path.join(case_dir, "config.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+
+
+def generate_case_9(case_dir):
+    """fulfilledFragments under-inclusion: parent-scope fragment not propagated to interface inline fragments."""
+    schema = '''\
+interface Animal { species: String!, height: Float! }
+interface WarmBlooded { bodyTemperature: Float! }
+interface Pet { humanName: String }
+type Dog implements Animal & WarmBlooded & Pet { species: String!, height: Float!, bodyTemperature: Float!, humanName: String, breed: String! }
+type Cat implements Animal & WarmBlooded & Pet { species: String!, height: Float!, bodyTemperature: Float!, humanName: String, isIndoor: Boolean! }
+type Fish implements Animal & Pet { species: String!, height: Float!, humanName: String, waterType: String! }
+type Query { allAnimals: [Animal!]! }
+'''
+    ops = ['''\
+fragment WarmBloodedDetails on WarmBlooded { bodyTemperature }
+fragment PetDetails on Pet { humanName }
+fragment HeightInMeters on Animal { height }
+query AllAnimals {
+  allAnimals {
+    species
+    ...HeightInMeters
+    ... on WarmBlooded { ...WarmBloodedDetails }
+    ... on Pet { ...PetDetails }
+    ... on Dog { breed }
+    ... on Cat { isIndoor }
+  }
+}
+''']
+    write_case_with_initializers(case_dir, "FulfilledFragsUnder", schema, ops)
+
+
+def generate_case_10(case_dir):
+    """fulfilledFragments over-inclusion: inline fields matching fragment not spread at that scope."""
+    schema = '''\
+interface Step { id: ID!, label: String! }
+interface Activatable { isActive: Boolean!, activatedAt: String }
+type Address { street: String!, city: String!, state: String! }
+type DeliveryAddressStep implements Step & Activatable { id: ID!, label: String!, isActive: Boolean!, activatedAt: String, address: Address! }
+type PaymentStep implements Step & Activatable { id: ID!, label: String!, isActive: Boolean!, activatedAt: String, cardLast4: String! }
+type Checkout { id: ID!, steps: [Step!]! }
+type Query { checkout: Checkout }
+'''
+    ops = ['''\
+fragment StepFields on Step { id, label }
+fragment ActivatableFields on Activatable { isActive, activatedAt }
+fragment AddressFields on Address { street, city, state }
+fragment DeliveryAddressStepFields on DeliveryAddressStep { ...StepFields, ...ActivatableFields, address { ...AddressFields } }
+query GetCheckout {
+  checkout {
+    id
+    steps {
+      ...StepFields
+      ... on Activatable { ...ActivatableFields }
+      ... on DeliveryAddressStep { ...DeliveryAddressStepFields }
+      ... on PaymentStep { id, label, isActive, activatedAt, cardLast4 }
+    }
+  }
+}
+''']
+    write_case_with_initializers(case_dir, "FulfilledFragsOver", schema, ops)
+
+
+def generate_case_11(case_dir):
+    """fulfilledFragments over-inclusion: parent-scope fragment shadowed by inline field selections."""
+    schema = '''\
+interface Node { id: ID! }
+interface Displayable { title: String!, description: String }
+type Product implements Node & Displayable { id: ID!, title: String!, description: String, price: Float! }
+type Category implements Node & Displayable { id: ID!, title: String!, description: String, products: [Product!]! }
+type Query { node(id: ID!): Node, search: [Displayable!]! }
+'''
+    ops = ['''\
+fragment DisplayableFields on Displayable { title, description }
+fragment ProductFields on Product { id, title, description, price }
+query SearchResults {
+  search {
+    ...DisplayableFields
+    ... on Product { ...ProductFields }
+    ... on Category { title, description, products { id, title, description, price } }
+  }
+}
+''']
+    write_case_with_initializers(case_dir, "FulfilledFragsShadow", schema, ops)
+
+
+def generate_case_12(case_dir):
+    """3-level fragment chaining: operation -> fragment on interface -> ... on Type { ...Fragment } -> entity fields."""
+    schema = '''\
+interface Account { id: ID! }
+type PersonalAccount implements Account { id: ID!, owner: Owner!, settings: Settings }
+type Owner { name: String!, email: String! }
+type Settings { notifications: Boolean!, theme: String }
+type BusinessAccount implements Account { id: ID!, company: Company!, billing: Billing }
+type Company { name: String!, taxId: String }
+type Billing { plan: String!, nextInvoice: Invoice }
+type Invoice { amount: Float!, dueDate: String! }
+type Query { account: Account }
+'''
+    ops = ['''\
+fragment OwnerInfo on Owner { name, email }
+fragment SettingsInfo on Settings { notifications, theme }
+fragment PersonalFields on PersonalAccount { id, owner { ...OwnerInfo }, settings { ...SettingsInfo } }
+fragment CompanyInfo on Company { name, taxId }
+fragment BillingInfo on Billing { plan, nextInvoice { amount, dueDate } }
+fragment BusinessFields on BusinessAccount { id, company { ...CompanyInfo }, billing { ...BillingInfo } }
+fragment AccountData on Account { ... on PersonalAccount { ...PersonalFields } ... on BusinessAccount { ...BusinessFields } }
+query GetAccount { account { ...AccountData } }
+''']
+    write_case_with_initializers(case_dir, "FragmentChain", schema, ops)
+
+
+def generate_case_13(case_dir):
+    """fulfilledFragments with overlapping entity fields: fragment spread + direct selection on same entity."""
+    schema = '''\
+type Viewer { id: ID!, inbox: Inbox!, settings: Settings! }
+type Inbox { messages: [Message!]!, unreadCount: Int! }
+type Message { id: ID!, subject: String!, body: String!, sender: Contact!, attachments: [Attachment!]! }
+type Contact { id: ID!, email: String!, displayName: String! }
+type Attachment { id: ID!, filename: String!, mimeType: String!, size: Int! }
+type Settings { theme: String!, notifications: NotificationSettings! }
+type NotificationSettings { email: Boolean!, push: Boolean!, frequency: String! }
+type Query { viewer: Viewer! }
+'''
+    ops = ['''\
+fragment MessagePreview on Message { id, subject, sender { displayName, email } }
+fragment FullMessage on Message { ...MessagePreview, body, attachments { id, filename, mimeType, size } }
+fragment InboxSummary on Inbox { unreadCount, messages { ...MessagePreview } }
+query GetViewer {
+  viewer {
+    id
+    inbox { ...InboxSummary, messages { ...FullMessage } }
+    settings { theme, notifications { email, push, frequency } }
+  }
+}
+''']
+    write_case_with_initializers(case_dir, "OverlappingEntity", schema, ops)
+
+
+def generate_case_14(case_dir):
+    """Inline input object literals with nested objects and arrays (comma removal in definition strings)."""
+    schema = '''\
+type Query { placeholder: String }
+input MetadataInput { source: String!, version: Int! }
+input ItemDetailInput { title: String!, description: String!, metadata: MetadataInput!, tags: [String!]! }
+input BatchCreateInput { items: [ItemDetailInput!]!, dryRun: Boolean!, label: String! }
+type BatchResult { count: Int! }
+input TagInput { k: String!, v: String! }
+type TagResult { ok: Boolean! }
+type Mutation { batchCreate(input: BatchCreateInput!): BatchResult, tag(tags: [TagInput!]!): TagResult }
+'''
+    ops = ['''\
+mutation BatchCreate {
+  batchCreate(input: { items: [{ title: "Item1", description: "Desc1", metadata: { source: "api", version: 1 }, tags: ["a", "b"] }], dryRun: true, label: "test" }) { count }
+}
+''', '''\
+mutation TagItems {
+  tag(tags: [{ k: "a", v: "1" }, { k: "b", v: "2" }]) { ok }
+}
+''']
+    write_case_with_initializers(case_dir, "InlineInputObjects", schema, ops)
+
+
 GENERATORS = [
     generate_case_0, generate_case_1, generate_case_2, generate_case_3,
     generate_case_4, generate_case_5, generate_case_6, generate_case_7,
-    generate_case_8,
+    generate_case_8, generate_case_9, generate_case_10, generate_case_11,
+    generate_case_12, generate_case_13, generate_case_14,
 ]
 
 
