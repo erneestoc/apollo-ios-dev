@@ -292,22 +292,8 @@ fn render_selections(
         // All items get trailing comma (Swift trailing comma convention)
         match sel {
             selection_set::SelectionItem::Field(f) => {
-                let alias_part = if let Some(alias) = f.alias {
-                    format!(", alias: \"{}\"", alias)
-                } else {
-                    String::new()
-                };
-                if let Some(args) = f.arguments {
-                    result.push_str(&format!(
-                        "{}.field(\"{}\"{}, {}.self, arguments: {}),\n",
-                        item_indent, f.name, alias_part, f.swift_type, args
-                    ));
-                } else {
-                    result.push_str(&format!(
-                        "{}.field(\"{}\"{}, {}.self),\n",
-                        item_indent, f.name, alias_part, f.swift_type
-                    ));
-                }
+                let rendered = selection_set::render_field_selection_public(f, &item_indent);
+                result.push_str(&format!("{}{},\n", item_indent, rendered));
             }
             selection_set::SelectionItem::InlineFragment(name) => {
                 result.push_str(&format!(
@@ -323,22 +309,10 @@ fn render_selections(
             }
             selection_set::SelectionItem::ConditionalField(cond, f) => {
                 let cond_str = selection_set::render_inclusion_condition(cond);
-                let alias_part = if let Some(alias) = f.alias {
-                    format!(", alias: \"{}\"", alias)
-                } else {
-                    String::new()
-                };
-                if let Some(args) = f.arguments {
-                    result.push_str(&format!(
-                        "{}.include(if: {}, .field(\"{}\"{}, {}.self, arguments: {})),\n",
-                        item_indent, cond_str, f.name, alias_part, f.swift_type, args
-                    ));
-                } else {
-                    result.push_str(&format!(
-                        "{}.include(if: {}, .field(\"{}\"{}, {}.self)),\n",
-                        item_indent, cond_str, f.name, alias_part, f.swift_type
-                    ));
-                }
+                result.push_str(&format!(
+                    "{}.include(if: {}, {}),\n",
+                    item_indent, cond_str, selection_set::render_field_selection_public(f, &item_indent)
+                ));
             }
             selection_set::SelectionItem::ConditionalInlineFragment(cond, name) => {
                 let cond_str = selection_set::render_inclusion_condition(cond);
@@ -355,17 +329,10 @@ fn render_selections(
                 ));
                 let group_indent = format!("{}  ", item_indent);
                 for f in fields {
-                    if let Some(args) = f.arguments {
-                        result.push_str(&format!(
-                            "{}.field(\"{}\", {}.self, arguments: {}),\n",
-                            group_indent, f.name, f.swift_type, args
-                        ));
-                    } else {
-                        result.push_str(&format!(
-                            "{}.field(\"{}\", {}.self),\n",
-                            group_indent, f.name, f.swift_type
-                        ));
-                    }
+                    result.push_str(&format!(
+                        "{}{},\n",
+                        group_indent, selection_set::render_field_selection_public(f, &group_indent)
+                    ));
                 }
                 result.push_str(&format!("{}]),\n", item_indent));
             }

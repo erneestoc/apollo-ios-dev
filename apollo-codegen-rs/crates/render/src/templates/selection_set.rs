@@ -571,6 +571,11 @@ fn render_conformance(config: &SelectionSetConfig) -> String {
 }
 
 /// Render a `.field(...)` selection item string with proper indentation.
+/// Public wrapper for rendering a field selection with proper argument indentation.
+pub fn render_field_selection_public(f: &FieldSelectionItem, indent: &str) -> String {
+    render_field_selection(f, indent)
+}
+
 fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
     let alias_part = if let Some(alias) = f.alias {
         format!(", alias: \"{}\"", alias)
@@ -597,17 +602,21 @@ fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
                     bracket_depth += 1;
                 } else {
                     let trimmed = line.trim();
-                    // Check if this line is a closing bracket
-                    if trimmed == "]" || trimmed == "])" {
-                        bracket_depth = bracket_depth.saturating_sub(1);
+                    // Check if this line is a closing bracket (], ]], ]]), etc.)
+                    let closing_count = trimmed.chars().take_while(|c| *c == ']').count();
+                    if closing_count > 0 && trimmed.chars().all(|c| c == ']' || c == ')' || c == ',') {
+                        // Each ']' closes one nesting level
+                        for _ in 0..closing_count {
+                            bracket_depth = bracket_depth.saturating_sub(1);
+                        }
                         if bracket_depth == 0 {
-                            // Outermost closing "]" at parent indent level
                             indented.push_str(indent);
                         } else {
-                            // Inner closing "]" at entry level for that depth
-                            let extra = "  ".repeat(bracket_depth - 1);
+                            let extra = "  ".repeat(bracket_depth.saturating_sub(0));
                             indented.push_str(&base_indent);
-                            indented.push_str(&extra);
+                            if bracket_depth > 1 {
+                                indented.push_str(&"  ".repeat(bracket_depth - 1));
+                            }
                         }
                         indented.push_str(trimmed);
                     } else {
