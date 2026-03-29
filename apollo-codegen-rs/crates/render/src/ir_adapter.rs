@@ -3178,13 +3178,32 @@ fn build_selection_set_config_owned(
                             }
                         }
                     }
-                    // Add the fragment's own inline fragment type last
+                    // Collect nested fragment spreads within the fragment's inline fragment.
+                    // E.g., AccountData has `... on PersonalAccount { ...PersonalFields }`
+                    // → PersonalFields is a nested fragment spread whose fields, accessors,
+                    // and typealiases need to be merged into the promoted inline fragment.
+                    let nested_frag_spreads: Vec<&str> = frag_inline.selection_set.direct_selections.named_fragments
+                        .iter()
+                        .filter(|ns| !has_inclusion_conditions(ns.inclusion_conditions.as_ref()))
+                        .map(|ns| ns.fragment_name.as_str())
+                        .collect();
+
+                    // Add the fragment's own inline fragment type
                     ms.push(format!("{}.{}", spread.fragment_name, type_name));
+                    // Then add nested fragment spreads to merged_sources (after the inline fragment type)
+                    for nested_frag_name in &nested_frag_spreads {
+                        if let Some(nested_frag) = frag_map.get(nested_frag_name) {
+                            if type_satisfies_condition(tc, &nested_frag.type_condition_name) {
+                                ms.push(nested_frag_name.to_string());
+                            }
+                        }
+                    }
 
                     // Build field accessors following merged_sources order:
                     // 1. Parent inherited fields (from the enclosing selection set)
                     // 2. Fields from sibling supertype inline fragments (in merged_sources order)
                     // 3. Own direct fields from this inline fragment
+                    // 4. Fields from nested fragment spreads within the inline fragment
                     let mut pfa = Vec::new();
                     // First: parent inherited fields
                     for fa in &field_accessors {
@@ -3204,11 +3223,25 @@ fn build_selection_set_config_owned(
                             }
                         }
                     }
-                    // Finally: own direct fields from this inline fragment
+                    // Own direct fields from this inline fragment
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         if !pfa.iter().any(|f| f.name == *key) {
                             let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
                             pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                        }
+                    }
+                    // Fields from nested fragment spreads
+                    for nested_frag_name in &nested_frag_spreads {
+                        if let Some(nested_frag) = frag_map.get(nested_frag_name) {
+                            if type_satisfies_condition(tc, &nested_frag.type_condition_name) {
+                                for (key, field) in &nested_frag.root_field.selection_set.direct_selections.fields {
+                                    if key == "__typename" { continue; }
+                                    if !pfa.iter().any(|f| f.name == *key) {
+                                        let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                        pfa.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -3217,6 +3250,21 @@ fn build_selection_set_config_owned(
                         fragment_type: spread.fragment_name.clone(),
                         is_optional: false,
                     }];
+                    // Add nested fragment spreads as fragment accessors
+                    for nested_frag_name in &nested_frag_spreads {
+                        if let Some(nested_frag) = frag_map.get(nested_frag_name) {
+                            if type_satisfies_condition(tc, &nested_frag.type_condition_name) {
+                                let nested_uc = naming::first_uppercased(nested_frag_name);
+                                if !pfs.iter().any(|fs| fs.fragment_type == nested_uc) {
+                                    pfs.push(OwnedFragmentSpreadAccessor {
+                                        property_name: naming::first_lowercased(nested_frag_name),
+                                        fragment_type: nested_uc,
+                                        is_optional: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
 
                     // Build fulfilled fragments for the initializer, including supertype inline fragment OIDs
                     let frag_uc = naming::first_uppercased(&spread.fragment_name);
@@ -3231,6 +3279,17 @@ fn build_selection_set_config_owned(
                     }
                     // Add the fragment's own inline fragment type
                     extra_frag_fulfilled.push(format!("{}.{}", frag_uc, type_name));
+                    // Add nested fragment names to fulfilled fragments
+                    for nested_frag_name in &nested_frag_spreads {
+                        if let Some(nested_frag) = frag_map.get(nested_frag_name) {
+                            if type_satisfies_condition(tc, &nested_frag.type_condition_name) {
+                                let nested_uc = naming::first_uppercased(nested_frag_name);
+                                if !extra_frag_fulfilled.contains(&nested_uc) {
+                                    extra_frag_fulfilled.push(nested_uc);
+                                }
+                            }
+                        }
+                    }
 
                     // Collect applicable fragments for this Case 2 promoted inline fragment
                     let case2_applicable = collect_applicable_fragments(
@@ -3430,6 +3489,33 @@ fn build_selection_set_config_owned(
                                             name: entity_type.clone(),
                                             target: format!("{}.{}", frag_name, entity_type),
                                         });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Add type aliases for entity types from nested fragment spreads
+                    for nested_frag_name in &nested_frag_spreads {
+                        if let Some(nested_frag) = frag_map.get(nested_frag_name) {
+                            if type_satisfies_condition(tc, &nested_frag.type_condition_name) {
+                                for (key, field) in &nested_frag.root_field.selection_set.direct_selections.fields {
+                                    if matches!(field, FieldSelection::Entity(_)) {
+                                        let is_list = if let FieldSelection::Entity(ef) = field { ef.field_type.is_list() } else { false };
+                                        let raw_entity_type = if is_list {
+                                            naming::first_uppercased(&naming::singularize(key))
+                                        } else {
+                                            naming::first_uppercased(key)
+                                        };
+                                        let entity_type = naming::as_selection_set_name(&raw_entity_type);
+                                        if !case2_nested.iter().any(|nt| nt.config.struct_name == entity_type)
+                                            && !case2_aliases.iter().any(|ta| ta.name == entity_type)
+                                        {
+                                            case2_aliases.push(OwnedTypeAlias {
+                                                name: entity_type.clone(),
+                                                target: format!("{}.{}", naming::first_uppercased(nested_frag_name), entity_type),
+                                            });
+                                        }
                                     }
                                 }
                             }
