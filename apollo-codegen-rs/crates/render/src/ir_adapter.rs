@@ -1162,11 +1162,37 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
-            // NOTE: Ancestor fragment entity sub-field merging was attempted here
-            // but is too broad — it merges from fragments that are also direct spreads
-            // in the parent scope, causing duplicate fields. Case-4 (fragment entity
-            // field merging into inline fragment scopes) needs scope-aware computation
-            // from the EntitySelectionTree's ComputedSelectionSet.Builder.
+            // Merge entity sub-fields from parent scope's fragment spreads.
+            // When inside an inline fragment, the parent scope may have fragment
+            // spreads that select the same entity field with additional sub-fields.
+            // E.g., CharacterFields.homeWorld { id name climate } should merge into
+            // AsHuman.HomeWorld { population }.
+            if is_inline_fragment {
+                if let Some(pds) = parent_scope_ds {
+                    for spread in &pds.named_fragments {
+                        if has_inclusion_conditions(spread.inclusion_conditions.as_ref()) { continue; }
+                        // Skip if this fragment is already in the current scope's spreads
+                        if ds.named_fragments.iter().any(|s| s.fragment_name == spread.fragment_name) { continue; }
+                        if let Some(frag_arc) = frag_map.get(spread.fragment_name.as_str()) {
+                            // Check type compatibility
+                            if !type_satisfies_condition(&ir_ss.scope.parent_type, &frag_arc.type_condition_name) { continue; }
+                            if let Some(FieldSelection::Entity(frag_ef)) = frag_arc.root_field.selection_set.direct_selections.fields.get(key) {
+                                for (frag_key, frag_field) in &frag_ef.selection_set.direct_selections.fields {
+                                    if frag_key == "__typename" { continue; }
+                                    if !child_ss.field_accessors.iter().any(|f| f.name == *frag_key) {
+                                        let (swift_type, _) = render_field_swift_type(frag_field, schema_namespace, type_kinds, customizer);
+                                        child_ss.field_accessors.push(OwnedFieldAccessor {
+                                            name: frag_key.clone(),
+                                            swift_type,
+                                            description: frag_field.description().map(|s| s.to_string()),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Merge entity sub-fields from sibling inline fragments in the parent scope.
             // E.g., when building AsIssue.Author, merge `login` from AsReactable.AsComment.author { login }.
             // Also handles union branches: AsImagePost.Author gets `avatar` from AsTextPost.Author.
