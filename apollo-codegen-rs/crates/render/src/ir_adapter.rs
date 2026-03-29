@@ -1188,6 +1188,13 @@ fn build_selection_set_config_owned(
                     }
 
                     for sibling in &pds.inline_fragments {
+                        // Only merge entity sub-fields from supertypes, not from
+                        // unrelated union branches (Swift doesn't merge across branches)
+                        let sibling_is_supertype = sibling.type_condition.as_ref()
+                            .map(|stc| stc.name() != ir_ss.scope.parent_type.name()
+                                && is_supertype_of_current(&ir_ss.scope.parent_type, stc.name()))
+                            .unwrap_or(false);
+                        if !sibling_is_supertype { continue; }
                         let subfields = collect_entity_subfields_from_inline(sibling, key);
                         for (sub_key, sub_field) in subfields {
                             if sub_key == "__typename" { continue; }
