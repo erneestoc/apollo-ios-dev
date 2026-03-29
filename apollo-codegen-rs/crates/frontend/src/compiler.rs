@@ -395,7 +395,8 @@ impl GraphQLFrontend {
                     .map(|(_, vdef)| {
                         let is_deprecated = has_directive(&vdef.directives, "deprecated");
                         let deprecation_reason =
-                            get_directive_arg_string(&vdef.directives, "deprecated", "reason");
+                            get_directive_arg_string(&vdef.directives, "deprecated", "reason")
+                                .or_else(|| if is_deprecated { Some("No longer supported".to_string()) } else { None });
                         GraphQLEnumValue {
                             name: vdef.value.to_string(),
                             description: vdef.description.as_ref().map(|d| d.to_string()),
@@ -426,7 +427,11 @@ impl GraphQLFrontend {
                                         .default_value
                                         .as_ref()
                                         .map(|v| self.convert_ast_value(v)),
-                                    deprecation_reason: get_directive_arg_string(&fdef.directives, "deprecated", "reason"),
+                                    deprecation_reason: {
+                                        let is_dep = has_directive(&fdef.directives, "deprecated");
+                                        get_directive_arg_string(&fdef.directives, "deprecated", "reason")
+                                            .or_else(|| if is_dep { Some("No longer supported".to_string()) } else { None })
+                                    },
                                     is_deprecated: has_directive(&fdef.directives, "deprecated"),
                                 },
                             )
@@ -503,7 +508,8 @@ impl GraphQLFrontend {
     ) -> GraphQLField {
         let is_deprecated = has_directive(&fdef.directives, "deprecated");
         let deprecation_reason =
-            get_directive_arg_string(&fdef.directives, "deprecated", "reason");
+            get_directive_arg_string(&fdef.directives, "deprecated", "reason")
+                .or_else(|| if is_deprecated { Some("No longer supported".to_string()) } else { None });
 
         GraphQLField {
             name: fdef.name.to_string(),
@@ -1247,29 +1253,105 @@ fn add_brace_spaces(content: &str) -> String {
     result
 }
 
-/// Remove commas between top-level arguments (brace_depth == 0).
-/// Commas inside `{}` are kept.
+/// Remove commas between top-level arguments (depth 0) and recursively inside
+/// `{ }` object values and `[ ]` list values that exceed 80 characters.
+///
+/// graphql-js's printer applies the 80-char multi-line rule per AST node:
+///   - ObjectValue `{ field: val, field2: val2 }` → if > 80 chars, commas removed
+///   - ListValue `[elem1, elem2]` → if > 80 chars, commas removed and spaces added inside `[ ]`
+///
+/// This function mimics that behavior by:
+///   1. Always removing commas at depth 0 (top-level argument commas)
+///   2. For each `{ }` block: measuring its total length (including braces + spaces),
+///      and if > 80 chars, removing commas between its direct fields
+///   3. For each `[ ]` block: measuring its total length, and if > 80 chars,
+///      removing commas between its direct elements and adding spaces inside brackets
+///   4. Recursing into nested blocks
 fn remove_top_level_commas(content: &str) -> String {
+    remove_commas_recursive(content, true)
+}
+
+/// Extract the content of a balanced block starting at `chars[start]` which is the
+/// opening delimiter (`{` or `[`). Returns the index one past the closing delimiter,
+/// or `len` if unbalanced.
+fn find_matching_close(chars: &[char], start: usize, open: char, close: char) -> usize {
+    let len = chars.len();
+    let mut depth = 1;
+    let mut j = start + 1;
+    while j < len && depth > 0 {
+        if chars[j] == open {
+            depth += 1;
+        } else if chars[j] == close {
+            depth -= 1;
+        } else if chars[j] == '"' {
+            // Skip string contents
+            j += 1;
+            while j < len && chars[j] != '"' {
+                if chars[j] == '\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+        }
+        j += 1;
+    }
+    j
+}
+
+/// Recursively process content, removing commas at the current level and inside
+/// oversized `{ }` and `[ ]` blocks.
+///
+/// `remove_at_this_level`: if true, commas between items at THIS level are removed.
+fn remove_commas_recursive(content: &str, remove_at_this_level: bool) -> String {
     let chars: Vec<char> = content.chars().collect();
     let len = chars.len();
     let mut result = String::with_capacity(len);
     let mut i = 0;
-    let mut brace_depth = 0;
 
     while i < len {
         match chars[i] {
             '{' => {
-                brace_depth += 1;
-                result.push(chars[i]);
-                i += 1;
+                // Extract the full `{ ... }` block content (between braces)
+                let close = find_matching_close(&chars, i, '{', '}');
+                let inner: String = chars[i + 1..close - 1].iter().collect();
+
+                // Measure the full object value: `{ inner }` (with spaces already added by add_brace_spaces)
+                let full_obj = format!("{{ {} }}", inner.trim());
+                let should_remove_inner = full_obj.len() > 80;
+
+                // Recursively process inner content
+                let processed_inner = remove_commas_recursive(&inner, should_remove_inner);
+                result.push('{');
+                result.push_str(&processed_inner);
+                result.push('}');
+                i = close;
             }
-            '}' => {
-                brace_depth -= 1;
-                result.push(chars[i]);
-                i += 1;
+            '[' => {
+                // Extract the full `[ ... ]` block content (between brackets)
+                let close = find_matching_close(&chars, i, '[', ']');
+                let inner: String = chars[i + 1..close - 1].iter().collect();
+
+                // Measure the full list value: `[inner]`
+                let full_list = format!("[{}]", inner);
+                let should_remove_inner = full_list.len() > 80;
+
+                // Recursively process inner content
+                let processed_inner = remove_commas_recursive(&inner, should_remove_inner);
+
+                if should_remove_inner {
+                    // Add spaces inside brackets for oversized lists
+                    result.push_str("[ ");
+                    result.push_str(processed_inner.trim());
+                    result.push_str(" ]");
+                } else {
+                    result.push('[');
+                    result.push_str(&processed_inner);
+                    result.push(']');
+                }
+                i = close;
             }
-            ',' if brace_depth == 0 => {
-                // Top-level comma between arguments — remove it
+            ',' if remove_at_this_level => {
+                // Remove comma at this level
                 i += 1;
             }
             '"' => {

@@ -121,7 +121,7 @@ pub fn render(
         .collect();
 
     // Pre-render field properties section
-    let field_properties = render_field_properties(fields, access_modifier);
+    let field_properties = render_field_properties(fields, access_modifier, include_deprecated_warnings);
 
     let template = InputObjectTemplate {
         api_target_name,
@@ -173,7 +173,7 @@ fn render_type_header(type_name: &str, schema_name: &str, description: Option<&s
 }
 
 /// Render the field properties section (doc comments, deprecation, rename, var accessors).
-fn render_field_properties(fields: &[InputField], access_modifier: &str) -> String {
+fn render_field_properties(fields: &[InputField], access_modifier: &str, include_deprecated_warnings: bool) -> String {
     let mut result = String::new();
     for (i, field) in fields.iter().enumerate() {
         if i > 0 {
@@ -191,12 +191,14 @@ fn render_field_properties(fields: &[InputField], access_modifier: &str) -> Stri
                 }
             }
         }
-        // Deprecation
-        if let Some(ref reason) = field.deprecation_reason {
-            result.push_str(&format!(
-                "  @available(*, deprecated, message: \"{}\")\n",
-                reason.replace('"', "\\\"")
-            ));
+        // Deprecation (only when warningsOnDeprecatedUsage is include)
+        if include_deprecated_warnings {
+            if let Some(ref reason) = field.deprecation_reason {
+                result.push_str(&format!(
+                    "  @available(*, deprecated, message: \"{}\")\n",
+                    reason.replace('"', "\\\"")
+                ));
+            }
         }
         // Renamed comment
         if field.is_renamed {
