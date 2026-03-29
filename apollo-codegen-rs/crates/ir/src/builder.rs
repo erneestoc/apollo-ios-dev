@@ -709,34 +709,49 @@ impl IRBuilder {
         graphql_type: &GraphQLType,
         indent: usize,
     ) -> String {
-        // If the type is nullable (Named or List without NonNull), wrap in .init(...)
+        // Match Swift's InputVariableRenderable.renderVariableDefaultValue:
+        // - Scalars (bool, int, float, string) and lists → bare literals (never .init())
+        // - Null → .null
+        // - Enums → .init(.caseName) always
+        // - Input objects: nullable → .init(TypeName(...)), non-null → TypeName(...)
         let is_nullable = matches!(graphql_type, GraphQLType::Named(_) | GraphQLType::List(_));
         let inner_type = match graphql_type {
             GraphQLType::NonNull(inner) => inner.as_ref(),
             _ => graphql_type,
         };
 
-        if is_nullable {
-            // Null on nullable type → .null (not .init(nil))
-            if matches!(val, GraphQLValue::Null) {
-                return ".null".to_string();
+        match val {
+            GraphQLValue::Null => {
+                if is_nullable {
+                    ".null".to_string()
+                } else {
+                    "nil".to_string()
+                }
             }
-            let is_complex = matches!(val, GraphQLValue::Object(_));
-            if is_complex {
-                // Multi-line .init() wrapper for complex values
-                let content_indent = indent + 2;
-                let inner_rendered = self.render_swift_value_for_type(val, inner_type, content_indent);
-                format!(".init(\n{}{}\n{})",
-                    " ".repeat(content_indent),
-                    inner_rendered,
-                    " ".repeat(indent))
-            } else {
-                // Inline .init() for simple values
-                let inner_rendered = self.render_swift_value_for_type(val, inner_type, indent);
-                format!(".init({})", inner_rendered)
+            GraphQLValue::Enum(e) => {
+                // Enums are always wrapped in .init()
+                let case_name = if self.camel_case_enums {
+                    to_camel_case(e)
+                } else {
+                    e.clone()
+                };
+                format!(".init(.{})", case_name)
             }
-        } else {
-            self.render_swift_value_for_type(val, inner_type, indent)
+            GraphQLValue::Object(_) => {
+                if is_nullable {
+                    // Nullable input object: .init(\n  TypeName(...)\n)
+                    let content_indent = indent + 2;
+                    let inner_rendered = self.render_swift_value_for_type(val, inner_type, content_indent);
+                    format!(".init(\n{}{}\n{})",
+                        " ".repeat(content_indent),
+                        inner_rendered,
+                        " ".repeat(indent))
+                } else {
+                    self.render_swift_value_for_type(val, inner_type, indent)
+                }
+            }
+            // Scalars and lists: always bare literals, never .init()
+            _ => self.render_swift_value_for_type(val, inner_type, indent),
         }
     }
 

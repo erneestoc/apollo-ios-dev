@@ -1690,24 +1690,25 @@ fn generate_operation_files(
             OperationType::Mutation => "Mutation",
             OperationType::Subscription => "Subscription",
         };
-        let file_name = if operation.name.ends_with(type_suffix) {
-            operation.name.clone()
+        let uppercased_name = naming::first_uppercased(&operation.name);
+        let file_name = if uppercased_name.ends_with(type_suffix) {
+            uppercased_name.clone()
         } else {
-            format!("{}{}", operation.name, type_suffix)
+            format!("{}{}", uppercased_name, type_suffix)
         };
 
         let file_path = if operation.is_local_cache_mutation {
             if let Some(ref subpath_opt) = relative_subpath {
                 let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
                 if let Some(subpath) = subpath_opt {
-                    source_dir.join(subpath).join(format!("{}.graphql.swift", operation.name))
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", uppercased_name))
                 } else {
-                    source_dir.join(format!("{}.graphql.swift", operation.name))
+                    source_dir.join(format!("{}.graphql.swift", uppercased_name))
                 }
             } else if let Some(ref abs_path) = absolute_ops_path {
-                abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name))
+                abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", uppercased_name))
             } else {
-                sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name))
+                sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", uppercased_name))
             }
         } else if let Some(ref subpath_opt) = relative_subpath {
             let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
@@ -1992,26 +1993,27 @@ fn generate_operation_files_filtered(
             OperationType::Mutation => "Mutation",
             OperationType::Subscription => "Subscription",
         };
-        let file_name = if operation.name.ends_with(type_suffix) {
-            operation.name.clone()
+        let uppercased_name = naming::first_uppercased(&operation.name);
+        let file_name = if uppercased_name.ends_with(type_suffix) {
+            uppercased_name.clone()
         } else {
-            format!("{}{}", operation.name, type_suffix)
+            format!("{}{}", uppercased_name, type_suffix)
         };
 
         if operation.is_local_cache_mutation {
             if let Some(ref subpath_opt) = relative_subpath {
                 let source_dir = Path::new(&op_def.file_path).parent().unwrap_or(Path::new(""));
                 let file_path = if let Some(subpath) = subpath_opt {
-                    source_dir.join(subpath).join(format!("{}.graphql.swift", operation.name))
+                    source_dir.join(subpath).join(format!("{}.graphql.swift", uppercased_name))
                 } else {
-                    source_dir.join(format!("{}.graphql.swift", operation.name))
+                    source_dir.join(format!("{}.graphql.swift", uppercased_name))
                 };
                 result.add_file(file_path, content);
             } else if let Some(ref abs_path) = absolute_ops_path {
-                let file_path = abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name));
+                let file_path = abs_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", uppercased_name));
                 result.add_file(file_path, content);
             } else {
-                let file_path = sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", operation.name));
+                let file_path = sources_path.join("LocalCacheMutations").join(format!("{}.graphql.swift", uppercased_name));
                 result.add_file(file_path, content);
             }
         } else {

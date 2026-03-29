@@ -45,25 +45,22 @@ pub fn as_fragment_name(name: &str) -> String {
     }
 }
 
-/// Swift reserved words that must be escaped with backticks.
-const SWIFT_RESERVED_WORDS: &[&str] = &[
-    "Any", "Protocol", "Self", "Type", "actor", "as", "associatedtype", "associativity",
-    "async", "await", "break", "case", "catch", "class", "continue", "convenience",
-    "default", "defer", "deinit", "didSet", "do", "dynamic", "else", "enum",
-    "extension", "fallthrough", "false", "fileprivate", "final", "for", "func",
-    "get", "guard", "if", "import", "in", "indirect", "infix", "init", "inout",
-    "internal", "is", "lazy", "left", "let", "mutating", "nil", "none",
-    "nonmutating", "open", "operator", "optional", "override", "postfix", "precedence",
-    "precedencegroup", "prefix", "private", "protocol", "public", "repeat",
-    "required", "rethrows", "return", "right", "safe", "self", "set", "some",
-    "static", "struct", "subscript", "super", "switch", "throw", "throws",
-    "true", "try", "typealias", "unowned", "unsafe", "var", "weak", "where",
-    "while", "willSet", "_",
+/// Swift keywords that must be escaped with backticks for field accessors and enum cases.
+/// Matches Swift CLI's `SwiftKeywords.FieldAccessorNamesToEscape`.
+const SWIFT_FIELD_ACCESSOR_KEYWORDS: &[&str] = &[
+    "associatedtype", "class", "deinit", "enum", "extension", "fileprivate", "func",
+    "import", "init", "inout", "internal", "let", "operator", "private", "precedencegroup",
+    "protocol", "Protocol", "public", "rethrows", "static", "struct", "subscript", "typealias",
+    "var", "break", "case", "catch", "continue", "default", "defer", "do", "else",
+    "fallthrough", "for", "guard", "if", "in", "repeat", "return", "throw", "switch",
+    "where", "while", "as", "false", "is", "nil", "self", "Self", "super", "throws",
+    "true", "try", "_",
 ];
 
-/// Escape a name if it's a Swift reserved word.
+/// Escape a name if it's a Swift keyword that requires backtick escaping.
+/// Uses the same keyword list as Swift CLI's `FieldAccessorNamesToEscape`.
 pub fn escape_swift_name(name: &str) -> String {
-    if SWIFT_RESERVED_WORDS.contains(&name) {
+    if SWIFT_FIELD_ACCESSOR_KEYWORDS.contains(&name) {
         format!("`{}`", name)
     } else {
         name.to_string()

@@ -75,17 +75,18 @@ pub fn render_operation(
     // Class name: local cache mutations use the operation name as-is,
     // regular operations include the operation type suffix if not already present.
     let class_name = if op.is_local_cache_mutation {
-        op.name.clone()
+        naming::first_uppercased(&op.name)
     } else {
         let type_suffix = match op.operation_type {
             OperationType::Query => "Query",
             OperationType::Mutation => "Mutation",
             OperationType::Subscription => "Subscription",
         };
-        if op.name.ends_with(type_suffix) {
-            op.name.clone()
+        let uppercased_name = naming::first_uppercased(&op.name);
+        if uppercased_name.ends_with(type_suffix) {
+            uppercased_name
         } else {
-            format!("{}{}", op.name, type_suffix)
+            format!("{}{}", uppercased_name, type_suffix)
         }
     };
 
@@ -3390,6 +3391,29 @@ fn build_selection_set_config_owned(
                         }
                     }
 
+                    // Add type aliases for entity types from the fragment's own inline fragment.
+                    // When an operation spreads a fragment that has `... on Type { entityField { ... } }`,
+                    // the entity field's nested type lives in the fragment (e.g. PromoData.AsSimplePromo.ViewSection)
+                    // and the operation's inline fragment should typealias to it.
+                    for (key, field) in &frag_inline.selection_set.direct_selections.fields {
+                        if matches!(field, FieldSelection::Entity(_)) {
+                            let is_list = if let FieldSelection::Entity(ef) = field { ef.field_type.is_list() } else { false };
+                            let entity_type = if is_list {
+                                naming::first_uppercased(&naming::singularize(key))
+                            } else {
+                                naming::first_uppercased(key)
+                            };
+                            if !case2_nested.iter().any(|nt| nt.config.struct_name == entity_type)
+                                && !case2_aliases.iter().any(|ta| ta.name == entity_type)
+                            {
+                                case2_aliases.push(OwnedTypeAlias {
+                                    name: entity_type.clone(),
+                                    target: format!("{}.{}.{}", spread.fragment_name, type_name, entity_type),
+                                });
+                            }
+                        }
+                    }
+
                     // Add type aliases for entity types from applicable fragments
                     for frag_name in &case2_applicable {
                         if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
@@ -4790,16 +4814,25 @@ fn build_initializer_config(
                     if !type_satisfies_condition(parent_type, &frag_arc.type_condition_name) {
                         false
                     } else {
-                        // Second check: no overlapping entity fields with parent's direct fields.
-                        // Overlapping entity fields would have merged sub-selections in the fragment
-                        // that the parent's initializer can't fully satisfy.
-                        let has_overlapping_entity = frag_arc.root_field.selection_set.direct_selections.fields
-                            .iter()
-                            .any(|(key, field)| {
-                                matches!(field, FieldSelection::Entity(_))
-                                    && ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
-                            });
-                        !has_overlapping_entity
+                        // Second check: fragment must have direct field selections (not just inline fragments).
+                        // A fragment with only inline fragments (e.g., `... on Type { ... }`) requires
+                        // type narrowing and can't be fulfilled by the parent scope's initializer.
+                        let frag_has_direct_fields = frag_arc.root_field.selection_set.direct_selections.fields
+                            .iter().any(|(key, _)| key != "__typename");
+                        if !frag_has_direct_fields {
+                            false
+                        } else {
+                            // Third check: no overlapping entity fields with parent's direct fields.
+                            // Overlapping entity fields would have merged sub-selections in the fragment
+                            // that the parent's initializer can't fully satisfy.
+                            let has_overlapping_entity = frag_arc.root_field.selection_set.direct_selections.fields
+                                .iter()
+                                .any(|(key, field)| {
+                                    matches!(field, FieldSelection::Entity(_))
+                                        && ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
+                                });
+                            !has_overlapping_entity
+                        }
                     }
                 } else {
                     false
