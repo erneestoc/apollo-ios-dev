@@ -1162,6 +1162,11 @@ fn build_selection_set_config_owned(
                     }
                 }
             }
+            // NOTE: Ancestor fragment entity sub-field merging was attempted here
+            // but is too broad — it merges from fragments that are also direct spreads
+            // in the parent scope, causing duplicate fields. Case-4 (fragment entity
+            // field merging into inline fragment scopes) needs scope-aware computation
+            // from the EntitySelectionTree's ComputedSelectionSet.Builder.
             // Merge entity sub-fields from sibling inline fragments in the parent scope.
             // E.g., when building AsIssue.Author, merge `login` from AsReactable.AsComment.author { login }.
             // Also handles union branches: AsImagePost.Author gets `avatar` from AsTextPost.Author.
