@@ -10,6 +10,9 @@ import {{ api_target_name }}
 {{ desc }}
 {%- endif %}
 {%- if v.is_deprecated %}
+{%- if v.rendered_description.is_some() %}
+  ///
+{%- endif %}
 {%- if let Some(reason) = v.deprecation_reason %}
   /// **Deprecated**: {{ reason }}
 {%- else %}

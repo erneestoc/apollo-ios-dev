@@ -292,15 +292,20 @@ fn render_selections(
         // All items get trailing comma (Swift trailing comma convention)
         match sel {
             selection_set::SelectionItem::Field(f) => {
+                let alias_part = if let Some(alias) = f.alias {
+                    format!(", alias: \"{}\"", alias)
+                } else {
+                    String::new()
+                };
                 if let Some(args) = f.arguments {
                     result.push_str(&format!(
-                        "{}.field(\"{}\", {}.self, arguments: {}),\n",
-                        item_indent, f.name, f.swift_type, args
+                        "{}.field(\"{}\"{}, {}.self, arguments: {}),\n",
+                        item_indent, f.name, alias_part, f.swift_type, args
                     ));
                 } else {
                     result.push_str(&format!(
-                        "{}.field(\"{}\", {}.self),\n",
-                        item_indent, f.name, f.swift_type
+                        "{}.field(\"{}\"{}, {}.self),\n",
+                        item_indent, f.name, alias_part, f.swift_type
                     ));
                 }
             }
@@ -318,15 +323,20 @@ fn render_selections(
             }
             selection_set::SelectionItem::ConditionalField(cond, f) => {
                 let cond_str = selection_set::render_inclusion_condition(cond);
+                let alias_part = if let Some(alias) = f.alias {
+                    format!(", alias: \"{}\"", alias)
+                } else {
+                    String::new()
+                };
                 if let Some(args) = f.arguments {
                     result.push_str(&format!(
-                        "{}.include(if: {}, .field(\"{}\", {}.self, arguments: {})),\n",
-                        item_indent, cond_str, f.name, f.swift_type, args
+                        "{}.include(if: {}, .field(\"{}\"{}, {}.self, arguments: {})),\n",
+                        item_indent, cond_str, f.name, alias_part, f.swift_type, args
                     ));
                 } else {
                     result.push_str(&format!(
-                        "{}.include(if: {}, .field(\"{}\", {}.self)),\n",
-                        item_indent, cond_str, f.name, f.swift_type
+                        "{}.include(if: {}, .field(\"{}\"{}, {}.self)),\n",
+                        item_indent, cond_str, f.name, alias_part, f.swift_type
                     ));
                 }
             }
@@ -381,11 +391,16 @@ fn render_initializer(
     // Parameters — escape Swift keywords with backtick external name + underscore alias
     for (i, param) in config.parameters.iter().enumerate() {
         let comma = if i < config.parameters.len() - 1 { "," } else { "" };
-        let is_keyword = crate::naming::is_swift_keyword(param.name);
-        let param_name = if is_keyword {
-            format!("`{}` _{}", param.name, param.name)
-        } else {
+        let lowered_name = if param.name.starts_with("__") {
             param.name.to_string()
+        } else {
+            crate::naming::first_lowercased(param.name)
+        };
+        let is_keyword = crate::naming::is_swift_keyword(&lowered_name);
+        let param_name = if is_keyword {
+            format!("`{}` _{}", lowered_name, lowered_name)
+        } else {
+            lowered_name
         };
         if let Some(default) = param.default_value {
             result.push_str(&format!(
@@ -410,10 +425,15 @@ fn render_initializer(
         if !seen_keys.insert(&entry.key) { continue; } // skip duplicate keys
         match &entry.value {
             selection_set::DataEntryValue::Variable(var_name) => {
-                let rendered_var = if crate::naming::is_swift_keyword(var_name) {
-                    format!("_{}", var_name)
-                } else {
+                let lowered = if var_name.starts_with("__") {
                     var_name.to_string()
+                } else {
+                    crate::naming::first_lowercased(var_name)
+                };
+                let rendered_var = if crate::naming::is_swift_keyword(&lowered) {
+                    format!("_{}", lowered)
+                } else {
+                    lowered
                 };
                 result.push_str(&format!(
                     "{}\"{}\": {},\n",
@@ -421,10 +441,15 @@ fn render_initializer(
                 ));
             }
             selection_set::DataEntryValue::FieldData(var_name) => {
-                let rendered_var = if crate::naming::is_swift_keyword(var_name) {
-                    format!("_{}", var_name)
-                } else {
+                let lowered = if var_name.starts_with("__") {
                     var_name.to_string()
+                } else {
+                    crate::naming::first_lowercased(var_name)
+                };
+                let rendered_var = if crate::naming::is_swift_keyword(&lowered) {
+                    format!("_{}", lowered)
+                } else {
+                    lowered
                 };
                 result.push_str(&format!(
                     "{}\"{}\": {}._fieldData,\n",

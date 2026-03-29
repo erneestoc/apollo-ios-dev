@@ -3398,11 +3398,13 @@ fn build_selection_set_config_owned(
                     for (key, field) in &frag_inline.selection_set.direct_selections.fields {
                         if matches!(field, FieldSelection::Entity(_)) {
                             let is_list = if let FieldSelection::Entity(ef) = field { ef.field_type.is_list() } else { false };
-                            let entity_type = if is_list {
+                            let raw_entity_type = if is_list {
                                 naming::first_uppercased(&naming::singularize(key))
                             } else {
                                 naming::first_uppercased(key)
                             };
+                            // Apply _SelectionSet disambiguation to both name and target
+                            let entity_type = naming::as_selection_set_name(&raw_entity_type);
                             if !case2_nested.iter().any(|nt| nt.config.struct_name == entity_type)
                                 && !case2_aliases.iter().any(|ta| ta.name == entity_type)
                             {
@@ -3419,7 +3421,8 @@ fn build_selection_set_config_owned(
                         if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
                             for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
                                 if matches!(field, FieldSelection::Entity(_)) {
-                                    let entity_type = naming::first_uppercased(key);
+                                    let raw_entity_type = naming::first_uppercased(key);
+                                    let entity_type = naming::as_selection_set_name(&raw_entity_type);
                                     if !case2_nested.iter().any(|nt| nt.config.struct_name == entity_type)
                                         && !case2_aliases.iter().any(|ta| ta.name == entity_type)
                                     {

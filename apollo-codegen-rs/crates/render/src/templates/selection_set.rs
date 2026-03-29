@@ -650,11 +650,17 @@ fn render_initializer(
     // Parameters — escape Swift keywords with backtick external name + underscore alias
     for (i, param) in config.parameters.iter().enumerate() {
         let comma = if i < config.parameters.len() - 1 { "," } else { "" };
-        let is_keyword = naming::is_swift_keyword(param.name);
-        let param_name = if is_keyword {
-            format!("`{}` _{}", param.name, param.name)
-        } else {
+        // Apply first_lowercased to match Swift's renderAsInitializerParameterName
+        let lowered_name = if param.name.starts_with("__") {
             param.name.to_string()
+        } else {
+            naming::first_lowercased(param.name)
+        };
+        let is_keyword = naming::is_swift_keyword(&lowered_name);
+        let param_name = if is_keyword {
+            format!("`{}` _{}", lowered_name, lowered_name)
+        } else {
+            lowered_name
         };
         if let Some(default) = param.default_value {
             result.push_str(&format!(
@@ -679,10 +685,15 @@ fn render_initializer(
         if !seen_keys.insert(&entry.key) { continue; } // skip duplicate keys
         match &entry.value {
             DataEntryValue::Variable(var_name) => {
-                let rendered_var = if naming::is_swift_keyword(var_name) {
-                    format!("_{}", var_name)
-                } else {
+                let lowered = if var_name.starts_with("__") {
                     var_name.to_string()
+                } else {
+                    naming::first_lowercased(var_name)
+                };
+                let rendered_var = if naming::is_swift_keyword(&lowered) {
+                    format!("_{}", lowered)
+                } else {
+                    lowered
                 };
                 result.push_str(&format!(
                     "{}\"{}\": {},\n",
@@ -690,10 +701,15 @@ fn render_initializer(
                 ));
             }
             DataEntryValue::FieldData(var_name) => {
-                let rendered_var = if naming::is_swift_keyword(var_name) {
-                    format!("_{}", var_name)
-                } else {
+                let lowered = if var_name.starts_with("__") {
                     var_name.to_string()
+                } else {
+                    naming::first_lowercased(var_name)
+                };
+                let rendered_var = if naming::is_swift_keyword(&lowered) {
+                    format!("_{}", lowered)
+                } else {
+                    lowered
                 };
                 result.push_str(&format!(
                     "{}\"{}\": {}._fieldData,\n",
