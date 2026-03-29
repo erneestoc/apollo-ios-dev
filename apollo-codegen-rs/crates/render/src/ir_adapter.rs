@@ -4911,16 +4911,32 @@ fn build_initializer_config(
                         if !frag_has_direct_fields {
                             false
                         } else {
-                            // Third check: no overlapping entity fields with parent's direct fields.
-                            // Overlapping entity fields would have merged sub-selections in the fragment
-                            // that the parent's initializer can't fully satisfy.
-                            let has_overlapping_entity = frag_arc.root_field.selection_set.direct_selections.fields
+                            // Third check: no overlapping entity fields where the fragment has
+                            // sub-selections that the parent doesn't include.
+                            let has_incompatible_entity = frag_arc.root_field.selection_set.direct_selections.fields
                                 .iter()
                                 .any(|(key, field)| {
-                                    matches!(field, FieldSelection::Entity(_))
-                                        && ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false)
+                                    if !matches!(field, FieldSelection::Entity(_)) { return false; }
+                                    // Check if parent has the same entity field
+                                    let parent_has = ds.fields.get(key).map(|f| matches!(f, FieldSelection::Entity(_))).unwrap_or(false);
+                                    if !parent_has { return false; }
+                                    // Check if the fragment's entity field has sub-selections
+                                    // that the parent's entity field doesn't have
+                                    if let (FieldSelection::Entity(frag_ef), Some(FieldSelection::Entity(parent_ef))) =
+                                        (field, ds.fields.get(key))
+                                    {
+                                        // If the fragment's entity field has scalar sub-fields
+                                        // that the parent's entity field doesn't have, they're incompatible
+                                        frag_ef.selection_set.direct_selections.fields.iter().any(|(fk, ff)| {
+                                            fk != "__typename"
+                                            && matches!(ff, FieldSelection::Scalar(_))
+                                            && !parent_ef.selection_set.direct_selections.fields.contains_key(fk)
+                                        })
+                                    } else {
+                                        false
+                                    }
                                 });
-                            !has_overlapping_entity
+                            !has_incompatible_entity
                         }
                     }
                 } else {
