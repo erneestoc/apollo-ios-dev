@@ -585,52 +585,55 @@ fn render_field_selection(f: &FieldSelectionItem, indent: &str) -> String {
     if let Some(args) = f.arguments {
         // Multi-line arguments need proper indentation relative to parent
         if args.contains('\n') {
-            // Arguments format is "[\nentry1,\nentry2\n]"
-            // Track bracket nesting depth to properly indent nested object values.
-            // depth 1 = inside outermost [], depth 2 = inside nested [], etc.
+            // Re-indent multi-line arguments to align with the field's indent level.
+            // The first line stays on the .field() line. Subsequent lines are indented
+            // at base_indent (indent+2). Closing brackets go at indent level.
+            // Depth tracks nesting WITHIN subsequent lines only (not counting first line's brackets).
             let base_indent = format!("{}  ", indent);
             let mut indented = String::new();
-            let mut bracket_depth: usize = 0;
+            let mut depth: usize = 0;
 
             for (i, line) in args.lines().enumerate() {
                 if i > 0 {
                     indented.push('\n');
                 }
+                let trimmed = line.trim();
                 if i == 0 {
-                    // Opening "[" stays on same line
-                    indented.push_str(line);
-                    bracket_depth += 1;
+                    // First line stays as-is (part of the .field() call)
+                    indented.push_str(trimmed);
+                    // Count net opening brackets on first line.
+                    // Cap at 1: the first line's brackets are part of the .field() declaration,
+                    // so only the final nesting level matters for indenting the next line.
+                    let mut d: usize = 0;
+                    for c in trimmed.chars() {
+                        if c == '[' { d += 1; }
+                        else if c == ']' { d = d.saturating_sub(1); }
+                    }
+                    depth = d.min(1);
                 } else {
-                    let trimmed = line.trim();
-                    // Check if this line is a closing bracket (], ]], ]]), etc.)
-                    let closing_count = trimmed.chars().take_while(|c| *c == ']').count();
-                    if closing_count > 0 && trimmed.chars().all(|c| c == ']' || c == ')' || c == ',') {
-                        // Each ']' closes one nesting level
-                        for _ in 0..closing_count {
-                            bracket_depth = bracket_depth.saturating_sub(1);
-                        }
-                        if bracket_depth == 0 {
-                            indented.push_str(indent);
-                        } else {
-                            let extra = "  ".repeat(bracket_depth.saturating_sub(0));
-                            indented.push_str(&base_indent);
-                            if bracket_depth > 1 {
-                                indented.push_str(&"  ".repeat(bracket_depth - 1));
-                            }
-                        }
-                        indented.push_str(trimmed);
+                    // Count leading ']' to close levels before indenting
+                    let leading_close = trimmed.chars().take_while(|c| *c == ']').count();
+                    for _ in 0..leading_close {
+                        depth = depth.saturating_sub(1);
+                    }
+
+                    // Indent based on depth: 0 = at indent, 1 = base_indent, 2+ = base_indent + extra
+                    if depth == 0 {
+                        indented.push_str(indent);
                     } else {
-                        // Content line: indent at base + extra for depth
-                        // depth 1 → base_indent (no extra)
-                        // depth 2 → base_indent + "  " (2 extra)
-                        let extra = "  ".repeat(bracket_depth.saturating_sub(1));
                         indented.push_str(&base_indent);
-                        indented.push_str(&extra);
-                        indented.push_str(trimmed);
-                        // Check if this line ends with "[" (opens a nested value)
-                        if trimmed.ends_with('[') {
-                            bracket_depth += 1;
+                        if depth > 1 {
+                            indented.push_str(&"  ".repeat(depth - 1));
                         }
+                    }
+                    indented.push_str(trimmed);
+
+                    // Count remaining brackets to update depth for next line
+                    let mut skip = leading_close;
+                    for c in trimmed.chars() {
+                        if skip > 0 && c == ']' { skip -= 1; continue; }
+                        if c == '[' { depth += 1; }
+                        else if c == ']' { depth = depth.saturating_sub(1); }
                     }
                 }
             }
