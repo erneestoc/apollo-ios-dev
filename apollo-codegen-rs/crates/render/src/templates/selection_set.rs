@@ -647,18 +647,24 @@ fn render_initializer(
     // Opening line
     result.push_str(&format!("{}{}init(\n", indent, access_modifier));
 
-    // Parameters
+    // Parameters — escape Swift keywords with backtick external name + underscore alias
     for (i, param) in config.parameters.iter().enumerate() {
         let comma = if i < config.parameters.len() - 1 { "," } else { "" };
+        let is_keyword = naming::is_swift_keyword(param.name);
+        let param_name = if is_keyword {
+            format!("`{}` _{}", param.name, param.name)
+        } else {
+            param.name.to_string()
+        };
         if let Some(default) = param.default_value {
             result.push_str(&format!(
                 "{}{}: {} = {}{}\n",
-                inner, param.name, param.swift_type, default, comma
+                inner, param_name, param.swift_type, default, comma
             ));
         } else {
             result.push_str(&format!(
                 "{}{}: {}{}\n",
-                inner, param.name, param.swift_type, comma
+                inner, param_name, param.swift_type, comma
             ));
         }
     }
@@ -673,15 +679,25 @@ fn render_initializer(
         if !seen_keys.insert(&entry.key) { continue; } // skip duplicate keys
         match &entry.value {
             DataEntryValue::Variable(var_name) => {
+                let rendered_var = if naming::is_swift_keyword(var_name) {
+                    format!("_{}", var_name)
+                } else {
+                    var_name.to_string()
+                };
                 result.push_str(&format!(
                     "{}\"{}\": {},\n",
-                    inner3, entry.key, var_name
+                    inner3, entry.key, rendered_var
                 ));
             }
             DataEntryValue::FieldData(var_name) => {
+                let rendered_var = if naming::is_swift_keyword(var_name) {
+                    format!("_{}", var_name)
+                } else {
+                    var_name.to_string()
+                };
                 result.push_str(&format!(
                     "{}\"{}\": {}._fieldData,\n",
-                    inner3, entry.key, var_name
+                    inner3, entry.key, rendered_var
                 ));
             }
             DataEntryValue::Typename(type_ref) => {

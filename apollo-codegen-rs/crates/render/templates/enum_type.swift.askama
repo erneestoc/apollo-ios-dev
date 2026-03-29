@@ -11,9 +11,9 @@ import {{ api_target_name }}
 {%- endif %}
 {%- if v.is_deprecated %}
 {%- if let Some(reason) = v.deprecation_reason %}
-  @available(*, deprecated, message: "{{ reason }}")
+  /// **Deprecated**: {{ reason }}
 {%- else %}
-  @available(*, deprecated)
+  /// **Deprecated**
 {%- endif %}
 {%- endif %}
 {%- if v.is_renamed %}

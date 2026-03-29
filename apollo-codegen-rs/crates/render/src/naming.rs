@@ -57,10 +57,15 @@ const SWIFT_FIELD_ACCESSOR_KEYWORDS: &[&str] = &[
     "true", "try", "_",
 ];
 
+/// Check if a name is a Swift keyword that requires escaping.
+pub fn is_swift_keyword(name: &str) -> bool {
+    SWIFT_FIELD_ACCESSOR_KEYWORDS.contains(&name)
+}
+
 /// Escape a name if it's a Swift keyword that requires backtick escaping.
 /// Uses the same keyword list as Swift CLI's `FieldAccessorNamesToEscape`.
 pub fn escape_swift_name(name: &str) -> String {
-    if SWIFT_FIELD_ACCESSOR_KEYWORDS.contains(&name) {
+    if is_swift_keyword(name) {
         format!("`{}`", name)
     } else {
         name.to_string()
