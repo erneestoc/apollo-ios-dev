@@ -1536,9 +1536,10 @@ fn add_typename_to_selection_sets(source: &str, legacy_safelisting: bool) -> Str
                         && chars[i + 1] == '.'
                         && chars[i + 2] == '.'))
             {
-                // Check if __typename is already first
-                let remaining: String = chars[i..].iter().collect();
-                if !remaining.starts_with("__typename") {
+                // Check if __typename already exists anywhere in this selection set
+                // (at the current brace nesting level). The JS/Swift implementation
+                // checks all selections in the set, not just the first one.
+                if !selection_set_contains_typename(&chars, i) {
                     result.push_str("__typename ");
                 }
             }
@@ -1549,6 +1550,52 @@ fn add_typename_to_selection_sets(source: &str, legacy_safelisting: bool) -> Str
     }
 
     result
+}
+
+/// Check whether `__typename` already exists as a field in the current selection set.
+/// Scans from position `start` (just after `{ ` and whitespace) forward through
+/// the same brace nesting level, looking for `__typename` as a standalone field name.
+/// This matches the JS behavior which checks all selections, not just the first one.
+fn selection_set_contains_typename(chars: &[char], start: usize) -> bool {
+    let len = chars.len();
+    let mut depth = 0;
+    let mut j = start;
+
+    while j < len {
+        match chars[j] {
+            '{' => {
+                depth += 1;
+                j += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    // End of our selection set
+                    break;
+                }
+                depth -= 1;
+                j += 1;
+            }
+            '_' if depth == 0 => {
+                // Check if this is `__typename` at the current level
+                if j + 10 <= len {
+                    let candidate: String = chars[j..j + 10].iter().collect();
+                    if candidate == "__typename" {
+                        // Make sure it's a standalone token (not part of a longer name)
+                        let after_ok = j + 10 >= len
+                            || !chars[j + 10].is_alphanumeric() && chars[j + 10] != '_';
+                        if after_ok {
+                            return true;
+                        }
+                    }
+                }
+                j += 1;
+            }
+            _ => {
+                j += 1;
+            }
+        }
+    }
+    false
 }
 
 /// Determine whether `__typename` should be injected after the `{` that is about
