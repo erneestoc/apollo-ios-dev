@@ -2407,20 +2407,40 @@ fn render_input_field_type(
     type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
     customizer: &SchemaCustomizer,
 ) -> String {
+    render_input_field_type_inner(ty, ns, type_kinds, customizer, false)
+}
+
+fn render_input_field_type_inner(
+    ty: &GraphQLType,
+    ns: &str,
+    type_kinds: &std::collections::HashMap<String, apollo_codegen_ir::field_collector::TypeKind>,
+    customizer: &SchemaCustomizer,
+    in_list: bool,
+) -> String {
     match ty {
         GraphQLType::Named(name) => {
             let base = render_scalar_swift(name, ns, type_kinds, customizer);
-            format!("GraphQLNullable<{}>", base)
+            if in_list {
+                // Inside a list, nullable elements use ? suffix
+                format!("{}?", base)
+            } else {
+                format!("GraphQLNullable<{}>", base)
+            }
         }
         GraphQLType::NonNull(inner) => match inner.as_ref() {
             GraphQLType::Named(name) => render_scalar_swift(name, ns, type_kinds, customizer),
             GraphQLType::List(list_inner) => {
-                format!("[{}]", render_input_field_type(list_inner, ns, type_kinds, customizer))
+                format!("[{}]", render_input_field_type_inner(list_inner, ns, type_kinds, customizer, true))
             }
-            _ => render_input_field_type(inner, ns, type_kinds, customizer),
+            _ => render_input_field_type_inner(inner, ns, type_kinds, customizer, in_list),
         },
         GraphQLType::List(inner) => {
-            format!("GraphQLNullable<[{}]>", render_input_field_type(inner, ns, type_kinds, customizer))
+            if in_list {
+                // Nested list inside another list
+                format!("[{}]?", render_input_field_type_inner(inner, ns, type_kinds, customizer, true))
+            } else {
+                format!("GraphQLNullable<[{}]>", render_input_field_type_inner(inner, ns, type_kinds, customizer, true))
+            }
         }
     }
 }
