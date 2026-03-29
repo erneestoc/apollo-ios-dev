@@ -121,7 +121,7 @@ fn fragment_template_dog_fragment() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -262,7 +262,7 @@ fn fragment_template_height_in_meters() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
             ],
@@ -271,7 +271,7 @@ fn fragment_template_height_in_meters() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -449,7 +449,7 @@ fn fragment_template_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
             ],
@@ -458,7 +458,7 @@ fn fragment_template_pet_details() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -575,7 +575,7 @@ fn fragment_template_crocodile_fragment() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -687,7 +687,7 @@ fn fragment_template_warm_blooded_details() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -799,7 +799,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
                 // AsPet
@@ -849,7 +849,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
                 // AsWarmBlooded
@@ -903,7 +903,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
                 // AsCat
@@ -973,7 +973,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
                 // AsBird
@@ -1034,7 +1034,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
                 // AsPetRock
@@ -1087,7 +1087,7 @@ fn fragment_template_classroom_pet_details() {
                         indent: 2,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
             ],
@@ -1096,7 +1096,7 @@ fn fragment_template_classroom_pet_details() {
             indent: 0,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
         include_definition: true,
     };
@@ -1367,7 +1367,7 @@ fn operation_template_dog_query() {
                                     indent: 6,
                                     access_modifier: "public ",
                                     is_mutable: false,
-                                    api_target_name: "ApolloAPI",
+                                    api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                                 },
                             },
                         ],
@@ -1376,7 +1376,7 @@ fn operation_template_dog_query() {
                         indent: 4,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
             ],
@@ -1385,7 +1385,7 @@ fn operation_template_dog_query() {
             indent: 2,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
     };
 
@@ -1551,7 +1551,7 @@ fn operation_template_pet_adoption_mutation() {
                         indent: 4,
                         access_modifier: "public ",
                         is_mutable: false,
-                        api_target_name: "ApolloAPI",
+                        api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
                     },
                 },
             ],
@@ -1560,7 +1560,7 @@ fn operation_template_pet_adoption_mutation() {
             indent: 2,
             access_modifier: "public ",
             is_mutable: false,
-            api_target_name: "ApolloAPI",
+            api_target_name: "ApolloAPI", deprecated_arg_warnings: vec![],
         },
     };
 

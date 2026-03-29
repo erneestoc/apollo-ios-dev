@@ -119,6 +119,13 @@ pub fn render_operation(
         api_target_name,
         &[],   // operations don't need root type check for __typename
         op.entity_storage.as_ref(),
+        &[apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef {
+            type_name: op.root_field.selection_set.scope.parent_type.name().to_string(),
+            scope_path: vec![apollo_codegen_ir::merged_selections::ScopeConditionKey::new(
+                Some(op.root_field.selection_set.scope.parent_type.name().to_string()),
+            )],
+            matching_types: vec![op.root_field.selection_set.scope.parent_type.name().to_string()],
+        }],
     );
 
     let class_keyword = if mark_definitions_as_final {
@@ -192,6 +199,13 @@ pub fn render_fragment(
         api_target_name,
         schema_root_type_names,
         frag.entity_storage.as_ref(),
+        &[apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef {
+            type_name: frag.root_field.selection_set.scope.parent_type.name().to_string(),
+            scope_path: vec![apollo_codegen_ir::merged_selections::ScopeConditionKey::new(
+                Some(frag.root_field.selection_set.scope.parent_type.name().to_string()),
+            )],
+            matching_types: vec![frag.root_field.selection_set.scope.parent_type.name().to_string()],
+        }],
     );
 
     let config = OwnedFragmentConfig {
@@ -451,6 +465,7 @@ fn build_selection_set_config_owned(
     api_target_name: &str,
     schema_root_type_names: &[String],
     entity_storage: Option<&apollo_codegen_ir::entity_storage::DefinitionEntityStorage>,
+    scope_path: &[apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef],
 ) -> OwnedSelectionSetConfig {
     let parent_type = match &ir_ss.scope.parent_type {
         GraphQLCompositeType::Object(o) => OwnedParentTypeRef::Object(customizer.custom_type_name(&o.name).to_string()),
@@ -1058,6 +1073,17 @@ fn build_selection_set_config_owned(
             } else {
                 SelectionSetConformance::SelectionSet
             };
+            let child_scope_path = {
+                let mut sp = scope_path.to_vec();
+                sp.push(apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef {
+                    type_name: ef.selection_set.scope.parent_type.name().to_string(),
+                    scope_path: vec![apollo_codegen_ir::merged_selections::ScopeConditionKey::new(
+                        Some(ef.selection_set.scope.parent_type.name().to_string()),
+                    )],
+                    matching_types: vec![ef.selection_set.scope.parent_type.name().to_string()],
+                });
+                sp
+            };
             let mut child_ss = build_selection_set_config_owned(
                 &child_name,
                 &ef.selection_set,
@@ -1082,6 +1108,7 @@ fn build_selection_set_config_owned(
                 api_target_name,
                 schema_root_type_names,
                 entity_storage,
+                &child_scope_path,
             );
             // Merge fields from fragment spreads that also have this entity field.
             // E.g., if HeightInMeters has `height { meters }`, merge `meters` into Height.
@@ -1412,6 +1439,22 @@ fn build_selection_set_config_owned(
             };
             // Combine parent fields with sibling merged fields
             let mut merged_parent = field_accessors.clone();
+            // Also merge fields from promoted inline fragments whose type is a supertype.
+            // Promoted fragments come from named fragment spreads that need type narrowing
+            // (e.g., ...DisplayFields on Node creates AsDisplayable). Their fields are
+            // NOT in sibling_inline_fields because they're not in ds.inline_fragments.
+            for promoted_frag_name in &early_promoted_fragment_names {
+                if let Some(frag_arc) = frag_map.get(promoted_frag_name.as_str()) {
+                    if type_satisfies_condition(tc, &frag_arc.type_condition_name) {
+                        for (key, field) in &frag_arc.root_field.selection_set.direct_selections.fields {
+                            if !merged_parent.iter().any(|f| f.name == *key) {
+                                let (swift_type, _) = render_field_swift_type(field, schema_namespace, type_kinds, customizer);
+                                merged_parent.push(OwnedFieldAccessor { name: key.clone(), swift_type, description: field.description().map(|s| s.to_string()) });
+                            }
+                        }
+                    }
+                }
+            }
             if let Some((_, sibling_fields)) = sibling_inline_fields.iter().find(|(name, _)| *name == tc.name()) {
                 for sf in sibling_fields {
                     if !merged_parent.iter().any(|f| f.name == sf.name) {
@@ -1469,6 +1512,37 @@ fn build_selection_set_config_owned(
                 api_target_name,
                 schema_root_type_names,
                 entity_storage,
+                &{
+                    // For inline fragments: same entity depth, but extend the last
+                    // scope descriptor's condition path with the type condition
+                    let mut sp = scope_path.to_vec();
+                    if let Some(last) = sp.last_mut() {
+                        let mut new_scope_path = last.scope_path.clone();
+                        if let Some(ref tc_type) = inline.type_condition {
+                            new_scope_path.push(apollo_codegen_ir::merged_selections::ScopeConditionKey::new(
+                                Some(tc_type.name().to_string()),
+                            ));
+                            // Add type condition to matching_types
+                            let tc_name = tc_type.name().to_string();
+                            if !last.matching_types.contains(&tc_name) {
+                                let mut mt = last.matching_types.clone();
+                                mt.push(tc_name);
+                                *last = apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef {
+                                    type_name: tc_type.name().to_string(),
+                                    scope_path: new_scope_path,
+                                    matching_types: mt,
+                                };
+                            } else {
+                                *last = apollo_codegen_ir::entity_selection_tree::ScopeDescriptorRef {
+                                    type_name: last.type_name.clone(),
+                                    scope_path: new_scope_path,
+                                    matching_types: last.matching_types.clone(),
+                                };
+                            }
+                        }
+                    }
+                    sp
+                },
             );
 
             // When this inline fragment is nested inside a conditional scope (e.g., AsDroid
@@ -2606,6 +2680,7 @@ fn build_selection_set_config_owned(
                 api_target_name,
                 schema_root_type_names,
                 entity_storage,
+                scope_path,  // pass through for promoted fragments
             );
 
             let doc_comment = doc_comment_path(qualified_name, &type_name, is_root);
