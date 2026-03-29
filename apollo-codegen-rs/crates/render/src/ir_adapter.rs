@@ -2320,17 +2320,33 @@ fn build_selection_set_config_owned(
                 }
 
                 // 3. Add remaining applicable fragment OIDs not yet added.
-                // Use the reordered applicable_frags_for_fields to ensure correct ordering
-                // (parent fragments with sub-frags before leaf fragments).
+                // Guard: if the inline fragment's own field selections cover ALL of a
+                // fragment's scalar fields (and the fragment wasn't directly spread here),
+                // the fragment is "shadowed" and should NOT be added.
                 let entity_root_type_name = entity_root_graphql_type
                     .unwrap_or_else(|| ir_ss.scope.parent_type.name());
                 let parent_is_union = matches!(inline.selection_set.scope.parent_type, GraphQLCompositeType::Union(_));
+                let inline_own_fields: std::collections::HashSet<&str> = inline
+                    .selection_set.direct_selections.fields.keys()
+                    .filter(|k| k.as_str() != "__typename")
+                    .map(|k| k.as_str())
+                    .collect();
+                let inline_spread_names: std::collections::HashSet<&str> = inline
+                    .selection_set.direct_selections.named_fragments.iter()
+                    .map(|s| s.fragment_name.as_str())
+                    .collect();
                 for frag_name in &applicable_frags_for_fields {
                     let should_fulfill = if let Some(frag_arc) = frag_map.get(frag_name.as_str()) {
-                        type_satisfies_condition(tc, &frag_arc.type_condition_name)
-                            // For union parents, also include fragments whose type condition
-                            // matches the entity root (build_initializer_config skips unions)
-                            || (parent_is_union && frag_arc.type_condition_name == entity_root_type_name)
+                        // Check if inline fragment's own selections shadow this fragment
+                        if !inline_own_fields.is_empty()
+                            && !inline_spread_names.contains(frag_name.as_str())
+                            && inline_fields_cover_fragment(&inline_own_fields, frag_arc)
+                        {
+                            false
+                        } else {
+                            type_satisfies_condition(tc, &frag_arc.type_condition_name)
+                                || (parent_is_union && frag_arc.type_condition_name == entity_root_type_name)
+                        }
                     } else {
                         true
                     };
@@ -4025,6 +4041,22 @@ fn type_satisfies_condition(tc: &GraphQLCompositeType, fragment_type_condition: 
         return true;
     }
     is_supertype_of_current(tc, fragment_type_condition)
+}
+
+/// Check if an inline fragment's own field selections cover ALL non-__typename scalar fields
+/// of a given named fragment. Entity fields are excluded because they may have different
+/// sub-selections. Returns true if the fragment is "shadowed" by inline selections.
+fn inline_fields_cover_fragment(
+    inline_field_names: &std::collections::HashSet<&str>,
+    frag: &NamedFragment,
+) -> bool {
+    let frag_ds = &frag.root_field.selection_set.direct_selections;
+    let has_scalar_fields = frag_ds.fields.iter()
+        .any(|(k, f)| k != "__typename" && matches!(f, FieldSelection::Scalar(_)));
+    if !has_scalar_fields { return false; }
+    frag_ds.fields.iter()
+        .filter(|(k, _)| k.as_str() != "__typename")
+        .all(|(k, f)| matches!(f, FieldSelection::Entity(_)) || inline_field_names.contains(k.as_str()))
 }
 
 /// Collect all applicable fragment names for an inline fragment with a given type condition.
