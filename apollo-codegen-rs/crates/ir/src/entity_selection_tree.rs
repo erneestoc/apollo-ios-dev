@@ -909,6 +909,50 @@ fn merge_from_snapshot(
     }
 }
 
+/// Compute the merged source names that should appear in fulfilledFragments.
+/// Returns a list of fully-qualified Swift type names (e.g., "HeightInMeters",
+/// "AllAnimalsQuery.Data.AllAnimal.AsPet", "PetDetails.AsDog") that the tree's
+/// merged selections contributed to the target scope.
+///
+/// This mirrors Swift's Phase 2 of InitializerFulfilledFragments: iterate
+/// over merged.mergedSources and call generatedSelectionSetNamesOfFullfilledFragments.
+pub fn compute_fulfilled_fragment_names(
+    tree: &EntitySelectionTree,
+    scope_path: &[ScopeDescriptorRef],
+    direct_field_keys: &[String],
+    direct_fragment_keys: &[String],
+    operation_name: Option<&str>,
+    naming_fn: &dyn Fn(&MergedSource) -> Vec<String>,
+) -> Vec<String> {
+    let entity_scope = scope_path.last()
+        .map(|s| s.scope_path.clone())
+        .unwrap_or_default();
+    let matching = scope_path.last()
+        .map(|s| s.matching_types.clone())
+        .unwrap_or_default();
+
+    let mut builder = ComputedSelectionSetBuilder::new(
+        MergingStrategy::ALL,
+        true,
+        direct_field_keys.to_vec(),
+        direct_fragment_keys.to_vec(),
+        vec![],
+    );
+
+    tree.add_merged_selections(
+        scope_path,
+        &entity_scope,
+        &matching,
+        &mut builder,
+    );
+
+    let mut names = Vec::new();
+    for source in &builder.merged_sources {
+        names.extend(naming_fn(source));
+    }
+    names
+}
+
 fn is_same_type_info(a: &[ScopeDescriptorRef], b: &[ScopeDescriptorRef]) -> bool {
     if a.len() != b.len() {
         return false;
