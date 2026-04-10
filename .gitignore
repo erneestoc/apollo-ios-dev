@@ -74,6 +74,13 @@ SwiftScripts/.build-**
 # Local Netlify folder
 .netlify
 
+# Rust build artifacts
+apollo-ios-codegen/rust/target/
+
+# GSD planning artifacts
+.planning/
+apollo-ios-codegen/.planning/
+
 # Generated js files we don't need committed
 Sources/ApolloCodegenLib/Frontend/dist/
 

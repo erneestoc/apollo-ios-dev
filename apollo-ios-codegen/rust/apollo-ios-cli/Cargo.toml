@@ -1,0 +1,11 @@
+[package]
+name = "apollo-ios-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+codegen-cli = { path = "../codegen-cli" }
+clap = { workspace = true }
+
+[lints]
+workspace = true
