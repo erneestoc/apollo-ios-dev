@@ -78,6 +78,16 @@ pub trait CodegenProvider {
     ) -> Result<(), CodegenError>;
 }
 
+// MARK: - CompileResult
+
+/// Intermediate compilation artifacts that can be cached across
+/// worker requests (D-89). Contains the compiled schema/operations
+/// result and built IR.
+pub struct CompileResult {
+    pub compilation_result: Arc<CompilationResult>,
+    pub ir: IRBuilder,
+}
+
 // MARK: - ApolloCodegen
 
 /// The main code generation orchestrator.
@@ -123,8 +133,23 @@ impl ApolloCodegen {
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
     ) -> Result<(), CodegenError> {
-        let file_manager = ApolloFileManager::new();
+        let compile_result = Self::compile_schema_and_ir(config)?;
+        Self::generate_from_ir(&compile_result, config, items_to_generate)
+    }
 
+    /// Runs pipeline stages 1-7: config validation, file discovery, schema
+    /// parsing, operation parsing, CompilationResult construction, schema
+    /// validation, and IR construction.
+    ///
+    /// Returns a `CompileResult` containing the parsed schema and built IR,
+    /// suitable for caching across worker requests (D-89).
+    ///
+    /// Used by:
+    /// - `build_with_context()` for one-shot CLI mode (calls this then generate_from_ir)
+    /// - Worker loop for cache-miss path (caches the result)
+    pub fn compile_schema_and_ir(
+        config: &ConfigurationContext,
+    ) -> Result<CompileResult, CodegenError> {
         // Stage 1: Config validation
         validate_config_values(&config.config)?;
 
@@ -150,8 +175,27 @@ impl ApolloCodegen {
         // Stage 7: IR construction
         let ir = IRBuilder::new(compilation_result.clone());
 
+        Ok(CompileResult { compilation_result, ir })
+    }
+
+    /// Runs pipeline stages 8-12: schema customizations, code generation,
+    /// operation manifest generation, stale file pruning, and error reporting.
+    ///
+    /// Accepts a pre-computed `CompileResult` (from `compile_schema_and_ir()`
+    /// or from the worker cache).
+    ///
+    /// Used by:
+    /// - `build_with_context()` for one-shot CLI mode
+    /// - Worker loop for every request (warm path uses cached CompileResult)
+    pub fn generate_from_ir(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+    ) -> Result<(), CodegenError> {
+        let file_manager = ApolloFileManager::new();
+
         // Stage 8: Schema customizations
-        process_schema_customizations(&ir, config);
+        process_schema_customizations(&compile_result.ir, config);
 
         // Stage 9: Code generation (if items_to_generate contains CODE)
         let mut non_fatal_errors = NonFatalErrors::new();
@@ -166,8 +210,8 @@ impl ApolloCodegen {
 
             // Generate all files
             let errors = generate_all_files(
-                &compilation_result,
-                &ir,
+                &compile_result.compilation_result,
+                &compile_result.ir,
                 config,
                 &file_manager,
             )?;
@@ -182,7 +226,7 @@ impl ApolloCodegen {
         // Stage 10: Operation manifest generation
         if items_to_generate.contains(ItemsToGenerate::OPERATION_MANIFEST) {
             generate_operation_manifest(
-                &compilation_result.operations,
+                &compile_result.compilation_result.operations,
                 config,
                 &file_manager,
             )?;
