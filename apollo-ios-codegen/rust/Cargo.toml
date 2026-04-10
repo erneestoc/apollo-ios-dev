@@ -26,6 +26,9 @@ rayon = "1.10"
 sha2 = "0.10"
 globset = "0.4"
 walkdir = "2.5"
+prost = "0.14"
+bytes = "1.11"
+ctrlc = "3.5"
 
 [workspace.lints.clippy]
 disallowed_types = "deny"

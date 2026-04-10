@@ -4,6 +4,9 @@
 //! Registers 4 subcommands: init, generate, fetch-schema, generate-operation-manifest.
 //! Exit codes: 0 = success, 1 = any error (D-77).
 
+mod worker_proto;
+mod worker_io;
+
 use clap::{Parser, Subcommand};
 
 use codegen_cli::commands::{

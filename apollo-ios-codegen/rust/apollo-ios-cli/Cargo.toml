@@ -6,6 +6,13 @@ edition = "2021"
 [dependencies]
 codegen-cli = { path = "../codegen-cli" }
 clap = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+ctrlc = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"
+protox = "0.9"
 
 [lints]
 workspace = true
