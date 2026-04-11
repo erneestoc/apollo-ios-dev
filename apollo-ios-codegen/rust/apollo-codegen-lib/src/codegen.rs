@@ -40,8 +40,11 @@ use graphql_compiler::adapter::{
     self, TypeRegistry, build_network_request_source, collect_referenced_fragments,
     collect_referenced_types, convert_directives, convert_selection_set,
 };
+// Re-export CompilationResult so worker.rs can reference it without
+// depending on graphql-compiler directly.
+pub use graphql_compiler::compilation_result::CompilationResult;
 use graphql_compiler::compilation_result::{
-    CompilationResult, FragmentDefinition, OperationDefinition, OperationType,
+    FragmentDefinition, OperationDefinition, OperationType,
     RootTypeDefinition,
 };
 use graphql_compiler::{GraphQLCompositeType, GraphQLNamedType};
@@ -229,6 +232,18 @@ impl ApolloCodegen {
         Ok(CompileResult { compilation_result, ir })
     }
 
+    /// Constructs a `CompileResult` from a cached `Arc<CompilationResult>`.
+    ///
+    /// Creates a fresh `IRBuilder` (cheap: Arc bump + IndexSet construction)
+    /// to avoid state leakage from `BuiltFragmentStorage`/`FieldCollector`
+    /// accumulated during prior generation passes.
+    pub fn compile_result_from_cached(
+        compilation_result: Arc<CompilationResult>,
+    ) -> CompileResult {
+        let ir = IRBuilder::new(compilation_result.clone());
+        CompileResult { compilation_result, ir }
+    }
+
     /// Runs pipeline stages 8-12: schema customizations, code generation,
     /// operation manifest generation, stale file pruning, and error reporting.
     ///
@@ -243,7 +258,7 @@ impl ApolloCodegen {
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
     ) -> Result<(), CodegenError> {
-        Self::generate_from_ir_inner(compile_result, config, items_to_generate, false)
+        Self::generate_from_ir_inner(compile_result, config, items_to_generate, false, None)
     }
 
     /// Like `generate_from_ir` but skips schema type file generation.
@@ -256,7 +271,28 @@ impl ApolloCodegen {
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
     ) -> Result<(), CodegenError> {
-        Self::generate_from_ir_inner(compile_result, config, items_to_generate, true)
+        Self::generate_from_ir_inner(compile_result, config, items_to_generate, true, None)
+    }
+
+    /// Like `generate_from_ir_operations_only` but additionally filters
+    /// operations and fragments by file path prefix.
+    ///
+    /// Only operations/fragments whose `file_path` starts with `{prefix}/`
+    /// are generated. Used with compile-all caching: compile all operations
+    /// once, then generate per-target using the framework path as prefix.
+    pub fn generate_from_ir_filtered(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+        filter_prefix: &str,
+    ) -> Result<(), CodegenError> {
+        Self::generate_from_ir_inner(
+            compile_result,
+            config,
+            items_to_generate,
+            true,
+            Some(filter_prefix),
+        )
     }
 
     fn generate_from_ir_inner(
@@ -264,6 +300,7 @@ impl ApolloCodegen {
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
         skip_schema_types: bool,
+        filter_prefix: Option<&str>,
     ) -> Result<(), CodegenError> {
         let file_manager = ApolloFileManager::new();
 
@@ -288,6 +325,7 @@ impl ApolloCodegen {
                     &compile_result.ir,
                     config,
                     &file_manager,
+                    filter_prefix,
                 )?
             } else {
                 generate_all_files(
@@ -969,6 +1007,7 @@ fn generate_all_files(
         ir,
         config,
         file_manager,
+        None,
     )?;
     non_fatal_errors.merge(definition_errors);
 
@@ -979,16 +1018,33 @@ fn generate_all_files(
     Ok(non_fatal_errors)
 }
 
+/// Returns true if `file_path` starts with `prefix` followed by `/`.
+///
+/// Used by filtered generation to select only operations/fragments
+/// belonging to a specific framework path.
+fn matches_prefix(file_path: &str, filter_prefix: Option<&str>) -> bool {
+    match filter_prefix {
+        None => true,
+        Some(prefix) => {
+            file_path.starts_with(prefix)
+                && file_path.as_bytes().get(prefix.len()) == Some(&b'/')
+        }
+    }
+}
+
 /// Generates files for GraphQL operations and fragments.
 ///
 /// Mirrors Swift's `generateGraphQLDefinitionFiles()`.
 ///
 /// For local cache mutations, uses a cloned config with `field_merging` overridden to `All`.
+/// When `filter_prefix` is `Some`, only operations/fragments whose `file_path`
+/// starts with `{prefix}/` are generated.
 fn generate_graph_ql_definition_files(
     compilation_result: &CompilationResult,
     ir: &IRBuilder,
     config: &ConfigurationContext,
     file_manager: &ApolloFileManager,
+    filter_prefix: Option<&str>,
 ) -> Result<NonFatalErrors, CodegenError> {
     let _merge_named_fragment_fields = config
         .config
@@ -1008,6 +1064,10 @@ fn generate_graph_ql_definition_files(
 
     // Build fragment file generators
     for fragment in &compilation_result.fragments {
+        if !matches_prefix(&fragment.file_path, filter_prefix) {
+            continue;
+        }
+
         let is_lcm = fragment.is_local_cache_mutation();
         let fragment_config = if is_lcm {
             cache_mutation_config.clone()
@@ -1026,6 +1086,10 @@ fn generate_graph_ql_definition_files(
 
     // Build operation file generators
     for operation in &compilation_result.operations {
+        if !matches_prefix(&operation.file_path, filter_prefix) {
+            continue;
+        }
+
         let is_lcm = operation.is_local_cache_mutation();
         let operation_config = if is_lcm {
             cache_mutation_config.clone()
@@ -1633,5 +1697,34 @@ mod tests {
             1,
             "Should not duplicate existing directive"
         );
+    }
+
+    #[test]
+    fn test_matches_prefix_none_always_matches() {
+        assert!(matches_prefix("Features/Account/Query.graphql", None));
+        assert!(matches_prefix("", None));
+    }
+
+    #[test]
+    fn test_matches_prefix_exact_with_slash() {
+        assert!(matches_prefix("Features/Account/Query.graphql", Some("Features/Account")));
+        assert!(matches_prefix("V4/Fragments/Foo.graphql", Some("V4/Fragments")));
+    }
+
+    #[test]
+    fn test_matches_prefix_rejects_partial() {
+        // "Features/AccountInfo" should NOT match prefix "Features/Account"
+        assert!(!matches_prefix("Features/AccountInfo/Query.graphql", Some("Features/Account")));
+    }
+
+    #[test]
+    fn test_matches_prefix_rejects_no_slash() {
+        // Exact match without trailing slash should not match
+        assert!(!matches_prefix("Features/Account", Some("Features/Account")));
+    }
+
+    #[test]
+    fn test_matches_prefix_rejects_different_path() {
+        assert!(!matches_prefix("V4/Fragments/Foo.graphql", Some("Features/Account")));
     }
 }

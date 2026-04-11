@@ -37,6 +37,19 @@ struct CachedSchema {
     compiled_schema: CompiledSchema,
 }
 
+/// Cached compilation result (all operations compiled together).
+///
+/// When all operation targets compile the same superset of `.graphql` files
+/// (via `all_operations`), the `CompilationResult` is identical across targets.
+/// Caching it avoids re-running the expensive 3-pass fragment resolution
+/// (~1.7s) for each of the 145 operation targets.
+struct CachedCompilation {
+    /// Digests of ALL .graphql operation files (excluding .graphqls schema files).
+    operation_digests: BTreeMap<String, Vec<u8>>,
+    /// The compiled operations + fragments, shareable via Arc.
+    compilation_result: Arc<apollo_codegen_lib::codegen::CompilationResult>,
+}
+
 /// Runs the persistent worker loop (WRKR-01, WRKR-02).
 ///
 /// Called from main() when --persistent_worker is detected (D-87).
@@ -68,6 +81,11 @@ pub fn run_worker_loop() {
     // targets. Caching it here means only the first request pays the cost.
     let mut schema_cache: Option<CachedSchema> = None;
 
+    // Compilation cache: when all targets compile the same superset of
+    // .graphql files, the CompilationResult is identical. Cache it to
+    // skip the expensive 3-pass fragment resolution (~1.7s per target).
+    let mut compilation_cache: Option<CachedCompilation> = None;
+
     eprintln!("Apollo iOS codegen worker started (singleplex mode)");
 
     loop {
@@ -91,8 +109,8 @@ pub fn run_worker_loop() {
         };
 
         // Per-request scope (D-92) -- all request state is local and
-        // drops at the end of this block. Only the schema cache persists.
-        let response = handle_request(&request, &mut schema_cache);
+        // drops at the end of this block. Only caches persist.
+        let response = handle_request(&request, &mut schema_cache, &mut compilation_cache);
 
         // Write response to stdout (only protocol bytes, WRKR-04)
         if let Err(e) = write_work_response(&mut stdout, &response) {
@@ -101,7 +119,8 @@ pub fn run_worker_loop() {
         }
     }
 
-    // Graceful shutdown (D-95) -- drop cache explicitly
+    // Graceful shutdown (D-95) -- drop caches explicitly
+    drop(compilation_cache);
     drop(schema_cache);
     eprintln!("Worker shutdown complete");
     std::process::exit(0);
@@ -122,6 +141,7 @@ pub fn run_worker_loop() {
 fn handle_request(
     request: &WorkRequest,
     schema_cache: &mut Option<CachedSchema>,
+    compilation_cache: &mut Option<CachedCompilation>,
 ) -> WorkResponse {
     // Parse arguments through clap (D-88)
     // Prepend dummy program name since clap expects argv[0]
@@ -214,6 +234,8 @@ fn handle_request(
     if schema_changed {
         let label = if schema_cache.is_none() { "first request" } else { "schema changed" };
         eprintln!("Schema cache miss ({}) -- parsing schema", label);
+        // Schema changed -> invalidate compilation cache too
+        *compilation_cache = None;
         match ApolloCodegen::parse_schema_files(&schema_matches) {
             Ok(compiled) => {
                 *schema_cache = Some(CachedSchema {
@@ -236,29 +258,57 @@ fn handle_request(
 
     let compiled_schema = &schema_cache.as_ref().unwrap().compiled_schema;
 
-    // Step 3: Compile operations with cached schema
-    let compile_result = match ApolloCodegen::compile_operations_with_schema(
-        compiled_schema,
-        &operation_matches,
-        &config,
-    ) {
-        Ok(result) => result,
-        Err(e) => {
-            return WorkResponse {
-                exit_code: 1,
-                output: format!("{}", e),
-                request_id: 0,
-                was_cancelled: false,
-            };
+    // Step 3: Check compilation cache (keyed by all .graphql file digests)
+    let operation_digests = extract_operation_digests(&request.inputs);
+    let compilation_hit = compilation_cache
+        .as_ref()
+        .map_or(false, |c| c.operation_digests == operation_digests);
+
+    let compile_result = if compilation_hit {
+        eprintln!("Compilation cache hit -- reusing compiled operations");
+        let cached = compilation_cache.as_ref().unwrap();
+        // Fresh IRBuilder per request: BuiltFragmentStorage and FieldCollector
+        // accumulate state during generation. Creating a new IRBuilder costs
+        // only Arc bumps + IndexSet construction but guarantees no state leakage.
+        ApolloCodegen::compile_result_from_cached(cached.compilation_result.clone())
+    } else {
+        let label = if compilation_cache.is_none() { "first compile" } else { "operations changed" };
+        eprintln!("Compilation cache miss ({}) -- compiling operations", label);
+        match ApolloCodegen::compile_operations_with_schema(
+            compiled_schema,
+            &operation_matches,
+            &config,
+        ) {
+            Ok(result) => {
+                // Cache the compilation result for subsequent requests
+                *compilation_cache = Some(CachedCompilation {
+                    operation_digests,
+                    compilation_result: result.compilation_result.clone(),
+                });
+                result
+            }
+            Err(e) => {
+                return WorkResponse {
+                    exit_code: 1,
+                    output: format!("{}", e),
+                    request_id: 0,
+                    was_cancelled: false,
+                };
+            }
         }
     };
 
     // Step 4: Generate files
-    // In operations mode, skip schema type generation (5000+ files written to
-    // _schema_types_unused/ and thrown away). Only generate operation/fragment files.
+    // In operations mode, skip schema type generation and filter by framework path.
+    // With compile-all caching, the CompilationResult contains ALL operations;
+    // generate_from_ir_filtered selects only those matching the framework prefix.
     let is_operations_mode = generate_cmd.bazel_mode == "operations";
     let generate_result = if is_operations_mode {
-        ApolloCodegen::generate_from_ir_operations_only(&compile_result, &config, items_to_generate)
+        if let Some(ref prefix) = generate_cmd.bazel_framework_path {
+            ApolloCodegen::generate_from_ir_filtered(&compile_result, &config, items_to_generate, prefix)
+        } else {
+            ApolloCodegen::generate_from_ir_operations_only(&compile_result, &config, items_to_generate)
+        }
     } else {
         ApolloCodegen::generate_from_ir(&compile_result, &config, items_to_generate)
     };
@@ -323,6 +373,21 @@ fn extract_schema_digests(
     digests
 }
 
+/// Extracts digests for operation files (.graphql, not .graphqls) from WorkRequest inputs.
+///
+/// Used as the cache key for the compilation cache. When all targets receive
+/// the same superset of .graphql files (via `all_operations`), this digest
+/// map is identical across requests, enabling cache hits.
+fn extract_operation_digests(inputs: &[Input]) -> BTreeMap<String, Vec<u8>> {
+    let mut digests = BTreeMap::new();
+    for input in inputs {
+        if input.path.ends_with(".graphql") && !input.path.ends_with(".graphqls") {
+            digests.insert(input.path.clone(), input.digest.clone());
+        }
+    }
+    digests
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,7 +425,8 @@ mod tests {
             sandbox_dir: String::new(),
         };
         let mut schema_cache = None;
-        let response = handle_request(&request, &mut schema_cache);
+        let mut compilation_cache = None;
+        let response = handle_request(&request, &mut schema_cache, &mut compilation_cache);
         assert_eq!(response.exit_code, 1);
         assert!(
             response.output.contains("Worker only supports the 'generate' command"),
@@ -381,7 +447,8 @@ mod tests {
             sandbox_dir: String::new(),
         };
         let mut schema_cache = None;
-        let response = handle_request(&request, &mut schema_cache);
+        let mut compilation_cache = None;
+        let response = handle_request(&request, &mut schema_cache, &mut compilation_cache);
         assert_eq!(response.exit_code, 1);
         assert!(response.output.contains("Failed to parse arguments"));
         assert_eq!(response.request_id, 0);
@@ -398,7 +465,24 @@ mod tests {
             sandbox_dir: String::new(),
         };
         let mut schema_cache = None;
-        let response = handle_request(&request, &mut schema_cache);
+        let mut compilation_cache = None;
+        let response = handle_request(&request, &mut schema_cache, &mut compilation_cache);
         assert_eq!(response.request_id, 0);
+    }
+
+    #[test]
+    fn test_extract_operation_digests() {
+        let inputs = vec![
+            Input { path: "V4/schema.graphqls".to_string(), digest: vec![1, 2, 3] },
+            Input { path: "Features/Account/Query.graphql".to_string(), digest: vec![4, 5] },
+            Input { path: "V4/Fragments/Shared.graphql".to_string(), digest: vec![6, 7] },
+            Input { path: "some/other.txt".to_string(), digest: vec![8] },
+        ];
+        let digests = extract_operation_digests(&inputs);
+        assert_eq!(digests.len(), 2);
+        assert!(digests.contains_key("Features/Account/Query.graphql"));
+        assert!(digests.contains_key("V4/Fragments/Shared.graphql"));
+        // .graphqls should be excluded
+        assert!(!digests.contains_key("V4/schema.graphqls"));
     }
 }
