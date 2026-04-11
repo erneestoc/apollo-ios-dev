@@ -3,15 +3,18 @@
 //! Mirrors Swift's `Sources/apollo-ios-cli/Apollo_iOS_CLI.swift`.
 //! Registers 4 subcommands: init, generate, fetch-schema, generate-operation-manifest.
 //! Exit codes: 0 = success, 1 = any error (D-77).
+//!
+//! When invoked with `--persistent_worker`, enters Bazel worker mode (D-87).
 
-mod worker_proto;
+mod worker;
 mod worker_io;
+mod worker_proto;
 
 use clap::{Parser, Subcommand};
 
 use codegen_cli::commands::{
-    fetch_schema::FetchSchema, generate::Generate, generate_operation_manifest::GenerateOperationManifest,
-    initialize::Initialize,
+    fetch_schema::FetchSchema, generate::Generate,
+    generate_operation_manifest::GenerateOperationManifest, initialize::Initialize,
 };
 use codegen_cli::constants;
 
@@ -20,13 +23,13 @@ use codegen_cli::constants;
 #[command(name = "apollo-ios-cli")]
 #[command(about = "A command line utility for Apollo iOS code generation.")]
 #[command(version = constants::CLI_VERSION)]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Initialize a new configuration with defaults.
     #[command(name = "init")]
     Init(Initialize),
@@ -41,6 +44,17 @@ enum Commands {
 }
 
 fn main() {
+    // D-87: Check for --persistent_worker before clap parsing.
+    // Bazel passes this flag when spawning persistent workers.
+    // Must be checked in raw args because Bazel may also pass
+    // arguments that clap doesn't understand.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--persistent_worker") {
+        worker::run_worker_loop();
+        return; // run_worker_loop calls process::exit, but belt-and-suspenders
+    }
+
+    // Normal CLI mode
     let cli = Cli::parse();
 
     let result = match cli.command {

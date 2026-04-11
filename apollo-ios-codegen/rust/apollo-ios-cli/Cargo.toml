@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 codegen-cli = { path = "../codegen-cli" }
+apollo-codegen-lib = { path = "../apollo-codegen-lib" }
 clap = { workspace = true }
 prost = { workspace = true }
 bytes = { workspace = true }
