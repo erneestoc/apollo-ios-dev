@@ -88,6 +88,15 @@ pub struct CompileResult {
     pub ir: IRBuilder,
 }
 
+/// Cached parsed schema, reusable across requests with different operations.
+///
+/// The expensive part of compilation is schema parsing (stage 3). This struct
+/// holds the parsed schema so it can be shared across multiple
+/// `compile_operations_with_schema()` calls in worker mode.
+pub struct CompiledSchema {
+    parsed_schema: Valid<schema::Schema>,
+}
+
 // MARK: - ApolloCodegen
 
 /// The main code generation orchestrator.
@@ -178,6 +187,48 @@ impl ApolloCodegen {
         Ok(CompileResult { compilation_result, ir })
     }
 
+    /// Stage 1-2: Config validation and file discovery (cheap, ~ms).
+    ///
+    /// Returns discovered schema and operation file paths without parsing.
+    pub fn discover_files(
+        config: &ConfigurationContext,
+    ) -> Result<(indexmap::IndexSet<String>, indexmap::IndexSet<String>), CodegenError> {
+        validate_config_values(&config.config)?;
+        discover_graphql_files(config)
+    }
+
+    /// Stage 3: Parse schema files into a `CompiledSchema` (expensive, ~5s).
+    ///
+    /// The result can be cached and reused across multiple
+    /// `compile_operations_with_schema()` calls in worker mode.
+    pub fn parse_schema_files(
+        schema_matches: &indexmap::IndexSet<String>,
+    ) -> Result<CompiledSchema, CodegenError> {
+        let parsed_schema = parse_schema(schema_matches)?;
+        Ok(CompiledSchema { parsed_schema })
+    }
+
+    /// Stages 4-7: Operation parsing, compilation, validation, IR construction.
+    ///
+    /// Uses a pre-parsed schema from `compile_schema()` to skip the expensive
+    /// schema parsing step. Each operation target calls this with its own
+    /// operation files but the same cached schema.
+    pub fn compile_operations_with_schema(
+        schema: &CompiledSchema,
+        operation_matches: &indexmap::IndexSet<String>,
+        config: &ConfigurationContext,
+    ) -> Result<CompileResult, CodegenError> {
+        let compilation_result = compile_graphql(
+            &schema.parsed_schema,
+            operation_matches,
+            config,
+        )?;
+        let compilation_result = Arc::new(compilation_result);
+        validate_against_schema(config, &compilation_result)?;
+        let ir = IRBuilder::new(compilation_result.clone());
+        Ok(CompileResult { compilation_result, ir })
+    }
+
     /// Runs pipeline stages 8-12: schema customizations, code generation,
     /// operation manifest generation, stale file pruning, and error reporting.
     ///
@@ -191,6 +242,28 @@ impl ApolloCodegen {
         compile_result: &CompileResult,
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
+    ) -> Result<(), CodegenError> {
+        Self::generate_from_ir_inner(compile_result, config, items_to_generate, false)
+    }
+
+    /// Like `generate_from_ir` but skips schema type file generation.
+    ///
+    /// Used in worker operations mode where schema types go to a throwaway
+    /// directory (`_schema_types_unused/`). Generating 5000+ schema type
+    /// files per request is wasteful when only operation files are needed.
+    pub fn generate_from_ir_operations_only(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+    ) -> Result<(), CodegenError> {
+        Self::generate_from_ir_inner(compile_result, config, items_to_generate, true)
+    }
+
+    fn generate_from_ir_inner(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+        skip_schema_types: bool,
     ) -> Result<(), CodegenError> {
         let file_manager = ApolloFileManager::new();
 
@@ -208,13 +281,22 @@ impl ApolloCodegen {
                 std::collections::BTreeSet::new()
             };
 
-            // Generate all files
-            let errors = generate_all_files(
-                &compile_result.compilation_result,
-                &compile_result.ir,
-                config,
-                &file_manager,
-            )?;
+            // Generate files
+            let errors = if skip_schema_types {
+                generate_graph_ql_definition_files(
+                    &compile_result.compilation_result,
+                    &compile_result.ir,
+                    config,
+                    &file_manager,
+                )?
+            } else {
+                generate_all_files(
+                    &compile_result.compilation_result,
+                    &compile_result.ir,
+                    config,
+                    &file_manager,
+                )?
+            };
             non_fatal_errors.merge(errors);
 
             // Stage 11: Stale file pruning (after all generation)

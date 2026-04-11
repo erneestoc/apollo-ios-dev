@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 apollo-codegen-lib = { path = "../apollo-codegen-lib" }
 clap = { workspace = true }
+regex = "1"
 serde_json = { workspace = true }
 
 [dev-dependencies]

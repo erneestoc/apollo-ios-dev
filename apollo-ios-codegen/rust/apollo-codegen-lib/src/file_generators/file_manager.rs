@@ -127,10 +127,16 @@ impl ApolloFileManager {
     ///
     /// Mirrors Swift's `ApolloFileManager.deleteFile(atPath:)`.
     pub fn delete_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        if path.exists() && !path.is_dir() {
-            std::fs::remove_file(path)?;
+        if path.is_dir() {
+            return Ok(());
         }
-        Ok(())
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            // Ignore NotFound — file may have been deleted by another process
+            // (e.g. parallel Bazel workers sharing the same execroot).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Creates the directory (including all intermediate directories) if it does not exist.
