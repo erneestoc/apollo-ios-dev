@@ -11,6 +11,11 @@ prost = { workspace = true }
 bytes = { workspace = true }
 ctrlc = { workspace = true }
 
+[dev-dependencies]
+libc = "0.2"
+tempfile = "3"
+serde_json = { workspace = true }
+
 [build-dependencies]
 prost-build = "0.14"
 protox = "0.9"

@@ -130,9 +130,12 @@ dependencies = [
  "clap",
  "codegen-cli",
  "ctrlc",
+ "libc",
  "prost",
  "prost-build",
  "protox",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

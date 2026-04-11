@@ -10,6 +10,9 @@ mod worker;
 mod worker_io;
 mod worker_proto;
 
+#[cfg(test)]
+mod worker_bench;
+
 use clap::{Parser, Subcommand};
 
 use codegen_cli::commands::{
