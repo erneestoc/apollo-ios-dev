@@ -82,7 +82,7 @@ pub fn swift_name_for_type(named_type: &GraphQLNamedType, is_input_value: bool) 
   match named_type.name().schema_name.as_str() {
     "Boolean" => "Bool".to_string(),
     "Float" => "Double".to_string(),
-    "Int" => "Int".to_string(),
+    "Int" => if is_input_value { "Int32".to_string() } else { "Int".to_string() },
     _ => named_type.name().schema_name.clone(),
   }
 }

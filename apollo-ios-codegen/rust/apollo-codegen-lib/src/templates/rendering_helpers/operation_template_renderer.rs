@@ -131,13 +131,13 @@ pub fn render_variable_accessors(
   // Swift's `list:` syntax renders multiple entries on separate lines
   if entries.len() == 1 {
     format!(
-      "public var __variables: {}Variables? {{ [{}] }}",
+      "@_spi(Unsafe) public var __variables: {}Variables? {{ [{}] }}",
       prefix,
       entries[0]
     )
   } else {
     format!(
-      "public var __variables: {}Variables? {{ [\n  {}\n] }}",
+      "@_spi(Unsafe) public var __variables: {}Variables? {{ [\n  {}\n] }}",
       prefix,
       entries.join(",\n  ")
     )

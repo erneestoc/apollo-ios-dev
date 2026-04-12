@@ -428,7 +428,7 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "public static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
+            "@_spi(Execution) public static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
             APOLLO_API_TARGET_NAME,
             items.join(",\n")
         )

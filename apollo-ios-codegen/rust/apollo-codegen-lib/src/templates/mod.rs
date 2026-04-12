@@ -293,14 +293,19 @@ pub struct ImportStatementTemplate;
 impl ImportStatementTemplate {
   /// Returns the import statement for a schema type file.
   ///
-  /// Mirrors Swift's `ImportStatementTemplate.SchemaType.template(config:schemaFileType:)`.
-  /// In 1.15.1, all schema types use plain `import ApolloAPI` (no @_spi annotations).
+  /// Mirrors Swift's `ImportStatementTemplate.SchemaType.template(config:type:)`.
+  /// Since 2.0.0, different schema types use different @_spi annotations.
   pub fn schema_type(
     config: &ConfigurationContext,
-    _file_type: &SchemaFileType,
+    file_type: &SchemaFileType,
   ) -> String {
     let _ = config; // config used for cocoapods check in Swift -- not yet needed
-    "import ApolloAPI".to_string()
+    match file_type {
+      SchemaFileType::Enum => "@_spi(Internal) import ApolloAPI".to_string(),
+      SchemaFileType::CustomScalar => "@_spi(Internal) @_spi(Execution) import ApolloAPI".to_string(),
+      SchemaFileType::InputObject => "@_spi(Internal) @_spi(Unsafe) import ApolloAPI".to_string(),
+      _ => "import ApolloAPI".to_string(),
+    }
   }
 
   /// Returns the import statement for an operation file.
