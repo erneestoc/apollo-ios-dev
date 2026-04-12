@@ -56,12 +56,14 @@ impl TemplateRenderer for InterfaceTemplate {
         );
 
         let key_fields = self.render_key_fields();
+        let implementing_objects = self.render_implementing_objects();
 
         parts.push(format!(
-            "static let {} = ApolloAPI.Interface(name: \"{}\", keyFields: {})",
+            "static let {} = ApolloAPI.Interface(\n  name: \"{}\",\n  keyFields: {},\n  implementingObjects: {}\n)",
             typename,
             self.graphql_interface.name.schema_name,
             key_fields,
+            implementing_objects,
         ));
 
         parts.join("\n")
@@ -86,6 +88,34 @@ impl InterfaceTemplate {
                     format!("[\n{}\n  ]", inner)
                 }
             }
+        }
+    }
+
+    fn render_implementing_objects(&self) -> String {
+        let items: Vec<String> = self
+            .graphql_interface
+            .implementing_objects
+            .iter()
+            .map(|obj| {
+                let type_name = render_named_type(
+                    &GraphQLNamedType::Object(Arc::clone(obj)),
+                    &RenderContext::Typename { is_input_value: false },
+                );
+                format!("\"{}\"", type_name)
+            })
+            .collect();
+
+        if items.is_empty() {
+            "[]".to_string()
+        } else if items.len() == 1 {
+            format!("[{}]", items[0])
+        } else {
+            let inner = items
+                .iter()
+                .map(|s| format!("    {}", s))
+                .collect::<Vec<_>>()
+                .join(",\n");
+            format!("[\n{}\n  ]", inner)
         }
     }
 }
@@ -183,7 +213,22 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(
-            actual.contains("static let ADog = ApolloAPI.Interface(name: \"aDog\", keyFields: nil)"),
+            actual.contains("static let ADog = ApolloAPI.Interface("),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("name: \"aDog\""),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("keyFields: nil"),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("implementingObjects: []"),
             "actual:\n{}",
             actual
         );
@@ -281,7 +326,12 @@ mod tests {
             actual
         );
         assert!(
-            actual.contains("static let MyCustomInterface = ApolloAPI.Interface(name: \"MyInterface\", keyFields: nil)"),
+            actual.contains("static let MyCustomInterface = ApolloAPI.Interface("),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("name: \"MyInterface\""),
             "actual:\n{}",
             actual
         );
@@ -336,10 +386,9 @@ mod tests {
     }
 
     // MARK: - Implementing Objects Tests
-    // Swift 1.17.0 does NOT render implementingObjects yet (added in 1.18.0).
 
     #[test]
-    fn test_render_with_implementing_objects_does_not_include_them() {
+    fn test_render_with_implementing_objects_includes_them() {
         let obj1 = make_object("MyObject");
         let obj2 = make_object("SecondObject");
         let iface = make_interface("MyInterface", None, None, vec![obj1, obj2], None);
@@ -349,8 +398,33 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(
-            !actual.contains("implementingObjects"),
-            "implementingObjects should not appear in output, actual:\n{}",
+            actual.contains("implementingObjects: ["),
+            "implementingObjects should appear in output, actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("\"MyObject\""),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("\"SecondObject\""),
+            "actual:\n{}",
+            actual
+        );
+    }
+
+    #[test]
+    fn test_render_no_implementing_objects_renders_empty_array() {
+        let iface = make_interface("Dog", None, None, vec![], None);
+        let template = InterfaceTemplate {
+            graphql_interface: iface,
+            config: default_config(),
+        };
+        let actual = render_body(&template);
+        assert!(
+            actual.contains("implementingObjects: []"),
+            "actual:\n{}",
             actual
         );
     }
