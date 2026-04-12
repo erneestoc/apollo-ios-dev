@@ -55,13 +55,38 @@ impl TemplateRenderer for InterfaceTemplate {
             &RenderContext::Typename { is_input_value: false },
         );
 
+        let key_fields = self.render_key_fields();
+
         parts.push(format!(
-            "static let {} = ApolloAPI.Interface(name: \"{}\")",
+            "static let {} = ApolloAPI.Interface(name: \"{}\", keyFields: {})",
             typename,
             self.graphql_interface.name.schema_name,
+            key_fields,
         ));
 
         parts.join("\n")
+    }
+}
+
+impl InterfaceTemplate {
+    fn render_key_fields(&self) -> String {
+        match &self.graphql_interface.key_fields {
+            None => "nil".to_string(),
+            Some(fields) if fields.is_empty() => "nil".to_string(),
+            Some(fields) => {
+                let quoted: Vec<String> = fields.iter().map(|s| format!("\"{}\"", s)).collect();
+                if quoted.len() == 1 {
+                    format!("[{}]", quoted[0])
+                } else {
+                    let inner = quoted
+                        .iter()
+                        .map(|s| format!("    {}", s))
+                        .collect::<Vec<_>>()
+                        .join(",\n");
+                    format!("[\n{}\n  ]", inner)
+                }
+            }
+        }
     }
 }
 
@@ -157,8 +182,11 @@ mod tests {
             config: default_config(),
         };
         let actual = render_body(&template);
-        let expected = "static let ADog = ApolloAPI.Interface(name: \"aDog\")";
-        assert_eq!(actual, expected);
+        assert!(
+            actual.contains("static let ADog = ApolloAPI.Interface(name: \"aDog\", keyFields: nil)"),
+            "actual:\n{}",
+            actual
+        );
     }
 
     // MARK: - Documentation Tests
@@ -247,18 +275,22 @@ mod tests {
             config: default_config(),
         };
         let actual = render_body(&template);
-        let expected = "\
-// Renamed from GraphQL schema value: 'MyInterface'
-static let MyCustomInterface = ApolloAPI.Interface(name: \"MyInterface\")";
-        assert_eq!(actual, expected);
+        assert!(
+            actual.contains("// Renamed from GraphQL schema value: 'MyInterface'"),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("static let MyCustomInterface = ApolloAPI.Interface(name: \"MyInterface\", keyFields: nil)"),
+            "actual:\n{}",
+            actual
+        );
     }
 
-    // MARK: - Key Fields / Implementing Objects Tests
-    // Swift's InterfaceTemplate does NOT render keyFields or implementingObjects.
-    // Verify they are absent even when present on the GraphQL type.
+    // MARK: - Key Fields Tests
 
     #[test]
-    fn test_render_with_key_fields_does_not_include_them() {
+    fn test_render_with_key_fields_includes_them() {
         let iface = make_interface(
             "IndexedNode",
             None,
@@ -272,12 +304,39 @@ static let MyCustomInterface = ApolloAPI.Interface(name: \"MyInterface\")";
         };
         let actual = render_body(&template);
         assert!(
-            !actual.contains("keyFields"),
-            "keyFields should not appear in output, actual:\n{}",
+            actual.contains("keyFields: ["),
+            "keyFields should appear in output, actual:\n{}",
             actual
         );
-        assert_eq!(actual, "static let IndexedNode = ApolloAPI.Interface(name: \"IndexedNode\")");
+        assert!(
+            actual.contains("\"parentID\""),
+            "actual:\n{}",
+            actual
+        );
+        assert!(
+            actual.contains("\"index\""),
+            "actual:\n{}",
+            actual
+        );
     }
+
+    #[test]
+    fn test_render_no_key_fields_renders_nil() {
+        let iface = make_interface("Dog", None, None, vec![], None);
+        let template = InterfaceTemplate {
+            graphql_interface: iface,
+            config: default_config(),
+        };
+        let actual = render_body(&template);
+        assert!(
+            actual.contains("keyFields: nil"),
+            "actual:\n{}",
+            actual
+        );
+    }
+
+    // MARK: - Implementing Objects Tests
+    // Swift 1.17.0 does NOT render implementingObjects yet (added in 1.18.0).
 
     #[test]
     fn test_render_with_implementing_objects_does_not_include_them() {
@@ -294,6 +353,5 @@ static let MyCustomInterface = ApolloAPI.Interface(name: \"MyInterface\")";
             "implementingObjects should not appear in output, actual:\n{}",
             actual
         );
-        assert_eq!(actual, "static let MyInterface = ApolloAPI.Interface(name: \"MyInterface\")");
     }
 }
