@@ -306,10 +306,10 @@ impl ImportStatementTemplate {
   /// Returns the import statement for an operation file.
   ///
   /// Mirrors Swift's `ImportStatementTemplate.Operation.template(config:)`.
-  /// In 1.15.1, operation files use `@_exported import ApolloAPI` only (no @_spi line).
+  /// Since 2.0.0, operation files add `@_spi(Execution) @_spi(Unsafe) import ApolloAPI`.
   pub fn operation(config: &ConfigurationContext) -> String {
     let schema_module = config.schema_module_name();
-    let base_import = "@_exported import ApolloAPI";
+    let base_import = "@_exported import ApolloAPI\n@_spi(Execution) @_spi(Unsafe) import ApolloAPI";
 
     if !config.output().operations.is_in_module() {
       format!("{}\nimport {}", base_import, schema_module)

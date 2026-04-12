@@ -63,15 +63,9 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
             &self.operation.definition.operation_type.to_string(),
             true, // is_local_cache_mutation
         );
-        let class_keywords = if self.config.config.options.mark_operation_definitions_as_final {
-            "final class"
-        } else {
-            "class"
-        };
         result.push_str(&format!(
-            "{}{} {}: LocalCacheMutation {{\n",
+            "{}struct {}: LocalCacheMutation {{\n",
             parent_access.render(),
-            class_keywords,
             definition_name,
         ));
 

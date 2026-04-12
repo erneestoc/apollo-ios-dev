@@ -343,7 +343,7 @@ impl<'a> SelectionSetTemplate<'a> {
 
     fn data_property_template(&self) -> String {
         format!(
-            "{}{} __data: DataDict",
+            "@_spi(Unsafe) {}{} __data: DataDict",
             self.access_control_renderer.render(),
             if self.is_mutable() { "var" } else { "let" }
         )
@@ -355,7 +355,7 @@ impl<'a> SelectionSetTemplate<'a> {
         if let Some(props) = extra_props {
             if !props.is_empty() {
                 return format!(
-                    "{}init(_dataDict: DataDict) {{\n  {}\n  {}\n}}",
+                    "@_spi(Unsafe) {}init(_dataDict: DataDict) {{\n  {}\n  {}\n}}",
                     self.access_control_renderer.render(),
                     data_init,
                     props
@@ -364,7 +364,7 @@ impl<'a> SelectionSetTemplate<'a> {
         }
 
         format!(
-            "{}init(_dataDict: DataDict) {{ {} }}",
+            "@_spi(Unsafe) {}init(_dataDict: DataDict) {{ {} }}",
             self.access_control_renderer.render(),
             data_init
         )
@@ -396,7 +396,7 @@ impl<'a> SelectionSetTemplate<'a> {
 
     fn parent_type_template(&self, type_: &GraphQLCompositeType) -> String {
         format!(
-            "{}static var __parentType: any {}.ParentType {{ {} }}",
+            "@_spi(Execution) {}static var __parentType: any {}.ParentType {{ {} }}",
             self.access_control_renderer.render(),
             APOLLO_API_TARGET_NAME,
             self.generated_schema_type_reference(type_)
@@ -471,7 +471,7 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "{}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
+            "@_spi(Execution) {}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
             self.access_control_renderer.render(),
             APOLLO_API_TARGET_NAME,
             items.join(",\n")
@@ -612,7 +612,7 @@ impl<'a> SelectionSetTemplate<'a> {
         }
 
         result.push_str(&format!(
-            "{}static var __selections: [{}.Selection] {{ [\n{}\n] }}",
+            "@_spi(Execution) {}static var __selections: [{}.Selection] {{ [\n{}\n] }}",
             self.access_control_renderer.render(),
             APOLLO_API_TARGET_NAME,
             selection_items.join("\n")

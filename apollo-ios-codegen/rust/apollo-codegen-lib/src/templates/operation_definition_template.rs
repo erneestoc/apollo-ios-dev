@@ -163,16 +163,9 @@ impl OperationDefinitionTemplate {
         );
         let protocol_name = rendered_protocol_name(&self.operation.definition.operation_type);
 
-        let class_keywords = if self.config.config.options.mark_operation_definitions_as_final {
-            "final class"
-        } else {
-            "class"
-        };
-
         format!(
-            "{}{} {}: {} {{\n  {}static let operationName: String = \"{}\"\n",
+            "{}struct {}: {} {{\n  {}static let operationName: String = \"{}\"\n",
             parent_access.render(),
-            class_keywords,
             definition_name,
             protocol_name,
             member_access.render(),

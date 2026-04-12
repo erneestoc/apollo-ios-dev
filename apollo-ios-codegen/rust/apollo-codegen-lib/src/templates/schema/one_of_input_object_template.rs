@@ -88,7 +88,7 @@ impl TemplateRenderer for OneOfInputObjectTemplate {
 
         enum_body.push(String::new());
         enum_body.push(format!(
-            "  {}var __data: InputDict {{\n    switch self {{\n{}\n    }}\n  }}",
+            "  @_spi(Unsafe) {}var __data: InputDict {{\n    switch self {{\n{}\n    }}\n  }}",
             member_str,
             case_data_entries.join("\n"),
         ));

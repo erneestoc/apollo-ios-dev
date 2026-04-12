@@ -77,12 +77,12 @@ impl TemplateRenderer for InputObjectTemplate {
 
         // __data property and raw init
         struct_body.push(format!(
-            "  {}private(set) var __data: InputDict",
+            "  @_spi(Unsafe) {}private(set) var __data: InputDict",
             member_str
         ));
         struct_body.push(String::new());
         struct_body.push(format!(
-            "  {}init(_ data: InputDict) {{\n    __data = data\n  }}",
+            "  @_spi(Unsafe) {}init(_ data: InputDict) {{\n    __data = data\n  }}",
             member_str
         ));
         struct_body.push(String::new());
