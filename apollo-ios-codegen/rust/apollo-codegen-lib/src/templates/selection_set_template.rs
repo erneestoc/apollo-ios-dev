@@ -1149,7 +1149,7 @@ impl<'a> SelectionSetTemplate<'a> {
             parts.push(self.initializer_data_dict_field_template(field));
         }
 
-        parts.join("\n      ")
+        parts.join("\n    ")
     }
 
     fn initializer_data_dict_field_template(&self, field: &Field) -> String {
