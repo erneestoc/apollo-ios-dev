@@ -274,6 +274,15 @@ impl<'a> SelectionSetTemplate<'a> {
             result.push('\n');
             result.push_str(&self.merged_sources_template(&selection_set.merged.merged_sources));
         }
+        // Fulfilled fragments static metadata (1.25.3+)
+        result.push('\n');
+        result.push_str(&self.fulfilled_fragments_metadata_template(selection_set));
+        // Deferred fragments static metadata (1.25.3+)
+        let deferred_meta = self.deferred_fragments_metadata_template(selection_set);
+        if !deferred_meta.is_empty() {
+            result.push('\n');
+            result.push_str(&deferred_meta);
+        }
 
         // Remaining sections: each gets a blank line before if non-empty
         // (mirrors Swift's `section:` behavior)
@@ -421,6 +430,96 @@ impl<'a> SelectionSetTemplate<'a> {
         format!(
             "public static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
             APOLLO_API_TARGET_NAME,
+            items.join(",\n")
+        )
+    }
+
+    // MARK: - Fulfilled/Deferred Fragments
+
+    fn fulfilled_fragments_metadata_template(
+        &self,
+        selection_set: &ComputedSelectionSet,
+    ) -> String {
+        let mut fulfilled_fragments: IndexSet<String> = IndexSet::new();
+
+        let mut current_node =
+            Some(selection_set.type_info.scope_path.last().scope_path.head_node());
+        while let Some(node) = current_node {
+            let name = SelectionSetNameGenerator::generated_selection_set_name_for_computed(
+                selection_set,
+                Some(node),
+                NameFormat::FullyQualified,
+                &self.config.pluralizer,
+            );
+            fulfilled_fragments.insert(name);
+            current_node = node.next();
+        }
+
+        for source in &selection_set.merged.merged_sources {
+            let names = generated_selection_set_names_of_fulfilled_fragments(
+                source,
+                &self.config.pluralizer,
+            );
+            for name in names {
+                fulfilled_fragments.insert(name);
+            }
+        }
+
+        let items: Vec<String> = fulfilled_fragments
+            .iter()
+            .map(|name| format!("  {}.self", name))
+            .collect();
+
+        format!(
+            "{}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
+            self.access_control_renderer.render(),
+            APOLLO_API_TARGET_NAME,
+            items.join(",\n")
+        )
+    }
+
+    fn deferred_fragments_metadata_template(
+        &self,
+        selection_set: &ComputedSelectionSet,
+    ) -> String {
+        let direct_selections = match &selection_set.direct {
+            Some(d) => d,
+            None => return String::new(),
+        };
+
+        let mut deferred_fragments: IndexSet<String> = IndexSet::new();
+
+        for inline_frag in direct_selections.inline_fragments.values() {
+            if inline_frag.selection_set.type_info.is_deferred() {
+                let name = SelectionSetNameGenerator::generated_selection_set_name(
+                    &inline_frag.selection_set.type_info,
+                    None,
+                    NameFormat::FullyQualified,
+                    &self.config.pluralizer,
+                );
+                deferred_fragments.insert(name);
+            }
+        }
+
+        for named_frag in direct_selections.named_fragments.values() {
+            if named_frag.type_info.defer_condition().is_some() {
+                deferred_fragments.insert(
+                    generated_fragment_definition_name(named_frag.fragment.name()),
+                );
+            }
+        }
+
+        if deferred_fragments.is_empty() {
+            return String::new();
+        }
+
+        let items: Vec<String> = deferred_fragments
+            .iter()
+            .map(|name| format!("  {}.self", name))
+            .collect();
+
+        format!(
+            "public static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
             items.join(",\n")
         )
     }
@@ -963,21 +1062,15 @@ impl<'a> SelectionSetTemplate<'a> {
     fn initializer_template(&self, selection_set: &ComputedSelectionSet) -> String {
         let params = self.initializer_selection_parameters_template(selection_set);
         let data_dict = self.initializer_data_dict_template(selection_set);
-        let fulfilled = self.initializer_fulfilled_fragments(selection_set);
 
-        // Match Swift's InitializerTemplate layout exactly:
+        // Match Swift 1.25.3+ InitializerTemplate layout:
         // init(
         //   param1,
         //   param2
         // ) {
-        //   self.init(_dataDict: DataDict(
-        //     data: [
-        //       "key": value,
-        //     ],
-        //     fulfilledFragments: [
-        //       ObjectIdentifier(Foo.self)
-        //     ]
-        //   ))
+        //   self.init(unsafelyWithData: [
+        //     "key": value,
+        //   ])
         // }
         let mut result = String::new();
         result.push_str(&self.access_control_renderer.render());
@@ -989,52 +1082,12 @@ impl<'a> SelectionSetTemplate<'a> {
             result.push_str(&params);
             result.push_str("\n) {\n");
         }
-        result.push_str("  self.init(_dataDict: DataDict(\n");
-        result.push_str("    data: [\n");
-        result.push_str("      ");
+        result.push_str("  self.init(unsafelyWithData: [\n");
+        result.push_str("    ");
         result.push_str(&data_dict);
-        result.push_str("\n    ],\n");
-        result.push_str("    fulfilledFragments: ");
-        result.push_str(&fulfilled);
-        result.push_str("\n  ))\n");
+        result.push_str("\n  ])\n");
         result.push_str("}");
         result
-    }
-
-    fn initializer_fulfilled_fragments(&self, selection_set: &ComputedSelectionSet) -> String {
-        let mut fulfilled_fragments: IndexSet<String> = IndexSet::new();
-
-        // Walk scope conditions
-        let mut current_node =
-            Some(selection_set.type_info.scope_path.last().scope_path.head_node());
-        while let Some(node) = current_node {
-            let name = SelectionSetNameGenerator::generated_selection_set_name_for_computed(
-                selection_set,
-                Some(node),
-                NameFormat::FullyQualified,
-                &self.config.pluralizer,
-            );
-            fulfilled_fragments.insert(name);
-            current_node = node.next();
-        }
-
-        // Add from merged sources
-        for source in &selection_set.merged.merged_sources {
-            let names = generated_selection_set_names_of_fulfilled_fragments(
-                source,
-                &self.config.pluralizer,
-            );
-            for name in names {
-                fulfilled_fragments.insert(name);
-            }
-        }
-
-        let items: Vec<String> = fulfilled_fragments
-            .iter()
-            .map(|name| format!("ObjectIdentifier({}.self)", name))
-            .collect();
-
-        format!("[\n      {}\n    ]", items.join(",\n      "))
     }
 
     fn initializer_selection_parameters_template(
