@@ -134,51 +134,86 @@ impl FileTarget {
     /// Resolves the output path for schema type files.
     ///
     /// Mirrors Swift's `resolveSchemaPath(forConfig:)` (lines 135-150).
+    /// When `output_root` is set, writes directly to `output_root/<subpath>`,
+    /// bypassing the config path and SPM/Schema prefixes.
     fn resolve_schema_path(&self, config: &ConfigurationContext) -> PathBuf {
-        let mut url = resolve_url(&config.output().schema_types.path, config.root_url());
-        if matches!(
-            config.output().schema_types.module_type,
-            ModuleType::SwiftPackageManager
-        ) {
-            url = url.join("Sources");
-        }
-        if config.output().operations.is_in_module() {
-            url = url.join("Schema");
-        }
-        let subpath = self.subpath();
-        if subpath.is_empty() {
-            normalize_path(&url)
+        if let Some(output_root) = config.output_root() {
+            let subpath = self.subpath();
+            if subpath.is_empty() {
+                output_root.to_path_buf()
+            } else {
+                output_root.join(subpath)
+            }
         } else {
-            normalize_path(&url.join(subpath))
+            let mut url = resolve_url(&config.output().schema_types.path, config.root_url());
+            if matches!(
+                config.output().schema_types.module_type,
+                ModuleType::SwiftPackageManager
+            ) {
+                url = url.join("Sources");
+            }
+            if config.output().operations.is_in_module() {
+                url = url.join("Schema");
+            }
+            let subpath = self.subpath();
+            if subpath.is_empty() {
+                normalize_path(&url)
+            } else {
+                normalize_path(&url.join(subpath))
+            }
         }
     }
 
     /// Resolves the output path for fragment files.
     ///
     /// Mirrors Swift's `resolveFragmentPath(forConfig:fragment:)` (lines 152-175).
+    /// When `output_root` is set, redirects output under the tree artifact directory.
     fn resolve_fragment_path(&self, config: &ConfigurationContext) -> PathBuf {
         let file_path = match self {
             FileTarget::Fragment { file_path, .. } => file_path,
             _ => unreachable!("resolve_fragment_path called on non-fragment target"),
         };
 
-        match &config.output().operations {
-            OperationsFileOutput::InSchemaModule => {
-                let mut url =
-                    resolve_url(&config.output().schema_types.path, config.root_url());
-                if matches!(
-                    config.output().schema_types.module_type,
-                    ModuleType::SwiftPackageManager
-                ) {
-                    url = url.join("Sources");
+        if let Some(output_root) = config.output_root() {
+            match &config.output().operations {
+                OperationsFileOutput::Relative { subpath, .. } => {
+                    let rel = resolve_relative_path(file_path, subpath.as_deref());
+                    if rel.is_absolute() {
+                        // Absolute paths (e.g. Bazel execroot) can't be joined
+                        // under output_root. Write directly to tree artifact root.
+                        output_root.to_path_buf()
+                    } else {
+                        output_root.join(rel)
+                    }
                 }
-                url.join(self.subpath())
+                _ => {
+                    let subpath = self.subpath();
+                    if subpath.is_empty() {
+                        output_root.to_path_buf()
+                    } else {
+                        output_root.join(subpath)
+                    }
+                }
             }
-            OperationsFileOutput::Absolute { path, .. } => {
-                resolve_url(path, config.root_url()).join(self.subpath())
-            }
-            OperationsFileOutput::Relative { subpath, .. } => {
-                resolve_relative_path(file_path, subpath.as_deref())
+        } else {
+            match &config.output().operations {
+                OperationsFileOutput::InSchemaModule => {
+                    let mut url =
+                        resolve_url(&config.output().schema_types.path, config.root_url());
+                    if matches!(
+                        config.output().schema_types.module_type,
+                        ModuleType::SwiftPackageManager
+                    ) {
+                        url = url.join("Sources");
+                    }
+                    url.join(self.subpath())
+                }
+                OperationsFileOutput::Absolute { path, .. } => {
+                    resolve_url(path, config.root_url()).join(self.subpath())
+                }
+                OperationsFileOutput::Relative { subpath, .. } => {
+                    resolve_relative_path(file_path, subpath.as_deref())
+                }
             }
         }
     }
@@ -186,6 +221,7 @@ impl FileTarget {
     /// Resolves the output path for operation files.
     ///
     /// Mirrors Swift's `resolveOperationPath(forConfig:operation:)` (lines 187-215).
+    /// When `output_root` is set, redirects output under the tree artifact directory.
     fn resolve_operation_path(&self, config: &ConfigurationContext) -> PathBuf {
         let (file_path, is_local_cache_mutation) = match self {
             FileTarget::Operation {
@@ -196,26 +232,48 @@ impl FileTarget {
             _ => unreachable!("resolve_operation_path called on non-operation target"),
         };
 
-        match &config.output().operations {
-            OperationsFileOutput::InSchemaModule => {
-                let mut url =
-                    resolve_url(&config.output().schema_types.path, config.root_url());
-                if matches!(
-                    config.output().schema_types.module_type,
-                    ModuleType::SwiftPackageManager
-                ) {
-                    url = url.join("Sources");
+        if let Some(output_root) = config.output_root() {
+            match &config.output().operations {
+                OperationsFileOutput::Relative { subpath, .. } => {
+                    let rel = resolve_relative_path(file_path, subpath.as_deref());
+                    if rel.is_absolute() {
+                        // Absolute paths (e.g. Bazel execroot) can't be joined
+                        // under output_root. Write directly to tree artifact root.
+                        output_root.to_path_buf()
+                    } else {
+                        output_root.join(rel)
+                    }
                 }
-                if !is_local_cache_mutation {
-                    url = url.join("Operations");
+                _ => {
+                    let mut base = output_root.to_path_buf();
+                    if !is_local_cache_mutation {
+                        base = base.join("Operations");
+                    }
+                    base.join(self.subpath())
                 }
-                url.join(self.subpath())
             }
-            OperationsFileOutput::Absolute { path, .. } => {
-                resolve_url(path, config.root_url()).join(self.subpath())
-            }
-            OperationsFileOutput::Relative { subpath, .. } => {
-                resolve_relative_path(file_path, subpath.as_deref())
+        } else {
+            match &config.output().operations {
+                OperationsFileOutput::InSchemaModule => {
+                    let mut url =
+                        resolve_url(&config.output().schema_types.path, config.root_url());
+                    if matches!(
+                        config.output().schema_types.module_type,
+                        ModuleType::SwiftPackageManager
+                    ) {
+                        url = url.join("Sources");
+                    }
+                    if !is_local_cache_mutation {
+                        url = url.join("Operations");
+                    }
+                    url.join(self.subpath())
+                }
+                OperationsFileOutput::Absolute { path, .. } => {
+                    resolve_url(path, config.root_url()).join(self.subpath())
+                }
+                OperationsFileOutput::Relative { subpath, .. } => {
+                    resolve_relative_path(file_path, subpath.as_deref())
+                }
             }
         }
     }
@@ -223,18 +281,30 @@ impl FileTarget {
     /// Resolves the output path for test mock files.
     ///
     /// Mirrors Swift's `resolveTestMockPath(forConfig:)` (lines 217-229).
+    /// When `output_root` is set, redirects test mocks under the tree artifact directory.
     fn resolve_test_mock_path(&self, config: &ConfigurationContext) -> PathBuf {
-        match &config.output().test_mocks {
-            TestMockFileOutput::None => PathBuf::new(),
-            TestMockFileOutput::SwiftPackage { target_name } => {
-                let name = target_name
-                    .as_deref()
-                    .unwrap_or("TestMocks");
-                resolve_url(&config.output().schema_types.path, config.root_url())
-                    .join(name)
+        if let Some(output_root) = config.output_root() {
+            match &config.output().test_mocks {
+                TestMockFileOutput::None => PathBuf::new(),
+                TestMockFileOutput::SwiftPackage { target_name } => {
+                    let name = target_name.as_deref().unwrap_or("TestMocks");
+                    output_root.join(name)
+                }
+                TestMockFileOutput::Absolute { .. } => output_root.to_path_buf(),
             }
-            TestMockFileOutput::Absolute { path, .. } => {
-                resolve_url(path, config.root_url())
+        } else {
+            match &config.output().test_mocks {
+                TestMockFileOutput::None => PathBuf::new(),
+                TestMockFileOutput::SwiftPackage { target_name } => {
+                    let name = target_name
+                        .as_deref()
+                        .unwrap_or("TestMocks");
+                    resolve_url(&config.output().schema_types.path, config.root_url())
+                        .join(name)
+                }
+                TestMockFileOutput::Absolute { path, .. } => {
+                    resolve_url(path, config.root_url())
+                }
             }
         }
     }

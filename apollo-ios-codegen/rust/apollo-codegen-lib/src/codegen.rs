@@ -274,6 +274,54 @@ impl ApolloCodegen {
         Self::generate_from_ir_inner(compile_result, config, items_to_generate, true, None)
     }
 
+    /// Like `generate_from_ir` but only generates schema type files,
+    /// skipping operations and fragments entirely.
+    ///
+    /// Used in Bazel schema_types mode with direct-write: only schema type
+    /// files should land in the tree artifact. Operations are handled by
+    /// separate Bazel targets.
+    pub fn generate_from_ir_schema_only(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+    ) -> Result<(), CodegenError> {
+        let file_manager = ApolloFileManager::new();
+
+        // Stage 8: Schema customizations
+        process_schema_customizations(&compile_result.ir, config);
+
+        let mut non_fatal_errors = NonFatalErrors::new();
+
+        if items_to_generate.contains(ItemsToGenerate::CODE) {
+            let existing_paths = if config.config.options.prune_generated_files {
+                find_existing_generated_file_paths(config)?
+            } else {
+                std::collections::BTreeSet::new()
+            };
+
+            let errors = generate_schema_files(&compile_result.ir, config, &file_manager)?;
+            non_fatal_errors.merge(errors);
+
+            if config.config.options.prune_generated_files {
+                delete_extraneous_files(&existing_paths, &file_manager)?;
+            }
+        }
+
+        if items_to_generate.contains(ItemsToGenerate::OPERATION_MANIFEST) {
+            generate_operation_manifest(
+                &compile_result.compilation_result.operations,
+                config,
+                &file_manager,
+            )?;
+        }
+
+        if !non_fatal_errors.is_empty() {
+            return Err(CodegenError::NonFatalErrors(non_fatal_errors));
+        }
+
+        Ok(())
+    }
+
     /// Like `generate_from_ir_operations_only` but additionally filters
     /// operations and fragments by file path prefix.
     ///
@@ -1018,16 +1066,23 @@ fn generate_all_files(
     Ok(non_fatal_errors)
 }
 
-/// Returns true if `file_path` starts with `prefix` followed by `/`.
+/// Returns true if `file_path` matches `prefix` as a path component boundary.
 ///
 /// Used by filtered generation to select only operations/fragments
 /// belonging to a specific framework path.
+///
+/// Handles two cases:
+/// - Relative paths: `file_path` starts with `prefix/`
+/// - Absolute paths (e.g. Bazel execroot): `file_path` contains `/<prefix>/`
 fn matches_prefix(file_path: &str, filter_prefix: Option<&str>) -> bool {
     match filter_prefix {
         None => true,
         Some(prefix) => {
-            file_path.starts_with(prefix)
-                && file_path.as_bytes().get(prefix.len()) == Some(&b'/')
+            // Relative path: starts_with + next char is /
+            (file_path.starts_with(prefix)
+                && file_path.as_bytes().get(prefix.len()) == Some(&b'/'))
+            // Absolute path: contains /<prefix>/
+            || file_path.contains(&format!("/{}/", prefix))
         }
     }
 }
@@ -1057,7 +1112,9 @@ fn generate_graph_ql_definition_files(
     let cache_mutation_config = {
         let mut cache_config = config.config.clone();
         cache_config.experimental_features.field_merging = FieldMerging::ALL;
-        ConfigurationContext::new(cache_config, config.root_url.clone())
+        let mut ctx = ConfigurationContext::new(cache_config, config.root_url.clone());
+        ctx.set_output_root(config.output_root.clone());
+        ctx
     };
 
     let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
@@ -1726,5 +1783,30 @@ mod tests {
     #[test]
     fn test_matches_prefix_rejects_different_path() {
         assert!(!matches_prefix("V4/Fragments/Foo.graphql", Some("Features/Account")));
+    }
+
+    #[test]
+    fn test_matches_prefix_absolute_execroot_path() {
+        // Bazel worker mode produces absolute execroot paths
+        assert!(matches_prefix(
+            "/private/var/tmp/_bazel_user/abc123/execroot/_main/Features/AuthUtilities/AuthUtilities.graphql",
+            Some("Features/AuthUtilities")
+        ));
+    }
+
+    #[test]
+    fn test_matches_prefix_absolute_rejects_partial() {
+        assert!(!matches_prefix(
+            "/private/var/tmp/_bazel_user/abc123/execroot/_main/Features/AuthUtilitiesExtra/Query.graphql",
+            Some("Features/AuthUtilities")
+        ));
+    }
+
+    #[test]
+    fn test_matches_prefix_absolute_rejects_different_path() {
+        assert!(!matches_prefix(
+            "/private/var/tmp/_bazel_user/abc123/execroot/_main/Carrot/ProductVariants.graphql",
+            Some("Features/AuthUtilities")
+        ));
     }
 }

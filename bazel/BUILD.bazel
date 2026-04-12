@@ -1,0 +1,3 @@
+# Makes bazel/ loadable as a package so .bzl files can be referenced via
+# @apollo_ios_dev//bazel:apollo_codegen.bzl (or however the repo is named).
+exports_files(["apollo_codegen.bzl"])

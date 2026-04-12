@@ -1,0 +1,51 @@
+name: Build Rust CLI
+
+on:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        working-directory: apollo-ios-codegen/rust
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp apollo-ios-codegen/rust/target/${{ matrix.target }}/release/apollo-ios-cli dist/apollo-ios-cli
+          cd dist
+          tar czf apollo-ios-cli-${{ matrix.target }}.tar.gz apollo-ios-cli
+          shasum -a 256 apollo-ios-cli-${{ matrix.target }}.tar.gz > apollo-ios-cli-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apollo-ios-cli-${{ matrix.target }}
+          path: dist/apollo-ios-cli-${{ matrix.target }}.tar.gz*
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/apollo-ios-cli-${{ matrix.target }}.tar.gz \
+            dist/apollo-ios-cli-${{ matrix.target }}.tar.gz.sha256

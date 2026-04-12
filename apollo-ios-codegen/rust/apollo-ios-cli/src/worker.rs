@@ -200,7 +200,15 @@ fn handle_request(
     let mut configuration = configuration;
     configuration.options.prune_generated_files = false;
 
-    let config = ConfigurationContext::new(configuration.clone(), root_url);
+    let mut config = ConfigurationContext::new(configuration.clone(), root_url);
+
+    // Direct-write: set output_root so file generation writes directly to the
+    // Bazel tree artifact directory, bypassing the source tree entirely.
+    if let Some(ref output_dir) = generate_cmd.bazel_output_dir {
+        let output_root = std::path::PathBuf::from(output_dir);
+        std::fs::create_dir_all(&output_root).ok();
+        config.set_output_root(Some(output_root));
+    }
 
     // Determine items to generate
     let mut items_to_generate = ItemsToGenerate::CODE;
@@ -300,23 +308,40 @@ fn handle_request(
 
     // Step 4: Generate files
     // In operations mode, skip schema type generation and filter by framework path.
+    // In schema_types mode with direct-write, only generate schema types.
     // With compile-all caching, the CompilationResult contains ALL operations;
     // generate_from_ir_filtered selects only those matching the framework prefix.
     let is_operations_mode = generate_cmd.bazel_mode == "operations";
+    let has_output_root = config.output_root().is_some();
     let generate_result = if is_operations_mode {
         if let Some(ref prefix) = generate_cmd.bazel_framework_path {
             ApolloCodegen::generate_from_ir_filtered(&compile_result, &config, items_to_generate, prefix)
         } else {
             ApolloCodegen::generate_from_ir_operations_only(&compile_result, &config, items_to_generate)
         }
+    } else if has_output_root {
+        // Direct-write schema_types mode: only generate schema types into tree artifact
+        ApolloCodegen::generate_from_ir_schema_only(&compile_result, &config, items_to_generate)
     } else {
         ApolloCodegen::generate_from_ir(&compile_result, &config, items_to_generate)
     };
 
     match generate_result {
         Ok(()) => {
-            // Bazel tree artifact post-processing (copy + optimize + strip imports)
-            if let Some(ref output_dir) = generate_cmd.bazel_output_dir {
+            if has_output_root {
+                // Direct-write: post-process files in-place on the tree artifact
+                if let Some(ref output_dir) = generate_cmd.bazel_output_dir {
+                    if let Err(e) = generate_cmd.postprocess_tree_artifact(output_dir) {
+                        return WorkResponse {
+                            exit_code: 1,
+                            output: format!("Bazel post-processing failed: {}", e),
+                            request_id: 0,
+                            was_cancelled: false,
+                        };
+                    }
+                }
+            } else if let Some(ref output_dir) = generate_cmd.bazel_output_dir {
+                // Legacy copy-based path (no output_root)
                 if let Err(e) = generate_cmd.populate_bazel_tree_artifact(output_dir) {
                     return WorkResponse {
                         exit_code: 1,
