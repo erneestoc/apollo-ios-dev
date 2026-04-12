@@ -188,7 +188,7 @@ fn assert_mock_object_structure(rendered: &str, type_name: &str) {
         type_name,
     );
     assert!(
-        rendered.contains("import AnimalKingdomAPI"),
+        rendered.contains("@testable import AnimalKingdomAPI"),
         "Missing @testable import for {}",
         type_name,
     );
@@ -496,7 +496,7 @@ fn test_mock_unions() {
     // Header
     assert!(rendered.contains("// @generated"));
     assert!(rendered.contains("import ApolloTestSupport"));
-    assert!(rendered.contains("import AnimalKingdomAPI"));
+    assert!(rendered.contains("@testable import AnimalKingdomAPI"));
 
     // AnimalKingdomAPI has one union: ClassroomPet
     assert!(rendered.contains("public extension MockObject {"));
@@ -518,7 +518,7 @@ fn test_mock_interfaces() {
     // Header
     assert!(rendered.contains("// @generated"));
     assert!(rendered.contains("import ApolloTestSupport"));
-    assert!(rendered.contains("import AnimalKingdomAPI"));
+    assert!(rendered.contains("@testable import AnimalKingdomAPI"));
 
     // AnimalKingdomAPI has 4 interfaces: Animal, Pet, HousePet, WarmBlooded
     assert!(rendered.contains("public extension MockObject {"));

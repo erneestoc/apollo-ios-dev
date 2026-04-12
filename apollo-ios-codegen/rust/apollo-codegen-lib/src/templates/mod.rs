@@ -321,10 +321,10 @@ impl ImportStatementTemplate {
   /// Returns the import statement for a test mock file.
   ///
   /// Mirrors Swift's `ImportStatementTemplate.TestMock.template(config:)`.
-  /// In 1.15.1, test mock files use plain `import` (not `@testable import`).
+  /// Since 1.24.0, test mock files use `@testable import` for the schema module.
   pub fn test_mock(config: &ConfigurationContext) -> String {
     let schema_module = config.schema_module_name();
-    format!("import ApolloTestSupport\nimport {}", schema_module)
+    format!("import ApolloTestSupport\n@testable import {}", schema_module)
   }
 }
 
@@ -734,8 +734,7 @@ mod tests {
     let config = spm_config();
     let import = ImportStatementTemplate::test_mock(&config);
     assert!(import.contains("import ApolloTestSupport"));
-    assert!(import.contains("import MySchema"));
-    assert!(!import.contains("@testable"));
+    assert!(import.contains("@testable import MySchema"));
   }
 
   #[test]
@@ -866,8 +865,7 @@ mod tests {
     let result = template.render();
     assert!(result.body.contains("@generated"));
     assert!(result.body.contains("import ApolloTestSupport"));
-    assert!(result.body.contains("import MySchema"));
-    assert!(!result.body.contains("@testable"));
+    assert!(result.body.contains("@testable import MySchema"));
     assert!(result.body.contains("// mock body"));
   }
 
