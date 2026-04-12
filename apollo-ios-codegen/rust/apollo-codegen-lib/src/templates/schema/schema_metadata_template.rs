@@ -66,13 +66,13 @@ impl SchemaMetadataTemplate {
         )
     }
 
-    /// Renders the objectType function with a switch statement.
+    /// Renders the objectType dictionary and lookup function.
     ///
-    /// Mirrors Swift's `objectTypeFunction` computed property (1.15.1 uses switch, not dictionary).
+    /// Mirrors Swift's `objectTypeFunction` computed property (1.15.4 uses dictionary, not switch).
     fn object_type_function(&self) -> String {
         let access_level = self.access_control_renderer(Scope::Member).render();
 
-        let case_entries: Vec<String> = self
+        let dict_entries: Vec<String> = self
             .schema
             .referenced_types
             .objects
@@ -83,24 +83,25 @@ impl SchemaMetadataTemplate {
                     &RenderContext::Typename { is_input_value: false },
                 );
                 format!(
-                    "    case \"{}\": return {}.Objects.{}",
+                    "    \"{}\": {}.Objects.{}",
                     obj.name.schema_name, self.schema_namespace, typename
                 )
             })
             .collect();
 
-        let cases_str = case_entries.join("\n");
+        let dict_str = dict_entries.join(",\n");
 
         format!(
-            "  {access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
-             \x20\x20\x20\x20switch typename {{\n\
-             {cases}\n\
-             \x20\x20\x20\x20default: return nil\n\
-             \x20\x20\x20\x20}}\n\
+            "  private static let objectTypeMap: [String: {api}.Object] = [\n\
+             {dict}\n\
+             \x20\x20]\n\
+             \n\
+             \x20\x20{access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
+             \x20\x20\x20\x20objectTypeMap[typename]\n\
              \x20\x20}}",
-            access = access_level,
             api = APOLLO_API_TARGET_NAME,
-            cases = cases_str,
+            dict = dict_str,
+            access = access_level,
         )
     }
 }
@@ -477,11 +478,11 @@ mod tests {
 
         let body = render_body(&template);
 
-        assert!(body.contains("switch typename {"), "body:\n{}", body);
-        assert!(body.contains("case \"objA\": return ObjectSchema.Objects.ObjA"), "body:\n{}", body);
-        assert!(body.contains("case \"objB\": return ObjectSchema.Objects.ObjB"), "body:\n{}", body);
-        assert!(body.contains("case \"objC\": return ObjectSchema.Objects.ObjC"), "body:\n{}", body);
-        assert!(body.contains("default: return nil"), "body:\n{}", body);
+        assert!(body.contains("objectTypeMap: [String: ApolloAPI.Object]"), "body:\n{}", body);
+        assert!(body.contains("\"objA\": ObjectSchema.Objects.ObjA"), "body:\n{}", body);
+        assert!(body.contains("\"objB\": ObjectSchema.Objects.ObjB"), "body:\n{}", body);
+        assert!(body.contains("\"objC\": ObjectSchema.Objects.ObjC"), "body:\n{}", body);
+        assert!(body.contains("objectTypeMap[typename]"), "body:\n{}", body);
         assert!(body.contains("static func objectType(forTypename typename: String) -> ApolloAPI.Object?"));
     }
 
@@ -494,8 +495,8 @@ mod tests {
 
         let body = render_body(&template);
 
-        assert!(body.contains("case \"ObjectA\": return ObjectSchema.Objects.ObjectA"));
-        // Should NOT contain non-object types (interfaces, unions, etc. are not in switch)
+        assert!(body.contains("\"ObjectA\": ObjectSchema.Objects.ObjectA"));
+        // Should NOT contain non-object types (interfaces, unions, etc. are not in dictionary)
         assert!(!body.contains("InterfaceB"));
         assert!(!body.contains("UnionC"));
     }
