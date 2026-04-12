@@ -48,12 +48,8 @@ struct TemplateField {
 }
 
 impl TemplateField {
-    fn default_initializer(&self, config: &ApolloCodegenConfiguration) -> String {
-        if self.graphql_type.is_nullable() {
-            " = nil".to_string()
-        } else {
-            format!(" = {}", default_mock_value(&self.graphql_type, config))
-        }
+    fn default_initializer(&self, _config: &ApolloCodegenConfiguration) -> String {
+        " = nil".to_string()
     }
 }
 
@@ -134,7 +130,7 @@ impl TemplateRenderer for MockObjectTemplate {
 
         // Class definition
         result.push_str(&format!(
-            "{}final class {}: MockObject {{\n",
+            "{}class {}: MockObject {{\n",
             parent_access, object_name,
         ));
         result.push_str(&format!(
@@ -152,12 +148,12 @@ impl TemplateRenderer for MockObjectTemplate {
         result.push('\n');
         if mock_fields_body.is_empty() {
             result.push_str(&format!(
-                "  {}struct MockFields: Sendable {{\n  }}\n",
+                "  {}struct MockFields {{\n  }}\n",
                 member_access,
             ));
         } else {
             result.push_str(&format!(
-                "  {}struct MockFields: Sendable {{\n{}\n  }}\n",
+                "  {}struct MockFields {{\n{}\n  }}\n",
                 member_access, mock_fields_body,
             ));
         }
@@ -211,8 +207,6 @@ impl TemplateRenderer for MockObjectTemplate {
             result.push_str("  }\n");
             result.push_str("}\n");
         }
-
-        result.push('\n');
 
         result
     }
@@ -368,7 +362,13 @@ fn mock_type_name(graphql_type: &GraphQLType, config: &ApolloCodegenConfiguratio
         }
     }
 
-    name_replacement(graphql_type, false, config)
+    let result = name_replacement(graphql_type, false, config);
+    // In 1.15.1, all mock init params are optional regardless of nullability
+    if result.ends_with('?') {
+        result
+    } else {
+        format!("{}?", result)
+    }
 }
 
 /// Renders explicit property declarations for fields that conflict with `Mock` properties.
@@ -570,7 +570,7 @@ public final class Dog: MockObject {
   public static let _mockFields = MockFields()
   public typealias MockValueCollectionType = Array<Mock<Dog>>
 
-  public struct MockFields: Sendable {
+  public struct MockFields {
   }
 }
 \n";
@@ -1145,7 +1145,7 @@ public final class Dog: MockObject {
 
         assert!(actual.contains("public final class Dog: MockObject {"));
         assert!(actual.contains("public static let objectType"));
-        assert!(actual.contains("public struct MockFields: Sendable {"));
+        assert!(actual.contains("public struct MockFields {"));
         assert!(actual.contains("public extension Mock where O == Dog {"));
     }
 
@@ -1170,7 +1170,7 @@ public final class Dog: MockObject {
         assert!(actual.contains("final class Dog: MockObject {"));
         assert!(!actual.contains("public final class Dog"));
         assert!(actual.contains("static let objectType"));
-        assert!(actual.contains("struct MockFields: Sendable {"));
+        assert!(actual.contains("struct MockFields {"));
         assert!(actual.contains("extension Mock where O == Dog {"));
         assert!(!actual.contains("public extension Mock"));
     }
