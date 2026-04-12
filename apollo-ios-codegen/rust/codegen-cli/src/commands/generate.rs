@@ -16,6 +16,7 @@ use regex::Regex;
 
 use apollo_codegen_lib::codegen::{ApolloCodegen, CodegenProvider, ItemsToGenerate};
 use apollo_codegen_lib::codegen_logger::CodegenLogger;
+use apollo_codegen_lib::templates::ConfigurationContext;
 
 use crate::error::CliError;
 use crate::input_options::{self, InputOptions};
@@ -78,13 +79,79 @@ impl Generate {
 
         let root_url = input_options::root_output_url(&self.inputs);
 
-        ApolloCodegen::build(&configuration, root_url.as_deref(), items_to_generate)?;
-
-        // Bazel tree artifact post-processing
         if let Some(ref output_dir) = self.bazel_output_dir {
-            self.populate_bazel_tree_artifact(output_dir)?;
+            // Direct-write mode: set output_root so generation writes
+            // directly to the tree artifact directory.
+            let mut config = ConfigurationContext::new(
+                configuration.clone(),
+                root_url,
+            );
+            let output_root = std::path::PathBuf::from(output_dir);
+            std::fs::create_dir_all(&output_root).map_err(|e| CliError::Generic {
+                description: format!("Failed to create output dir {}: {}", output_dir, e),
+            })?;
+            config.set_output_root(Some(output_root));
+
+            let compile_result = ApolloCodegen::compile_schema_and_ir(&config)?;
+
+            let is_operations_mode = self.bazel_mode == "operations";
+            if is_operations_mode {
+                if let Some(ref prefix) = self.bazel_framework_path {
+                    ApolloCodegen::generate_from_ir_filtered(
+                        &compile_result, &config, items_to_generate, prefix,
+                    )?;
+                } else {
+                    ApolloCodegen::generate_from_ir_operations_only(
+                        &compile_result, &config, items_to_generate,
+                    )?;
+                }
+            } else {
+                ApolloCodegen::generate_from_ir_schema_only(
+                    &compile_result, &config, items_to_generate,
+                )?;
+            }
+
+            self.postprocess_tree_artifact(output_dir)?;
+        } else {
+            // Standard mode: no output_root, write to configured paths
+            ApolloCodegen::build(&configuration, root_url.as_deref(), items_to_generate)?;
         }
 
+        Ok(())
+    }
+
+    /// Post-processes files already written directly to a Bazel tree artifact.
+    /// Runs import stripping and SchemaMetadata optimization in-place.
+    /// Used with direct-write mode (output_root set on ConfigurationContext).
+    pub fn postprocess_tree_artifact(&self, output_dir: &str) -> Result<(), CliError> {
+        let out = Path::new(output_dir);
+
+        // Remove hand-written files that shouldn't be in the tree artifact
+        // (SchemaConfiguration gets generated with overwrite:false into empty tree artifacts)
+        let schema_config = out.join("SchemaConfiguration.swift");
+        if schema_config.exists() {
+            std::fs::remove_file(&schema_config).ok();
+        }
+        // Remove CustomScalars directory if present
+        let custom_scalars = out.join("CustomScalars");
+        if custom_scalars.is_dir() {
+            std::fs::remove_dir_all(&custom_scalars).ok();
+        }
+
+        // Strip imports if requested
+        if let Some(ref module) = self.bazel_strip_import {
+            strip_import_from_dir_recursive(out, module)?;
+        }
+
+        // Optimize SchemaMetadata if requested
+        if self.bazel_optimize_schema_metadata {
+            let metadata_file = out.join("SchemaMetadata.graphql.swift");
+            if metadata_file.exists() {
+                optimize_schema_metadata(&metadata_file)?;
+            }
+        }
+
+        eprintln!("Bazel direct-write post-processed: {}", out.display());
         Ok(())
     }
 
@@ -318,6 +385,31 @@ fn strip_import_from_dir(dir: &Path, module: &str) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// Recursively strips `import <module>\n` from all .graphql.swift files in a directory tree.
+/// Used by direct-write mode where operations may be in nested subdirectories.
+fn strip_import_from_dir_recursive(dir: &Path, module: &str) -> Result<(), CliError> {
+    let import_line = format!("import {}", module);
+    walk_dir_recursive(dir, &mut |entry_path| {
+        let name = entry_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("");
+        if !name.ends_with(".graphql.swift") {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(entry_path).map_err(|e| CliError::Generic {
+            description: format!("read {}: {}", entry_path.display(), e),
+        })?;
+        let new_content = content.replace(&format!("{}\n", import_line), "");
+        if new_content != content {
+            std::fs::write(entry_path, new_content).map_err(|e| CliError::Generic {
+                description: format!("write {}: {}", entry_path.display(), e),
+            })?;
+        }
+        Ok(())
+    })
 }
 
 /// Adds a fast O(1) dictionary lookup to SchemaMetadata's objectType function,

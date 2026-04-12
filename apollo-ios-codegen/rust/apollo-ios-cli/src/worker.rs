@@ -143,6 +143,8 @@ fn handle_request(
     schema_cache: &mut Option<CachedSchema>,
     compilation_cache: &mut Option<CachedCompilation>,
 ) -> WorkResponse {
+    let t_total = std::time::Instant::now();
+
     // Parse arguments through clap (D-88)
     // Prepend dummy program name since clap expects argv[0]
     let mut args = vec!["apollo-ios-cli".to_string()];
@@ -175,6 +177,8 @@ fn handle_request(
 
     // Set log level from verbose flag
     CodegenLogger::set_level(generate_cmd.inputs.verbose);
+
+    let t0 = std::time::Instant::now();
 
     // Load configuration (T-11-05: errors are caught and returned in WorkResponse)
     let configuration = match generate_cmd.inputs.get_codegen_configuration() {
@@ -218,83 +222,32 @@ fn handle_request(
         }
     }
 
+    let config_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
     // Schema-level caching: parse schema once, reuse for all operation targets.
+    // Check digest-based caches BEFORE file discovery to skip the expensive
+    // glob when caches hit (~400-900ms saved per request).
 
-    // Step 1: Discover files (cheap ~ms glob, runs every request)
-    let (schema_matches, operation_matches) = match ApolloCodegen::discover_files(&config) {
-        Ok(result) => result,
-        Err(e) => {
-            return WorkResponse {
-                exit_code: 1,
-                output: format!("{}", e),
-                request_id: 0,
-                was_cancelled: false,
-            };
-        }
-    };
-
-    // Step 2: Check if schema needs re-parsing
+    // Step 1: Check digest caches first (cheap BTreeMap comparisons)
+    let t1 = std::time::Instant::now();
     let schema_digests = extract_schema_digests(&request.inputs, &config);
     let schema_changed = schema_cache
         .as_ref()
         .map_or(true, |c| c.schema_digests != schema_digests);
 
-    if schema_changed {
-        let label = if schema_cache.is_none() { "first request" } else { "schema changed" };
-        eprintln!("Schema cache miss ({}) -- parsing schema", label);
-        // Schema changed -> invalidate compilation cache too
-        *compilation_cache = None;
-        match ApolloCodegen::parse_schema_files(&schema_matches) {
-            Ok(compiled) => {
-                *schema_cache = Some(CachedSchema {
-                    schema_digests,
-                    compiled_schema: compiled,
-                });
-            }
-            Err(e) => {
-                return WorkResponse {
-                    exit_code: 1,
-                    output: format!("{}", e),
-                    request_id: 0,
-                    was_cancelled: false,
-                };
-            }
-        }
-    } else {
-        eprintln!("Schema cache hit -- reusing parsed schema");
-    }
-
-    let compiled_schema = &schema_cache.as_ref().unwrap().compiled_schema;
-
-    // Step 3: Check compilation cache (keyed by all .graphql file digests)
     let operation_digests = extract_operation_digests(&request.inputs);
-    let compilation_hit = compilation_cache
+    let compilation_hit = !schema_changed && compilation_cache
         .as_ref()
         .map_or(false, |c| c.operation_digests == operation_digests);
 
-    let compile_result = if compilation_hit {
-        eprintln!("Compilation cache hit -- reusing compiled operations");
-        let cached = compilation_cache.as_ref().unwrap();
-        // Fresh IRBuilder per request: BuiltFragmentStorage and FieldCollector
-        // accumulate state during generation. Creating a new IRBuilder costs
-        // only Arc bumps + IndexSet construction but guarantees no state leakage.
-        ApolloCodegen::compile_result_from_cached(cached.compilation_result.clone())
-    } else {
-        let label = if compilation_cache.is_none() { "first compile" } else { "operations changed" };
-        eprintln!("Compilation cache miss ({}) -- compiling operations", label);
-        match ApolloCodegen::compile_operations_with_schema(
-            compiled_schema,
-            &operation_matches,
-            &config,
-        ) {
-            Ok(result) => {
-                // Cache the compilation result for subsequent requests
-                *compilation_cache = Some(CachedCompilation {
-                    operation_digests,
-                    compilation_result: result.compilation_result.clone(),
-                });
-                result
-            }
+    // Step 2: Only discover files when we need to reparse/recompile.
+    // File discovery globs **/*.graphql across the source tree (~400-900ms).
+    // On cache hit, the compilation result already has all the data we need.
+    let mut discover_ms = 0.0;
+    if schema_changed || !compilation_hit {
+        let t_discover = std::time::Instant::now();
+        let (schema_matches, operation_matches) = match ApolloCodegen::discover_files(&config) {
+            Ok(result) => result,
             Err(e) => {
                 return WorkResponse {
                     exit_code: 1,
@@ -303,14 +256,73 @@ fn handle_request(
                     was_cancelled: false,
                 };
             }
+        };
+        discover_ms = t_discover.elapsed().as_secs_f64() * 1000.0;
+
+        if schema_changed {
+            let label = if schema_cache.is_none() { "first request" } else { "schema changed" };
+            eprintln!("Schema cache miss ({}) -- parsing schema", label);
+            *compilation_cache = None;
+            match ApolloCodegen::parse_schema_files(&schema_matches) {
+                Ok(compiled) => {
+                    *schema_cache = Some(CachedSchema {
+                        schema_digests,
+                        compiled_schema: compiled,
+                    });
+                }
+                Err(e) => {
+                    return WorkResponse {
+                        exit_code: 1,
+                        output: format!("{}", e),
+                        request_id: 0,
+                        was_cancelled: false,
+                    };
+                }
+            }
         }
-    };
+
+        if !compilation_hit {
+            let compiled_schema = &schema_cache.as_ref().unwrap().compiled_schema;
+            let label = if compilation_cache.is_none() { "first compile" } else { "operations changed" };
+            eprintln!("Compilation cache miss ({}) -- compiling operations", label);
+            match ApolloCodegen::compile_operations_with_schema(
+                compiled_schema,
+                &operation_matches,
+                &config,
+            ) {
+                Ok(result) => {
+                    *compilation_cache = Some(CachedCompilation {
+                        operation_digests,
+                        compilation_result: result.compilation_result.clone(),
+                    });
+                }
+                Err(e) => {
+                    return WorkResponse {
+                        exit_code: 1,
+                        output: format!("{}", e),
+                        request_id: 0,
+                        was_cancelled: false,
+                    };
+                }
+            }
+        }
+    }
+
+    let schema_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+    // Step 3: Build CompileResult from cache
+    let t3 = std::time::Instant::now();
+    let compile_result = ApolloCodegen::compile_result_from_cached(
+        compilation_cache.as_ref().unwrap().compilation_result.clone(),
+    );
+    let compile_ms = t3.elapsed().as_secs_f64() * 1000.0;
 
     // Step 4: Generate files
     // In operations mode, skip schema type generation and filter by framework path.
     // In schema_types mode with direct-write, only generate schema types.
     // With compile-all caching, the CompilationResult contains ALL operations;
     // generate_from_ir_filtered selects only those matching the framework prefix.
+    let t4 = std::time::Instant::now();
     let is_operations_mode = generate_cmd.bazel_mode == "operations";
     let has_output_root = config.output_root().is_some();
     let generate_result = if is_operations_mode {
@@ -325,9 +337,11 @@ fn handle_request(
     } else {
         ApolloCodegen::generate_from_ir(&compile_result, &config, items_to_generate)
     };
+    let generate_ms = t4.elapsed().as_secs_f64() * 1000.0;
 
     match generate_result {
         Ok(()) => {
+            let t5 = std::time::Instant::now();
             if has_output_root {
                 // Direct-write: post-process files in-place on the tree artifact
                 if let Some(ref output_dir) = generate_cmd.bazel_output_dir {
@@ -351,6 +365,15 @@ fn handle_request(
                     };
                 }
             }
+            let postprocess_ms = t5.elapsed().as_secs_f64() * 1000.0;
+
+            let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+            let target_label = generate_cmd.bazel_framework_path.as_deref()
+                .unwrap_or(&generate_cmd.bazel_mode);
+            eprintln!(
+                "[perf] {} | total={:.1}ms config={:.1}ms discover={:.1}ms schema={:.1}ms compile={:.1}ms generate={:.1}ms postprocess={:.1}ms",
+                target_label, total_ms, config_ms, discover_ms, schema_ms, compile_ms, generate_ms, postprocess_ms
+            );
 
             WorkResponse {
                 exit_code: 0,

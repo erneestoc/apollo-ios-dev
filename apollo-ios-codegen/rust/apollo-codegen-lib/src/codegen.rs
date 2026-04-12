@@ -288,7 +288,12 @@ impl ApolloCodegen {
         let file_manager = ApolloFileManager::new();
 
         // Stage 8: Schema customizations
+        let t_custom = std::time::Instant::now();
         process_schema_customizations(&compile_result.ir, config);
+        let custom_ms = t_custom.elapsed().as_secs_f64() * 1000.0;
+        if custom_ms > 0.5 {
+            eprintln!("  [perf:schema_only:customizations] {:.1}ms", custom_ms);
+        }
 
         let mut non_fatal_errors = NonFatalErrors::new();
 
@@ -353,7 +358,12 @@ impl ApolloCodegen {
         let file_manager = ApolloFileManager::new();
 
         // Stage 8: Schema customizations
+        let t_custom = std::time::Instant::now();
         process_schema_customizations(&compile_result.ir, config);
+        let custom_ms = t_custom.elapsed().as_secs_f64() * 1000.0;
+        if custom_ms > 0.5 {
+            eprintln!("  [perf:customizations] {:.1}ms", custom_ms);
+        }
 
         // Stage 9: Code generation (if items_to_generate contains CODE)
         let mut non_fatal_errors = NonFatalErrors::new();
@@ -1101,6 +1111,8 @@ fn generate_graph_ql_definition_files(
     file_manager: &ApolloFileManager,
     filter_prefix: Option<&str>,
 ) -> Result<NonFatalErrors, CodegenError> {
+    let t_start = std::time::Instant::now();
+
     let _merge_named_fragment_fields = config
         .config
         .experimental_features
@@ -1118,6 +1130,10 @@ fn generate_graph_ql_definition_files(
     };
 
     let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
+
+    let t_ir = std::time::Instant::now();
+    let mut fragment_count = 0u32;
+    let mut operation_count = 0u32;
 
     // Build fragment file generators
     for fragment in &compilation_result.fragments {
@@ -1139,6 +1155,7 @@ fn generate_graph_ql_definition_files(
             ir_fragment,
             config: fragment_config,
         }));
+        fragment_count += 1;
     }
 
     // Build operation file generators
@@ -1166,10 +1183,20 @@ fn generate_graph_ql_definition_files(
             operation_identifier: Some(identifier),
             config: operation_config,
         }));
+        operation_count += 1;
     }
+    let ir_ms = t_ir.elapsed().as_secs_f64() * 1000.0;
 
-    // Generate all files concurrently
+    // Generate all files concurrently (template rendering + file I/O)
+    let t_render = std::time::Instant::now();
     let errors = generate_files_concurrently(&generators, config, file_manager)?;
+    let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
+
+    let total_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "  [perf:gen] ops={} frags={} ir_build={:.1}ms render+write={:.1}ms total={:.1}ms",
+        operation_count, fragment_count, ir_ms, render_ms, total_ms
+    );
 
     // Aggregate errors by file name
     let mut non_fatal_errors = NonFatalErrors::new();
@@ -1186,6 +1213,7 @@ fn generate_schema_files(
     config: &ConfigurationContext,
     file_manager: &ApolloFileManager,
 ) -> Result<NonFatalErrors, CodegenError> {
+    let t_start = std::time::Instant::now();
     let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
 
     // Object types + mock objects
@@ -1276,11 +1304,20 @@ fn generate_schema_files(
         config: config.clone(),
     }));
 
+    let setup_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+
     // Generate all schema files concurrently
+    let t_render = std::time::Instant::now();
     let errors = generate_files_concurrently(&generators, config, file_manager)?;
+    let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
 
     // Generate schema module file (not a FileGenerator trait impl)
     let module_errors = SchemaModuleFileGenerator::generate(config, file_manager)?;
+
+    eprintln!(
+        "  [perf:schema] generators={} setup={:.1}ms render+write={:.1}ms total={:.1}ms",
+        generators.len(), setup_ms, render_ms, t_start.elapsed().as_secs_f64() * 1000.0
+    );
 
     let mut non_fatal_errors = NonFatalErrors::new();
     collect_non_fatal_errors(&generators, &errors, &mut non_fatal_errors);

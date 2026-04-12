@@ -38,18 +38,32 @@ pub struct ConfigurationContext {
   pub config: ApolloCodegenConfiguration,
   pub pluralizer: Pluralizer,
   pub root_url: Option<PathBuf>,
+  /// When set, all file generation output is redirected under this directory.
+  /// Used in Bazel mode to write directly to a declared tree artifact,
+  /// avoiding intermediate writes to the source tree.
+  pub output_root: Option<PathBuf>,
 }
 
 impl ConfigurationContext {
   /// Creates a new `ConfigurationContext` from the given configuration.
   pub fn new(config: ApolloCodegenConfiguration, root_url: Option<PathBuf>) -> Self {
     let pluralizer = Pluralizer::new(config.options.additional_inflection_rules.clone());
-    Self { config, pluralizer, root_url }
+    Self { config, pluralizer, root_url, output_root: None }
   }
 
   /// Returns the root URL for path resolution, if set.
   pub fn root_url(&self) -> Option<&Path> {
     self.root_url.as_deref()
+  }
+
+  /// Returns the output root for direct-write mode, if set.
+  pub fn output_root(&self) -> Option<&Path> {
+    self.output_root.as_deref()
+  }
+
+  /// Sets the output root for direct-write mode (Bazel tree artifacts).
+  pub fn set_output_root(&mut self, output_root: Option<PathBuf>) {
+    self.output_root = output_root;
   }
 
   /// Returns the schema namespace.
