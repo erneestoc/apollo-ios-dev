@@ -54,7 +54,10 @@ impl ReferencedTypes {
     /// Mirrors the Swift initializer that categorizes types by variant and builds
     /// the type-to-union map.
     pub fn new(types: &[GraphQLNamedType], schema_root_types: RootTypeDefinition) -> Self {
-        let all_types: IndexSet<GraphQLNamedType> = types.iter().cloned().collect();
+        // Ensure allTypes is stable (mirrors Swift's sorted(by: { $0.name.schemaName < $1.name.schemaName }))
+        let mut sorted_types = types.to_vec();
+        sorted_types.sort_by(|a, b| a.name().schema_name.cmp(&b.name().schema_name));
+        let all_types: IndexSet<GraphQLNamedType> = sorted_types.into_iter().collect();
 
         let mut objects = IndexSet::new();
         let mut interfaces = IndexSet::new();
