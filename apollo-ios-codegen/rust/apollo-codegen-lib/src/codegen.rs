@@ -1277,15 +1277,19 @@ fn generate_schema_files(
     // Test mock union and interface files
     if config.config.output.test_mocks != TestMockFileOutput::None {
         if !ir.schema.referenced_types.unions.is_empty() {
+            let mut sorted_unions = ir.schema.referenced_types.unions.clone();
+            sorted_unions.sort_by(|a, b| a.name.schema_name.cmp(&b.name.schema_name));
             generators.push(Box::new(MockUnionsFileGenerator {
-                graphql_unions: ir.schema.referenced_types.unions.clone(),
+                graphql_unions: sorted_unions,
                 config: config.clone(),
             }));
         }
 
         if !ir.schema.referenced_types.interfaces.is_empty() {
+            let mut sorted_interfaces = ir.schema.referenced_types.interfaces.clone();
+            sorted_interfaces.sort_by(|a, b| a.name.schema_name.cmp(&b.name.schema_name));
             generators.push(Box::new(MockInterfacesFileGenerator {
-                graphql_interfaces: ir.schema.referenced_types.interfaces.clone(),
+                graphql_interfaces: sorted_interfaces,
                 config: config.clone(),
             }));
         }
