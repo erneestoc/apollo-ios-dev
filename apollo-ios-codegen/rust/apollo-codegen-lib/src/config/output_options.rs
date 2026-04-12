@@ -64,7 +64,7 @@ impl Default for OutputOptions {
       prune_generated_files: true,
       mark_operation_definitions_as_final: false,
       append_schema_type_filename_suffix: false,
-      mark_types_nonisolated: false,
+      mark_types_nonisolated: true,
     }
   }
 }
