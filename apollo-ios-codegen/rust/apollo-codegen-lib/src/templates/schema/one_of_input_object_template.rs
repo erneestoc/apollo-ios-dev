@@ -94,7 +94,8 @@ impl TemplateRenderer for OneOfInputObjectTemplate {
         ));
 
         parts.push(format!(
-            "{}enum {}: OneOfInputObject {{\n{}\n}}",
+            "{}{}enum {}: OneOfInputObject {{\n{}\n}}",
+            self.config.nonisolated_modifier(),
             parent_access_control,
             typename,
             enum_body.join("\n"),

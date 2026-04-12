@@ -42,12 +42,13 @@ impl TemplateRenderer for SchemaConfigurationTemplate {
         let member_access = self.access_control_renderer(Scope::Member).render();
 
         format!(
-            "{pa}enum SchemaConfiguration: {api}.SchemaConfiguration {{\n\
+            "{ni}{pa}enum SchemaConfiguration: {api}.SchemaConfiguration {{\n\
              \x20\x20{ma}static func cacheKeyInfo(for type: {api}.Object, object: {api}.ObjectData) -> CacheKeyInfo? {{\n\
              \x20\x20\x20\x20// Implement this function to configure cache key resolution for your schema types.\n\
              \x20\x20\x20\x20return nil\n\
              \x20\x20}}\n\
              }}\n",
+            ni = self.config.nonisolated_modifier(),
             pa = parent_access,
             api = APOLLO_API_TARGET_NAME,
             ma = member_access,

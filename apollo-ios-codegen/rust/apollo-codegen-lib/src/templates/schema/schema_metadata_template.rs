@@ -48,17 +48,18 @@ impl SchemaMetadataTemplate {
         let prefix_str = prefix.unwrap_or("");
 
         format!(
-            "{access_level}protocol {prefix_str}SelectionSet: {api}.SelectionSet & {api}.RootSelectionSet\n\
+            "{ni}{access_level}protocol {prefix_str}SelectionSet: {api}.SelectionSet & {api}.RootSelectionSet\n\
              where Schema == {ns}.SchemaMetadata {{}}\n\
              \n\
-             {access_level}protocol {prefix_str}InlineFragment: {api}.SelectionSet & {api}.InlineFragment\n\
+             {ni}{access_level}protocol {prefix_str}InlineFragment: {api}.SelectionSet & {api}.InlineFragment\n\
              where Schema == {ns}.SchemaMetadata {{}}\n\
              \n\
-             {access_level}protocol {prefix_str}MutableSelectionSet: {api}.MutableRootSelectionSet\n\
+             {ni}{access_level}protocol {prefix_str}MutableSelectionSet: {api}.MutableRootSelectionSet\n\
              where Schema == {ns}.SchemaMetadata {{}}\n\
              \n\
-             {access_level}protocol {prefix_str}MutableInlineFragment: {api}.MutableSelectionSet & {api}.InlineFragment\n\
+             {ni}{access_level}protocol {prefix_str}MutableInlineFragment: {api}.MutableSelectionSet & {api}.InlineFragment\n\
              where Schema == {ns}.SchemaMetadata {{}}",
+            ni = self.config.nonisolated_modifier(),
             access_level = access_level,
             prefix_str = prefix_str,
             api = APOLLO_API_TARGET_NAME,
@@ -96,7 +97,7 @@ impl SchemaMetadataTemplate {
              {dict}\n\
              \x20\x20]\n\
              \n\
-             \x20\x20{access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
+             \x20\x20@_spi(Execution) {access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
              \x20\x20\x20\x20objectTypeMap[typename]\n\
              \x20\x20}}",
             api = APOLLO_API_TARGET_NAME,
@@ -155,11 +156,12 @@ impl TemplateRenderer for SchemaMetadataTemplate {
         // SchemaMetadata enum
         let object_type_fn = self.object_type_function();
         let schema_metadata = format!(
-            "{pa}enum SchemaMetadata: {api}.SchemaMetadata {{\n\
+            "{ni}{pa}enum SchemaMetadata: {api}.SchemaMetadata {{\n\
              \x20\x20{ma}static let configuration: any {api}.SchemaConfiguration.Type = SchemaConfiguration.self\n\
              \n\
              {obj_fn}\n\
              }}",
+            ni = self.config.nonisolated_modifier(),
             pa = parent_access,
             api = APOLLO_API_TARGET_NAME,
             ma = member_access,
@@ -168,10 +170,12 @@ impl TemplateRenderer for SchemaMetadataTemplate {
         parts.push(schema_metadata);
 
         // Type namespace enums
+        let ni = self.config.nonisolated_modifier();
         let type_enums = format!(
-            "{pa}enum Objects {{}}\n\
-             {pa}enum Interfaces {{}}\n\
-             {pa}enum Unions {{}}",
+            "{ni}{pa}enum Objects {{}}\n\
+             {ni}{pa}enum Interfaces {{}}\n\
+             {ni}{pa}enum Unions {{}}",
+            ni = ni,
             pa = parent_access,
         );
         parts.push(type_enums);

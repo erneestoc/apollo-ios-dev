@@ -59,7 +59,8 @@ impl TemplateRenderer for UnionTemplate {
         let possible_types = self.render_possible_types();
 
         parts.push(format!(
-            "static let {} = Union(\n  name: \"{}\",\n  possibleTypes: {}\n)",
+            "{}static let {} = Union(\n  name: \"{}\",\n  possibleTypes: {}\n)",
+            self.config.nonisolated_modifier(),
             typename,
             self.graphql_union.name.schema_name,
             possible_types,

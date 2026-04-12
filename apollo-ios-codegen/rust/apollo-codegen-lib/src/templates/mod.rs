@@ -81,6 +81,17 @@ impl ConfigurationContext {
     &self.config.output
   }
 
+  /// Returns `"nonisolated "` when `markTypesNonisolated` is enabled, empty string otherwise.
+  ///
+  /// Mirrors Swift's `ConfigurationContext.nonisolatedModifier` (2.1.0+).
+  pub fn nonisolated_modifier(&self) -> &'static str {
+    if self.config.options.mark_types_nonisolated {
+      "nonisolated "
+    } else {
+      ""
+    }
+  }
+
   /// Returns the schema module name, computing it from the module type.
   ///
   /// Mirrors Swift's `ConfigurationContext.schemaModuleName` computed property.

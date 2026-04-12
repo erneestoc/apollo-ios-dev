@@ -44,6 +44,9 @@ pub struct OutputOptions {
   /// Whether generated schema type file names will have a suffix appended to their
   /// file name to help avoid naming conflicts with other files in the project.
   pub append_schema_type_filename_suffix: bool,
+  /// When true, generated types are marked `nonisolated` for Swift 6.2+ compatibility.
+  /// Defaults to true (matching Swift 2.1.0 compiled with Swift 6.2+).
+  pub mark_types_nonisolated: bool,
 }
 
 impl Default for OutputOptions {
@@ -61,6 +64,7 @@ impl Default for OutputOptions {
       prune_generated_files: true,
       mark_operation_definitions_as_final: false,
       append_schema_type_filename_suffix: false,
+      mark_types_nonisolated: false,
     }
   }
 }
@@ -81,6 +85,7 @@ const VALID_OUTPUT_OPTIONS_KEYS: &[&str] = &[
   "pruneGeneratedFiles",
   "markOperationDefinitionsAsFinal",
   "appendSchemaTypeFilenameSuffix",
+  "markTypesNonisolated",
 ];
 
 impl<'de> Deserialize<'de> for OutputOptions {
@@ -110,6 +115,7 @@ impl<'de> Deserialize<'de> for OutputOptions {
         let mut prune_generated_files: Option<bool> = None;
         let mut mark_operation_definitions_as_final: Option<bool> = None;
         let mut append_schema_type_filename_suffix: Option<bool> = None;
+        let mut mark_types_nonisolated: Option<bool> = None;
 
         while let Some(key) = map.next_key::<String>()? {
           if !VALID_OUTPUT_OPTIONS_KEYS.contains(&key.as_str()) {
@@ -162,6 +168,9 @@ impl<'de> Deserialize<'de> for OutputOptions {
             "appendSchemaTypeFilenameSuffix" => {
               append_schema_type_filename_suffix = Some(map.next_value()?);
             }
+            "markTypesNonisolated" => {
+              mark_types_nonisolated = Some(map.next_value()?);
+            }
             _ => unreachable!(), // Already checked above
           }
         }
@@ -197,6 +206,8 @@ impl<'de> Deserialize<'de> for OutputOptions {
             .unwrap_or(defaults.mark_operation_definitions_as_final),
           append_schema_type_filename_suffix: append_schema_type_filename_suffix
             .unwrap_or(defaults.append_schema_type_filename_suffix),
+          mark_types_nonisolated: mark_types_nonisolated
+            .unwrap_or(defaults.mark_types_nonisolated),
         })
       }
     }
@@ -237,6 +248,10 @@ impl Serialize for OutputOptions {
     map.serialize_entry(
       "appendSchemaTypeFilenameSuffix",
       &self.append_schema_type_filename_suffix,
+    )?;
+    map.serialize_entry(
+      "markTypesNonisolated",
+      &self.mark_types_nonisolated,
     )?;
     map.end()
   }

@@ -122,7 +122,8 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         let selection_body = selection_set_template.render_body();
         result.push('\n');
         result.push_str(&format!(
-            "  {}struct Data: {} {{\n",
+            "  {}{}struct Data: {} {{\n",
+            self.config.nonisolated_modifier(),
             member_access.render(),
             selection_set_type
         ));
@@ -164,7 +165,8 @@ impl OperationDefinitionTemplate {
         let protocol_name = rendered_protocol_name(&self.operation.definition.operation_type);
 
         format!(
-            "{}struct {}: {} {{\n  {}static let operationName: String = \"{}\"\n",
+            "{}{}struct {}: {} {{\n  {}static let operationName: String = \"{}\"\n",
+            self.config.nonisolated_modifier(),
             parent_access.render(),
             definition_name,
             protocol_name,

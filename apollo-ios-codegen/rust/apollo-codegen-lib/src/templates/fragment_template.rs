@@ -67,7 +67,8 @@ impl TemplateRenderer for FragmentTemplate {
         let selection_set_type = rendered_selection_set_type(&self.config, is_mutable);
 
         result.push_str(&format!(
-            "{}struct {}: {}, Fragment {{\n",
+            "{}{}struct {}: {}, Fragment {{\n",
+            self.config.nonisolated_modifier(),
             parent_access.render(),
             fragment_name,
             selection_set_type,

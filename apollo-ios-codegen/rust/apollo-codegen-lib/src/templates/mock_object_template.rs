@@ -134,7 +134,8 @@ impl TemplateRenderer for MockObjectTemplate {
 
         // Class definition
         result.push_str(&format!(
-            "{}final class {}: MockObject {{\n",
+            "{}{}final class {}: MockObject {{\n",
+            self.config.nonisolated_modifier(),
             parent_access, object_name,
         ));
         result.push_str(&format!(

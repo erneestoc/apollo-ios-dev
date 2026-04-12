@@ -64,7 +64,8 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
             true, // is_local_cache_mutation
         );
         result.push_str(&format!(
-            "{}struct {}: LocalCacheMutation {{\n",
+            "{}{}struct {}: LocalCacheMutation {{\n",
+            self.config.nonisolated_modifier(),
             parent_access.render(),
             definition_name,
         ));
@@ -126,7 +127,8 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
         let selection_body = selection_set_template.render_body();
         result.push('\n');
         result.push_str(&format!(
-            "  {}struct Data: {} {{\n",
+            "  {}{}struct Data: {} {{\n",
+            self.config.nonisolated_modifier(),
             member_access_str, selection_set_type
         ));
         result.push_str(&indent(&selection_body, 4));

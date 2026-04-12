@@ -124,7 +124,8 @@ impl TemplateRenderer for InputObjectTemplate {
         }
 
         parts.push(format!(
-            "{}struct {}: InputObject {{\n{}\n}}\n",
+            "{}{}struct {}: InputObject {{\n{}\n}}\n",
+            self.config.nonisolated_modifier(),
             parent_access_control,
             typename,
             struct_body.join("\n"),

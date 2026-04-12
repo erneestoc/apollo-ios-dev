@@ -151,10 +151,11 @@ impl<'a> SelectionSetTemplate<'a> {
 
         Some(format!(
             "{doc}\
-{access}struct {name}: {sel_type} {{\n\
+{ni}{access}struct {name}: {sel_type} {{\n\
 {body}\n\
 }}",
             doc = doc,
+            ni = self.config.nonisolated_modifier(),
             access = self.access_control_renderer.render(),
             name = field_selection_set_name,
             sel_type = self.selection_set_type(false),
@@ -178,10 +179,11 @@ impl<'a> SelectionSetTemplate<'a> {
 
         format!(
             "{doc}\
-{access}struct {type_name}: {sel_type}{composite} {{\n\
+{ni}{access}struct {type_name}: {sel_type}{composite} {{\n\
 {body}\n\
 }}",
             doc = doc,
+            ni = self.config.nonisolated_modifier(),
             access = self.access_control_renderer.render(),
             type_name = type_name,
             sel_type = self.selection_set_type(true),

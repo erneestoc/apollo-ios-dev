@@ -72,7 +72,8 @@ impl TemplateRenderer for EnumTemplate {
         let cases_str = cases.join("\n");
 
         parts.push(format!(
-            "{}enum {}: String, EnumType {{\n{}\n}}\n",
+            "{}{}enum {}: String, EnumType {{\n{}\n}}\n",
+            self.config.nonisolated_modifier(),
             access_control, typename, cases_str,
         ));
 

@@ -59,7 +59,8 @@ impl TemplateRenderer for InterfaceTemplate {
         let implementing_objects = self.render_implementing_objects();
 
         parts.push(format!(
-            "static let {} = ApolloAPI.Interface(\n  name: \"{}\",\n  keyFields: {},\n  implementingObjects: {}\n)",
+            "{}static let {} = ApolloAPI.Interface(\n  name: \"{}\",\n  keyFields: {},\n  implementingObjects: {}\n)",
+            self.config.nonisolated_modifier(),
             typename,
             self.graphql_interface.name.schema_name,
             key_fields,
