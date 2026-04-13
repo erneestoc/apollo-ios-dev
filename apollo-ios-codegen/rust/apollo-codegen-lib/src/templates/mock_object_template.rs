@@ -48,8 +48,12 @@ struct TemplateField {
 }
 
 impl TemplateField {
-    fn default_initializer(&self, _config: &ApolloCodegenConfiguration) -> String {
-        " = nil".to_string()
+    fn default_initializer(&self, config: &ApolloCodegenConfiguration) -> String {
+        if self.graphql_type.is_nullable() {
+            " = nil".to_string()
+        } else {
+            format!(" = {}", default_mock_value(&self.graphql_type, config))
+        }
     }
 }
 
@@ -362,13 +366,7 @@ fn mock_type_name(graphql_type: &GraphQLType, config: &ApolloCodegenConfiguratio
         }
     }
 
-    let result = name_replacement(graphql_type, false, config);
-    // In 1.15.1, all mock init params are optional regardless of nullability
-    if result.ends_with('?') {
-        result
-    } else {
-        format!("{}?", result)
-    }
+    name_replacement(graphql_type, false, config)
 }
 
 /// Renders explicit property declarations for fields that conflict with `Mock` properties.
