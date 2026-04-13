@@ -242,7 +242,7 @@ fn default_mock_value(graphql_type: &GraphQLType, config: &ApolloCodegenConfigur
             "Int" => "0".to_string(),
             "Float" => "0.0".to_string(),
             "Boolean" => "false".to_string(),
-            _ => "try! .init(_jsonValue: \"\")".to_string(),
+            _ => ".defaultMockValue".to_string(),
         },
         GraphQLType::Enum(enum_type) => {
             if let Some(first) = enum_type.values.first() {
