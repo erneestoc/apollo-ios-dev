@@ -212,8 +212,6 @@ impl TemplateRenderer for MockObjectTemplate {
             result.push_str("}\n");
         }
 
-        result.push('\n');
-
         result
     }
 }
