@@ -46,6 +46,29 @@ pub enum Commands {
     GenerateOperationManifest(GenerateOperationManifest),
 }
 
+/// Expand Bazel-style `@<file>` flagfile arguments. Bazel writes a single
+/// params file per action when `args.use_param_file("@%s", ...)` is set on a
+/// rule. In persistent-worker mode Bazel reads that file itself and ships the
+/// args via a `WorkRequest` proto (so `@<file>` never reaches argv). In plain
+/// spawn mode (RBE / non-worker local execution), Bazel passes `@<file>`
+/// literally on argv and expects the binary to expand it.
+///
+/// Each line in the params file becomes one argv entry, in order.
+fn expand_response_files(args: Vec<String>) -> Vec<String> {
+    args.into_iter()
+        .flat_map(|arg| match arg.strip_prefix('@') {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(contents) => contents
+                    .lines()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>(),
+                Err(_) => vec![arg],
+            },
+            None => vec![arg],
+        })
+        .collect()
+}
+
 fn main() {
     // D-87: Check for --persistent_worker before clap parsing.
     // Bazel passes this flag when spawning persistent workers.
@@ -57,8 +80,12 @@ fn main() {
         return; // run_worker_loop calls process::exit, but belt-and-suspenders
     }
 
+    // Expand `@<file>` response-file arguments for non-worker spawns (RBE).
+    // Worker mode handled above; this is a no-op when no @-args are present.
+    let expanded = expand_response_files(args);
+
     // Normal CLI mode
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(expanded);
 
     let result = match cli.command {
         Commands::Init(mut cmd) => cmd.run(),
