@@ -27,7 +27,6 @@ pub struct FileOutput {
 /// Mirrors Swift's `ApolloCodegenConfiguration.SchemaTypesFileOutput` struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub struct SchemaTypesFileOutput {
   /// Local path where the generated schema types files should be stored.
   pub path: String,
