@@ -139,8 +139,8 @@ impl TemplateRenderer for MockObjectTemplate {
             parent_access, object_name,
         ));
         result.push_str(&format!(
-            "  {}static let objectType: ApolloAPI.Object = {}.Objects.{}\n",
-            member_access, schema_ns, object_name,
+            "  {}static let objectType: {}.Object = {}.Objects.{}\n",
+            member_access, self.config.apollo_api_target_name(), schema_ns, object_name,
         ));
         result.push_str(&format!(
             "  {}static let _mockFields = MockFields()\n",

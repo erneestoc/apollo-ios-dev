@@ -67,6 +67,16 @@ impl ConfigurationContext {
   }
 
   /// Returns the schema namespace.
+  /// Mirrors Swift's `ConfigurationContext.ApolloAPITargetName`: `"Apollo"` when
+  /// `cocoapodsCompatibleImportStatements` is enabled, otherwise `"ApolloAPI"`.
+  pub fn apollo_api_target_name(&self) -> &'static str {
+    if self.config.options.cocoapods_compatible_import_statements {
+      "Apollo"
+    } else {
+      "ApolloAPI"
+    }
+  }
+
   pub fn schema_namespace(&self) -> &str {
     &self.config.schema_namespace
   }

@@ -59,9 +59,14 @@ impl TemplateRenderer for InterfaceTemplate {
         let implementing_objects = self.render_implementing_objects();
 
         parts.push(format!(
+<<<<<<< HEAD
             "{}static let {} = ApolloAPI.Interface(\n  name: \"{}\",\n  keyFields: {},\n  implementingObjects: {}\n)",
             self.config.nonisolated_modifier(),
+=======
+            "static let {} = {}.Interface(\n  name: \"{}\",\n  keyFields: {},\n  implementingObjects: {}\n)",
+>>>>>>> 8320843fe (fix(templates): honor cocoapodsCompatibleImportStatements module name)
             typename,
+            self.config.apollo_api_target_name(),
             self.graphql_interface.name.schema_name,
             key_fields,
             implementing_objects,

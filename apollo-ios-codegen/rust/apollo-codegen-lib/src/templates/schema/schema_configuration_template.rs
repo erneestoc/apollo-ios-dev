@@ -3,7 +3,6 @@
 //! Mirrors Swift's `SchemaConfigurationTemplate.swift` from
 //! `Sources/ApolloCodegenLib/Templates/SchemaConfigurationTemplate.swift`.
 
-use crate::templates::rendering_helpers::template_constants::APOLLO_API_TARGET_NAME;
 use crate::templates::{
     ConfigurationContext, HeaderCommentTemplate, NonFatalErrorRecorder, SchemaFileType, Scope,
     TemplateRenderer, TemplateTarget,
@@ -50,7 +49,7 @@ impl TemplateRenderer for SchemaConfigurationTemplate {
              }}\n",
             ni = self.config.nonisolated_modifier(),
             pa = parent_access,
-            api = APOLLO_API_TARGET_NAME,
+            api = self.config.apollo_api_target_name(),
             ma = member_access,
         )
     }
