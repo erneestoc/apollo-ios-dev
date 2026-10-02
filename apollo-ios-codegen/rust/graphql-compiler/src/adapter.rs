@@ -2625,22 +2625,39 @@ mod tests {
             name: "GetUser".to_string(),
             operation_type: compilation_result::OperationType::Query,
             variables: vec![],
-            root_type: query_type,
+            root_type: query_type.clone(),
+            // `query GetUser { user { name } }` -- types are collected the way
+            // graphql-js encounters them (root type, then each field's named type).
             selection_set: compilation_result::SelectionSet {
-                parent_type: user_type.clone(),
+                parent_type: query_type.clone(),
                 selections: vec![compilation_result::Selection::Field(
                     compilation_result::Field {
-                        name: "name".to_string(),
+                        name: "user".to_string(),
                         alias: None,
-                        type_: GraphQLType::Scalar(Arc::new(GraphQLScalarType {
-                            name: GraphQLName::new("String".to_string()),
-                            documentation: None,
-                            specified_by_url: None,
-                        })),
+                        type_: GraphQLType::Entity(user_type.clone()),
                         arguments: None,
                         inclusion_conditions: None,
                         directives: None,
-                        selection_set: None,
+                        selection_set: Some(compilation_result::SelectionSet {
+                            parent_type: user_type.clone(),
+                            selections: vec![compilation_result::Selection::Field(
+                                compilation_result::Field {
+                                    name: "name".to_string(),
+                                    alias: None,
+                                    type_: GraphQLType::Scalar(Arc::new(GraphQLScalarType {
+                                        name: GraphQLName::new("String".to_string()),
+                                        documentation: None,
+                                        specified_by_url: None,
+                                    })),
+                                    arguments: None,
+                                    inclusion_conditions: None,
+                                    directives: None,
+                                    selection_set: None,
+                                    deprecation_reason: None,
+                                    documentation: None,
+                                },
+                            )],
+                        }),
                         deprecation_reason: None,
                         documentation: None,
                     },
