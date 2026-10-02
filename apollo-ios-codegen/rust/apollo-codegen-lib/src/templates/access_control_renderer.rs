@@ -138,7 +138,7 @@ impl AccessControlRenderer {
         },
         Scope::Namespace | Scope::Member,
       ) => Some(AccessModifier::Internal),
-      (ModuleType::SwiftPackageManager | ModuleType::Other, _) => {
+      (ModuleType::SwiftPackage { .. } | ModuleType::Other, _) => {
         Some(AccessModifier::Public)
       }
     }

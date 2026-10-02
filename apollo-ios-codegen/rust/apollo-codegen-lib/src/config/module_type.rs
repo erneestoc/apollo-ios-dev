@@ -165,7 +165,14 @@ pub enum ModuleType {
     access_modifier: AccessModifier,
   },
   /// Generates a `Package.swift` file suitable for linking via Swift Package Manager.
-  SwiftPackageManager,
+  /// Generated schema types will be packaged in a Swift Package Manager module,
+  /// depending on apollo-ios as described by `apollo_sdk_dependency`.
+  ///
+  /// Mirrors Swift's `.swiftPackage(apolloSDKDependency:)`; the deprecated
+  /// `swiftPackageManager` key decodes to this with the default dependency.
+  SwiftPackage {
+    apollo_sdk_dependency: ApolloSDKDependency,
+  },
   /// No module will be created. You must create the module to support your preferred
   /// dependency manager (e.g., CocoaPods).
   Other,
@@ -177,7 +184,7 @@ impl ModuleType {
     /// did not include explicit SDK dependency settings.
     pub fn apollo_sdk_dependency(&self) -> Option<ApolloSDKDependency> {
         match self {
-            ModuleType::SwiftPackageManager => Some(ApolloSDKDependency::default()),
+            ModuleType::SwiftPackage { apollo_sdk_dependency } => Some(apollo_sdk_dependency.clone()),
             _ => None,
         }
     }
@@ -191,7 +198,7 @@ impl<'de> Deserialize<'de> for ModuleType {
       type Value = ModuleType;
 
       fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("a ModuleType object with one key: embeddedInTarget, swiftPackageManager, or other")
+        f.write_str("a ModuleType object with one key: embeddedInTarget, swiftPackage, swiftPackageManager, or other")
       }
 
       fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
@@ -215,7 +222,20 @@ impl<'de> Deserialize<'de> for ModuleType {
           }
           "swiftPackageManager" => {
             let _: serde_json::Value = map.next_value()?;
-            Ok(ModuleType::SwiftPackageManager)
+            Ok(ModuleType::SwiftPackage {
+              apollo_sdk_dependency: ApolloSDKDependency::default(),
+            })
+          }
+          "swiftPackage" => {
+            #[derive(Deserialize)]
+            struct Inner {
+              #[serde(rename = "apolloSDKDependency", default)]
+              apollo_sdk_dependency: ApolloSDKDependency,
+            }
+            let inner: Inner = map.next_value()?;
+            Ok(ModuleType::SwiftPackage {
+              apollo_sdk_dependency: inner.apollo_sdk_dependency,
+            })
           }
           "other" => {
             let _: serde_json::Value = map.next_value()?;
@@ -223,7 +243,7 @@ impl<'de> Deserialize<'de> for ModuleType {
           }
           other => Err(de::Error::unknown_variant(
             other,
-            &["embeddedInTarget", "swiftPackageManager", "other"],
+            &["embeddedInTarget", "swiftPackage", "swiftPackageManager", "other"],
           )),
         }
       }
@@ -256,9 +276,14 @@ impl Serialize for ModuleType {
         )?;
         map.end()
       }
-      ModuleType::SwiftPackageManager => {
+      ModuleType::SwiftPackage { apollo_sdk_dependency } => {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Inner<'a> {
+          apollo_sdk_dependency: &'a ApolloSDKDependency,
+        }
         let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry("swiftPackageManager", &serde_json::Map::new())?;
+        map.serialize_entry("swiftPackage", &Inner { apollo_sdk_dependency })?;
         map.end()
       }
       ModuleType::Other => {
@@ -306,7 +331,7 @@ mod tests {
   fn test_module_type_swift_package_manager_roundtrip() {
     let json = r#"{"swiftPackageManager":{}}"#;
     let parsed: ModuleType = serde_json::from_str(json).unwrap();
-    assert_eq!(parsed, ModuleType::SwiftPackageManager);
+    assert_eq!(parsed, ModuleType::SwiftPackage { apollo_sdk_dependency: ApolloSDKDependency::default() });
     let serialized = serde_json::to_string(&parsed).unwrap();
     assert_eq!(serialized, json);
   }
