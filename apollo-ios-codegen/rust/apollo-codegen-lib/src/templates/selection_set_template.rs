@@ -530,7 +530,7 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "public static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
+            "@_spi(Execution) public static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
             items.join(",\n")
         )
     }
@@ -875,13 +875,13 @@ impl<'a> SelectionSetTemplate<'a> {
         &self,
         inline_fragments: &[SelectionSetContext],
     ) -> String {
-        let mut lines: Vec<String> = Vec::new();
-        for ctx in inline_fragments {
-            let accessor = self.inline_fragment_accessor_template(&ctx.selection_set);
-            if !accessor.is_empty() {
-                lines.push(accessor);
-            }
-        }
+        // Swift 2.0.0 joins every accessor with "\n", including the empty string
+        // returned for deferred inline fragments, so a deferred fragment leaves
+        // an extra blank line behind.
+        let lines: Vec<String> = inline_fragments
+            .iter()
+            .map(|ctx| self.inline_fragment_accessor_template(&ctx.selection_set))
+            .collect();
         lines.join("\n")
     }
 
