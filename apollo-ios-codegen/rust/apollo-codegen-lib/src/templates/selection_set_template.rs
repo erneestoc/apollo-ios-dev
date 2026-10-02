@@ -148,15 +148,18 @@ impl<'a> SelectionSetTemplate<'a> {
         let doc = self.selection_set_name_documentation(selection_set);
         let body = self.body_template(context);
 
+        let identifiable = if selection_set.is_identifiable() { ", Identifiable" } else { "" };
+
         Some(format!(
             "{doc}\
-{access}struct {name}: {sel_type} {{\n\
+{access}struct {name}: {sel_type}{identifiable} {{\n\
 {body}\n\
 }}",
             doc = doc,
             access = self.access_control_renderer.render(),
             name = field_selection_set_name,
             sel_type = self.selection_set_type(false),
+            identifiable = identifiable,
             body = indent(&body, 2),
         ))
     }
@@ -172,12 +175,14 @@ impl<'a> SelectionSetTemplate<'a> {
             String::new()
         };
 
+        let identifiable = if inline_fragment.is_identifiable() { ", Identifiable" } else { "" };
+
         let doc = self.selection_set_name_documentation(inline_fragment);
         let body = self.body_template(context);
 
         format!(
             "{doc}\
-{access}struct {type_name}: {sel_type}{composite} {{\n\
+{access}struct {type_name}: {sel_type}{composite}{identifiable} {{\n\
 {body}\n\
 }}",
             doc = doc,
@@ -185,6 +190,7 @@ impl<'a> SelectionSetTemplate<'a> {
             type_name = type_name,
             sel_type = self.selection_set_type(true),
             composite = composite,
+            identifiable = identifiable,
             body = indent(&body, 2),
         )
     }
