@@ -18,7 +18,6 @@ use crate::templates::rendering_helpers::operation_template_renderer::{
 };
 use crate::templates::rendering_helpers::string_single_line::converted_to_single_line;
 use crate::templates::rendering_helpers::string_swift_name_escaping::as_fragment_name;
-use crate::templates::rendering_helpers::template_constants::APOLLO_API_TARGET_NAME;
 use crate::templates::{
     AccessControlRenderer, ConfigurationContext, NonFatalErrorRecorder, Scope,
     TemplateRenderer, TemplateTarget,
@@ -190,7 +189,7 @@ impl OperationDefinitionTemplate {
         let mut result = format!(
             "  {}static let operationDocument: {}.OperationDocument = .init(\n",
             member_access.render(),
-            APOLLO_API_TARGET_NAME,
+            self.config.apollo_api_target_name(),
         );
 
         if include_operation_id {
