@@ -394,7 +394,7 @@ fn module_type_embedded_in_target_round_trip() {
 fn module_type_spm_round_trip() {
   let json = r#"{"swiftPackageManager":{}}"#;
   let parsed: ModuleType = serde_json::from_str(json).unwrap();
-  assert_eq!(parsed, ModuleType::SwiftPackageManager);
+  assert_eq!(parsed, ModuleType::SwiftPackage { apollo_sdk_dependency: apollo_codegen_lib::config::module_type::ApolloSDKDependency::default() });
   let serialized = serde_json::to_string(&parsed).unwrap();
   assert_eq!(serialized, json);
 }
