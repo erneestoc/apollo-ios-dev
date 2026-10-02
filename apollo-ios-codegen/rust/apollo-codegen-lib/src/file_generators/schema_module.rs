@@ -49,7 +49,7 @@ impl SchemaModuleFileGenerator {
         );
 
         match &config.output().schema_types.module_type {
-            ModuleType::SwiftPackageManager => {
+            ModuleType::SwiftPackage { .. } => {
                 let file_path = path_base.join("Package.swift");
                 let result = SwiftPackageManagerModuleTemplate::new(
                     config.output().test_mocks.clone(),
