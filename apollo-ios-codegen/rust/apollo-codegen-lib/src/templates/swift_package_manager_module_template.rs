@@ -13,7 +13,7 @@ use crate::templates::{
 /// The codegen version used for the default SDK dependency.
 ///
 /// Mirrors Swift's `Constants.CodegenVersion`.
-pub const CODEGEN_VERSION: &str = "2.0.4";
+pub const CODEGEN_VERSION: &str = "2.0.5";
 
 /// Provides the format to define a Swift Package Manager module.
 ///
