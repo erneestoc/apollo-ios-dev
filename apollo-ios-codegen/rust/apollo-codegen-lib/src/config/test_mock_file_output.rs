@@ -47,7 +47,6 @@ impl<'de> Deserialize<'de> for TestMockFileOutput {
           }
           "absolute" => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct Inner {
               path: String,
               #[serde(rename = "accessModifier", default = "crate::config::access_modifier::default_public")]
@@ -61,7 +60,6 @@ impl<'de> Deserialize<'de> for TestMockFileOutput {
           }
           "swiftPackage" => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct Inner {
               #[serde(rename = "targetName")]
               target_name: Option<String>,
