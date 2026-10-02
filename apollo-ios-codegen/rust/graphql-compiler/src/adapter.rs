@@ -12,7 +12,7 @@ use apollo_compiler::ast;
 use apollo_compiler::executable;
 use apollo_compiler::schema::{self, ExtendedType};
 use apollo_compiler::validation::Valid;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use crate::compilation_result;
 use crate::graphql_name::GraphQLName;
@@ -1046,101 +1046,160 @@ fn collect_direct_fragments(
 
 // MARK: - Referenced Types Filtering
 
-/// Filters a type registry to include only types actually referenced by the
-/// compiled operations and fragments, excluding introspection meta-types.
+/// Collects the types referenced by the compiled operations and fragments in
+/// the exact order graphql-js's `compileToIR` encounters them.
 ///
-/// GAP-03: apollo-rs includes ALL schema types plus introspection meta-types
-/// (__Schema, __Type, __Field, __EnumValue, __Directive, __InputValue) in its
-/// type list. graphql-js includes only types actually referenced by compiled
-/// operations. This function filters to match the graphql-js behavior.
+/// Mirrors `addReferencedType` in `compiler/index.ts`: every type is added on
+/// first encounter and immediately expanded — an interface adds all of its
+/// implementing objects (schema definition order), a union adds its members, an
+/// input object adds its field types and an object adds its interfaces. The
+/// traversal order mirrors `compileOperation` (variables, root type, selection
+/// set) with fragments compiled lazily on their first spread, and any remaining
+/// fragments compiled afterwards in definition order.
 ///
-/// The collection is transitive: when an interface is referenced, all types
-/// implementing that interface are also included, and their fields are
-/// traversed recursively to collect further types. This matches graphql-js's
-/// behavior of including all types reachable from the operations.
+/// Introspection meta-types (`__Schema`, ...) are excluded, matching graphql-js
+/// which only reports types reachable from the operations.
 pub fn collect_referenced_types(
     registry: &TypeRegistry,
     operations: &[compilation_result::OperationDefinition],
     fragments: &[compilation_result::FragmentDefinition],
 ) -> Vec<GraphQLNamedType> {
-    let mut referenced_names: HashSet<String> = HashSet::new();
+    let fragment_map: IndexMap<&str, &compilation_result::FragmentDefinition> = fragments
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+    let mut collector = ReferencedTypeCollector {
+        registry,
+        names: IndexSet::new(),
+        compiled_fragments: HashSet::new(),
+        fragment_map: &fragment_map,
+    };
 
-    // Collect types from operations
     for op in operations {
-        collect_types_from_composite(&op.root_type, &mut referenced_names);
-        collect_types_from_selection_set(&op.selection_set, &mut referenced_names);
         for var in &op.variables {
-            collect_types_from_graphql_type(&var.type_, &mut referenced_names);
+            collector.add(var.type_.named_type_name());
         }
+        collector.add(composite_name(&op.root_type));
+        collector.walk_selection_set(&op.selection_set);
     }
 
-    // Collect types from fragments
+    // Fragments not reached through a spread are compiled afterwards, in order.
     for frag in fragments {
-        collect_types_from_composite(&frag.type_, &mut referenced_names);
-        collect_types_from_selection_set(&frag.selection_set, &mut referenced_names);
+        collector.compile_fragment(frag);
     }
 
-    // Transitive closure: for every referenced interface, include all
-    // implementing object types. For unions, include all member types.
-    // This matches graphql-js which includes concrete types that can appear
-    // at abstract type positions, but does NOT traverse their fields for
-    // additional scalar/enum types beyond what the operations reference.
-    let mut worklist: Vec<String> = referenced_names.iter().cloned().collect();
-    while let Some(type_name) = worklist.pop() {
-        match registry.get(&type_name) {
+    collector
+        .names
+        .iter()
+        .filter(|name| !name.starts_with("__"))
+        .filter_map(|name| registry.get(name).cloned())
+        .collect()
+}
+
+struct ReferencedTypeCollector<'a> {
+    registry: &'a TypeRegistry,
+    names: IndexSet<String>,
+    compiled_fragments: HashSet<String>,
+    fragment_map: &'a IndexMap<&'a str, &'a compilation_result::FragmentDefinition>,
+}
+
+impl<'a> ReferencedTypeCollector<'a> {
+    /// Mirrors graphql-js `addReferencedType`.
+    fn add(&mut self, name: &str) {
+        if self.names.contains(name) {
+            return;
+        }
+        self.names.insert(name.to_string());
+
+        match self.registry.get(name) {
             Some(GraphQLNamedType::Interface(_)) => {
-                // Find all objects implementing this interface
-                for (name, named_type) in registry.all_types() {
-                    if let GraphQLNamedType::Object(obj) = named_type {
-                        if obj.interfaces.iter().any(|i| i.name.schema_name == type_name) {
-                            if referenced_names.insert(name.clone()) {
-                                worklist.push(name.clone());
-                            }
-                            // Also include all interfaces this object implements
-                            for iface in &obj.interfaces {
-                                if referenced_names.insert(iface.name.schema_name.clone()) {
-                                    worklist.push(iface.name.schema_name.clone());
-                                }
-                            }
+                // `schema.getPossibleTypes(interface)`: implementing objects in
+                // schema definition order.
+                let implementors: Vec<String> = self
+                    .registry
+                    .all_types()
+                    .iter()
+                    .filter_map(|(obj_name, t)| match t {
+                        GraphQLNamedType::Object(obj)
+                            if obj.interfaces.iter().any(|i| i.name.schema_name == name) =>
+                        {
+                            Some(obj_name.clone())
                         }
-                    }
+                        _ => None,
+                    })
+                    .collect();
+                for obj_name in implementors {
+                    self.add(&obj_name);
                 }
             }
             Some(GraphQLNamedType::Union(u)) => {
-                // Include all union member types
-                for member in &u.types {
-                    if referenced_names.insert(member.name.schema_name.clone()) {
-                        worklist.push(member.name.schema_name.clone());
-                    }
+                let members: Vec<String> =
+                    u.types.iter().map(|m| m.name.schema_name.clone()).collect();
+                for member in members {
+                    self.add(&member);
                 }
             }
             Some(GraphQLNamedType::InputObject(io)) => {
-                // Transitive closure through input object fields:
-                // if an input object is referenced, all types used by its
-                // fields are also referenced (enums, scalars, other inputs).
-                for field in io.fields.values() {
-                    collect_types_from_graphql_type_with_worklist(
-                        &field.type_,
-                        &mut referenced_names,
-                        &mut worklist,
-                    );
+                let field_types: Vec<String> = io
+                    .fields
+                    .values()
+                    .map(|f| f.type_.named_type_name().to_string())
+                    .collect();
+                for ft in field_types {
+                    self.add(&ft);
+                }
+            }
+            Some(GraphQLNamedType::Object(obj)) => {
+                let ifaces: Vec<String> =
+                    obj.interfaces.iter().map(|i| i.name.schema_name.clone()).collect();
+                for iface in ifaces {
+                    self.add(&iface);
                 }
             }
             _ => {}
         }
     }
 
-    // Filter registry to only referenced types, excluding introspection meta-types
-    registry
-        .all_types()
-        .iter()
-        .filter(|(name, _)| {
-            // Exclude introspection types (names starting with "__")
-            !name.starts_with("__")
-                && referenced_names.contains(name.as_str())
-        })
-        .map(|(_, named_type)| named_type.clone())
-        .collect()
+    fn walk_selection_set(&mut self, selection_set: &compilation_result::SelectionSet) {
+        for sel in &selection_set.selections {
+            match sel {
+                compilation_result::Selection::Field(field) => {
+                    self.add(field.type_.named_type_name());
+                    if let Some(ref sub) = field.selection_set {
+                        self.walk_selection_set(sub);
+                    }
+                }
+                compilation_result::Selection::InlineFragment(inline) => {
+                    self.add(composite_name(&inline.selection_set.parent_type));
+                    self.walk_selection_set(&inline.selection_set);
+                }
+                compilation_result::Selection::FragmentSpread(spread) => {
+                    let name = spread.fragment.name.clone();
+                    if let Some(frag) = self.fragment_map.get(name.as_str()).copied() {
+                        self.compile_fragment(frag);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mirrors graphql-js `getFragment` + `compileFragment`: compiled once, on
+    /// first reference.
+    fn compile_fragment(&mut self, frag: &compilation_result::FragmentDefinition) {
+        if !self.compiled_fragments.insert(frag.name.clone()) {
+            return;
+        }
+        self.add(composite_name(&frag.type_));
+        self.walk_selection_set(&frag.selection_set);
+    }
+}
+
+fn composite_name(composite: &GraphQLCompositeType) -> &str {
+    match composite {
+        GraphQLCompositeType::Object(o) => &o.name.schema_name,
+        GraphQLCompositeType::Interface(i) => &i.name.schema_name,
+        GraphQLCompositeType::Union(u) => &u.name.schema_name,
+    }
 }
 
 /// Collects type names referenced by a composite type.
@@ -1291,7 +1350,7 @@ enum ParentKind {
 /// alias/directives from existing `__typename` fields.
 ///
 /// If parsing fails, returns the input unchanged.
-pub fn build_network_request_source(definition_text: &str) -> String {
+pub fn build_network_request_source(definition_text: &str, legacy_safelisting: bool) -> String {
     let doc = match ast::Document::parse(definition_text, "source_transform") {
         Ok(doc) => doc,
         Err(_) => return definition_text.to_string(),
@@ -1300,7 +1359,15 @@ pub fn build_network_request_source(definition_text: &str) -> String {
     let mut new_definitions = Vec::new();
 
     for def in &doc.definitions {
-        match def {
+        // Mirrors graphql.ts `transformToNetworkRequestSourceDefinition`: when
+        // `legacySafelistingCompatibleOperations` is enabled, the AST is first run
+        // through `addTypeNameFieldForLegacySafelisting`.
+        let def = if legacy_safelisting {
+            apply_legacy_safelisting(def)
+        } else {
+            def.clone()
+        };
+        match &def {
             ast::Definition::OperationDefinition(op) => {
                 let mut new_op = op.as_ref().clone();
                 // Strip Apollo-specific directives from the operation itself
@@ -1341,6 +1408,63 @@ pub fn build_network_request_source(definition_text: &str) -> String {
 
     // Use our graphql-js-compatible printer instead of apollo-compiler's Display
     print_graphql_js(&new_doc)
+}
+
+/// Mirrors `legacySafelistingTransform.ts` `addTypeNameFieldForLegacySafelisting`:
+/// every selection set has existing `__typename` fields removed, and every
+/// Field / FragmentDefinition / InlineFragment with a selection set gets a
+/// `__typename` prepended. The operation root selection set only gets the
+/// removal (it is not in the `leave` list).
+fn apply_legacy_safelisting(def: &ast::Definition) -> ast::Definition {
+    match def {
+        ast::Definition::OperationDefinition(op) => {
+            let mut new_op = op.as_ref().clone();
+            new_op.selection_set = legacy_transform_selections(&op.selection_set);
+            ast::Definition::OperationDefinition(apollo_compiler::Node::new(new_op))
+        }
+        ast::Definition::FragmentDefinition(frag) => {
+            let mut new_frag = frag.as_ref().clone();
+            let mut sels = legacy_transform_selections(&frag.selection_set);
+            sels.insert(0, make_typename_selection());
+            new_frag.selection_set = sels;
+            ast::Definition::FragmentDefinition(apollo_compiler::Node::new(new_frag))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Applies the legacy safelisting transform to a selection list: strips
+/// `__typename` fields, recurses, and prepends `__typename` to every child
+/// Field / InlineFragment that has a selection set.
+fn legacy_transform_selections(selections: &[ast::Selection]) -> Vec<ast::Selection> {
+    let mut result = Vec::new();
+    for sel in selections {
+        match sel {
+            ast::Selection::Field(field) => {
+                if field.name == "__typename" {
+                    continue;
+                }
+                let mut new_field = field.as_ref().clone();
+                if !field.selection_set.is_empty() {
+                    let mut sels = legacy_transform_selections(&field.selection_set);
+                    sels.insert(0, make_typename_selection());
+                    new_field.selection_set = sels;
+                }
+                result.push(ast::Selection::Field(apollo_compiler::Node::new(new_field)));
+            }
+            ast::Selection::InlineFragment(inline) => {
+                let mut new_inline = inline.as_ref().clone();
+                if !inline.selection_set.is_empty() {
+                    let mut sels = legacy_transform_selections(&inline.selection_set);
+                    sels.insert(0, make_typename_selection());
+                    new_inline.selection_set = sels;
+                }
+                result.push(ast::Selection::InlineFragment(apollo_compiler::Node::new(new_inline)));
+            }
+            ast::Selection::FragmentSpread(_) => result.push(sel.clone()),
+        }
+    }
+    result
 }
 
 // MARK: - graphql-js compatible printer
@@ -2619,7 +2743,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_simple_query() {
         let input = "query Foo {\n  hero {\n    name\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         let expected = "query Foo {\n  hero {\n    __typename\n    name\n  }\n}";
         assert_eq!(result, expected, "Should inject __typename into field selection set");
     }
@@ -2627,7 +2751,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_existing_typename() {
         let input = "query Bar {\n  hero {\n    __typename\n    name\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         let expected = "query Bar {\n  hero {\n    __typename\n    name\n  }\n}";
         assert_eq!(result, expected, "Should not duplicate __typename");
     }
@@ -2635,7 +2759,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_fragment_definition() {
         let input = "fragment F on Human {\n  name\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         let expected = "fragment F on Human {\n  __typename\n  name\n}";
         assert_eq!(result, expected, "Should inject __typename into fragment definition");
     }
@@ -2643,7 +2767,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_no_typename_at_operation_root() {
         let input = "query Q {\n  hero {\n    name\n  }\n  search {\n    name\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         // __typename should be inside hero and search, but NOT at operation root
         assert!(result.contains("hero {\n    __typename\n    name\n  }"), "hero should get __typename");
         assert!(result.contains("search {\n    __typename\n    name\n  }"), "search should get __typename");
@@ -2656,7 +2780,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_inline_fragment_no_typename() {
         let input = "query Q {\n  hero {\n    ... on Human {\n      name\n    }\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         // __typename should be inside hero field, but NOT inside the inline fragment itself
         // The inline fragment's children (fields) should not get __typename at the inline-frag level
         assert!(result.contains("hero {\n    __typename\n    ... on Human"), "hero field should get __typename");
@@ -2667,7 +2791,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_strip_apollo_directives() {
         let input = "query Q @apollo_client_ios_localCacheMutation {\n  hero {\n    name\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         assert!(!result.contains("apollo_client_ios_localCacheMutation"), "Should strip Apollo directive");
         assert!(result.contains("query Q {"), "Query should remain without directive");
     }
@@ -2675,7 +2799,7 @@ mod tests {
     #[test]
     fn test_build_network_request_source_nested_fields() {
         let input = "query Q {\n  hero {\n    friends {\n      name\n    }\n  }\n}";
-        let result = super::build_network_request_source(input);
+        let result = super::build_network_request_source(input, false);
         assert!(result.contains("hero {\n    __typename\n    friends"), "hero should get __typename");
         assert!(result.contains("friends {\n      __typename\n      name"), "friends should get __typename");
     }
