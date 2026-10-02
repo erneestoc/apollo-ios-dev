@@ -139,13 +139,13 @@ pub fn validate_config_values(
 
   // 4. Test mocks swift package requires SPM module type
   if matches!(config.output.test_mocks, TestMockFileOutput::SwiftPackage { .. })
-    && config.output.schema_types.module_type != ModuleType::SwiftPackageManager
+    && !matches!(config.output.schema_types.module_type, ModuleType::SwiftPackage { .. })
   {
     return Err(ConfigError::TestMocksInvalidSwiftPackageConfiguration);
   }
 
   // 5. CocoaPods import + SPM incompatibility
-  if config.output.schema_types.module_type == ModuleType::SwiftPackageManager
+  if matches!(config.output.schema_types.module_type, ModuleType::SwiftPackage { .. })
     && config.options.cocoapods_compatible_import_statements
   {
     return Err(ConfigError::InvalidConfiguration {
