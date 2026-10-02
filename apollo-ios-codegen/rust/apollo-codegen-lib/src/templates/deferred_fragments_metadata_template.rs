@@ -47,11 +47,13 @@ impl DeferredPathTypeInfo {
 }
 
 impl<'a> DeferredFragmentsMetadataTemplate<'a> {
-    /// Renders the deferred fragments metadata section as an extension.
+    /// Renders the deferred fragments metadata block placed inside the operation
+    /// class.
     ///
-    /// Returns an empty string if there are no deferred fragments.
-    /// In 1.15.1, renders as `extension OperationName { ... }` with
-    /// DeferredFragmentIdentifiers enum and deferredFragments property.
+    /// Mirrors Swift 2.0.0 `DeferredFragmentsMetadataTemplate.render()`: a MARK,
+    /// the `ResponseFormat` typealias, the `DeferredFragmentIdentifiers` enum and
+    /// the `responseFormat` property. Returns an empty string when the operation
+    /// has no deferred fragments.
     pub fn render(&self) -> String {
         let path_type_info = self.collect_deferred_paths(
             self.operation.root_field.selection_set.selections.as_deref(),
@@ -62,38 +64,13 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
             return String::new();
         }
 
-        let definition_name = crate::templates::rendering_helpers::ir_definition_rendering::generated_definition_name(
-            &self.operation.definition.name,
-            &self.operation.definition.operation_type.to_string(),
-            self.operation.definition.is_local_cache_mutation(),
-        );
-
-        let mut inner = String::new();
-
-        // DeferredFragmentIdentifiers enum
-        inner.push_str(&self.render_deferred_fragment_identifiers(&path_type_info));
-        inner.push('\n');
-
-        // deferredFragments property
-        inner.push_str(&self.render_deferred_fragments_property(&path_type_info));
-
-        // Indent inner content
-        let indented: Vec<String> = inner
-            .lines()
-            .map(|line| {
-                if line.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("  {}", line)
-                }
-            })
-            .collect();
-
         format!(
-            "\n// MARK: Deferred Fragment Metadata\n\n{}extension {} {{\n{}\n}}",
-            self.render_access_control,
-            definition_name,
-            indented.join("\n"),
+            "// MARK: - Deferred Fragment Metadata\n\n\
+             public typealias ResponseFormat = IncrementalDeferredResponseFormat\n\
+             {}\n\
+             {}",
+            self.render_deferred_fragment_identifiers(&path_type_info),
+            self.render_deferred_fragments_property(&path_type_info),
         )
     }
 
@@ -125,24 +102,20 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
         result
     }
 
-    /// Renders the deferredFragments property.
-    ///
-    /// In 1.15.1: `static var deferredFragments: [DeferredFragmentIdentifier: any ApolloAPI.SelectionSet.Type]? {[...]}`
+    /// Renders the `responseFormat` property (Swift 2.0.0
+    /// `DeferredFragmentsPropertyTemplate`).
     fn render_deferred_fragments_property(&self, infos: &[DeferredPathTypeInfo]) -> String {
         let mut result = String::new();
-        result.push_str(&format!(
-            "static var deferredFragments: [DeferredFragmentIdentifier: any {}.SelectionSet.Type]? {{[\n",
-            self.config.apollo_api_target_name(),
-        ));
-
+        result.push_str(
+            "public static let responseFormat: ResponseFormat = IncrementalDeferredResponseFormat(\n  deferredFragments: [\n",
+        );
         for info in infos {
             result.push_str(&format!(
-                "  DeferredFragmentIdentifiers.{}: {}.self,\n",
+                "    DeferredFragmentIdentifiers.{}: {}.self,\n",
                 info.defer_condition.label, info.type_name,
             ));
         }
-
-        result.push_str("]}\n");
+        result.push_str("  ]\n)");
         result
     }
 

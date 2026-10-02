@@ -65,13 +65,13 @@ impl SchemaMetadataTemplate {
         )
     }
 
-    /// Renders the objectType dictionary and lookup function.
+    /// Renders the objectType function with a switch statement.
     ///
-    /// Mirrors Swift's `objectTypeFunction` computed property (Swift 1.25.4+ renders a dictionary lookup).
+    /// Mirrors Swift's `objectTypeFunction` computed property (Swift 2.0.0: switch with @_spi(Execution)).
     fn object_type_function(&self) -> String {
         let access_level = self.access_control_renderer(Scope::Member).render();
 
-        let dict_entries: Vec<String> = self
+        let case_entries: Vec<String> = self
             .schema
             .referenced_types
             .objects
@@ -82,25 +82,24 @@ impl SchemaMetadataTemplate {
                     &RenderContext::Typename { is_input_value: false },
                 );
                 format!(
-                    "    \"{}\": {}.Objects.{}",
+                    "    case \"{}\": return {}.Objects.{}",
                     obj.name.schema_name, self.schema_namespace, typename
                 )
             })
             .collect();
 
-        let dict_str = dict_entries.join(",\n");
+        let cases_str = case_entries.join("\n");
 
         format!(
-            "  private static let objectTypeMap: [String: {api}.Object] = [\n\
-             {dict}\n\
-             \x20\x20]\n\
-             \n\
-             \x20\x20{access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
-             \x20\x20\x20\x20objectTypeMap[typename]\n\
+            "  @_spi(Execution) {access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
+             \x20\x20\x20\x20switch typename {{\n\
+             {cases}\n\
+             \x20\x20\x20\x20default: return nil\n\
+             \x20\x20\x20\x20}}\n\
              \x20\x20}}",
-            api = self.config.apollo_api_target_name(),
-            dict = dict_str,
             access = access_level,
+            api = self.config.apollo_api_target_name(),
+            cases = cases_str,
         )
     }
 }

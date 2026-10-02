@@ -128,9 +128,8 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         result.push_str(&indent(&selection_body, 4));
         result.push_str("\n  }\n");
 
-        result.push_str("}\n");
-
-        // Deferred fragments metadata (rendered as extension OUTSIDE operation class)
+        // Deferred fragments metadata, rendered inside the operation class as a
+        // `section:` (Swift 2.0.0): preceded by a blank line, omitted when empty.
         if self.operation.contains_deferred_fragment {
             let deferred = DeferredFragmentsMetadataTemplate {
                 operation: &self.operation,
@@ -139,10 +138,13 @@ impl TemplateRenderer for OperationDefinitionTemplate {
             };
             let deferred_output = deferred.render();
             if !deferred_output.is_empty() {
-                result.push_str(&deferred_output);
+                result.push('\n');
+                result.push_str(&indent(&deferred_output, 2));
                 result.push('\n');
             }
         }
+
+        result.push_str("}\n");
 
         result
     }

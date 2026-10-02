@@ -93,7 +93,13 @@ fn render_variable_default_value_inner(
           if rendered.is_empty() { None } else { Some(rendered) }
         })
         .collect();
-      format!("[{}]", items.join(", "))
+      // Swift 2.0.0 renders list defaults with `\(list:)`: more than one item wraps
+      // onto separate lines with continuation indentation.
+      if items.len() > 1 {
+        format!("[\n  {}\n]", indent_continuation_lines(&items.join(",\n"), "  "))
+      } else {
+        format!("[{}]", items.join(",\n"))
+      }
     }
     Some(GraphQLValue::Object(object)) => {
       match renderable.type_() {
@@ -105,12 +111,16 @@ fn render_variable_default_value_inner(
           }
         }
         GraphQLType::InputObject(input_obj_type) => {
-          // Swift renders `.init(\n  <initializer>\n)` regardless of `inList`; the
-          // interpolation after "\n  " indents the initializer's continuation lines.
-          format!(
-            ".init(\n  {}\n)",
-            indent_continuation_lines(&render_initializer(input_obj_type, object, config), "  ")
-          )
+          // Swift 2.0.0: inside a list the initializer is rendered directly;
+          // otherwise `.init(\n  <initializer>\n)` with continuation indentation.
+          if in_list {
+            render_initializer(input_obj_type, object, config)
+          } else {
+            format!(
+              ".init(\n  {}\n)",
+              indent_continuation_lines(&render_initializer(input_obj_type, object, config), "  ")
+            )
+          }
         }
         _ => panic!("Variable type must be InputObject with value of .object type."),
       }
