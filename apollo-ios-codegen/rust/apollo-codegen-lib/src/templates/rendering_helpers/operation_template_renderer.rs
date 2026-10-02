@@ -49,7 +49,10 @@ pub fn render_initializer(
   // Swift TemplateString `list:` separator puts each parameter on its own line
   // with 2-space indentation from init(
   let params_str = if params.len() > 1 {
-    format!("\n  {}\n", params.join(",\n  "))
+    format!(
+      "\n  {}\n",
+      super::input_variable_renderable::indent_continuation_lines(&params.join(",\n"), "  ")
+    )
   } else {
     params.join(", ")
   };
