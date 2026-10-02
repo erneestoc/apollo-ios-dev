@@ -231,13 +231,20 @@ impl TypeRegistry {
                     let field = convert_input_value_definition(field_def, &current_registry);
                     fields.insert(field_name.as_str().to_string(), field);
                 }
-                let named = GraphQLNamedType::InputObject(Arc::new(GraphQLInputObjectType {
-                    name: GraphQLName::new(name_str.clone()),
-                    documentation: io.description.as_ref().map(|d| d.to_string()),
-                    is_one_of: io.directives.get("oneOf").is_some(),
-                    fields,
-                }));
-                types.insert(name_str, named);
+                // Fill the stub in place so every reference to this input object
+                // (including other input objects' field types captured earlier)
+                // shares one instance, like Swift's reference-typed
+                // `GraphQLInputObjectType`. Schema customization later mutates the
+                // shared instance's name, so nested references render the custom
+                // name too.
+                if let Some(GraphQLNamedType::InputObject(existing)) = types.get(&name_str) {
+                    // SAFETY: the registry is being built single-threaded and no
+                    // reader observes the stub's fields before this point.
+                    unsafe {
+                        let ptr = Arc::as_ptr(existing) as *mut GraphQLInputObjectType;
+                        (*ptr).fields = fields;
+                    }
+                }
             }
         }
 
