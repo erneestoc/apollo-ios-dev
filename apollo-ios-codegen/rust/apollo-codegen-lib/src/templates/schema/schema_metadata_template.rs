@@ -9,7 +9,6 @@ use graphql_compiler::schema::GraphQLNamedType;
 
 use crate::templates::rendering_helpers::graphql_name_rendering::{render_named_type, RenderContext};
 use crate::templates::rendering_helpers::string_casing::first_uppercased;
-use crate::templates::rendering_helpers::template_constants::APOLLO_API_TARGET_NAME;
 use crate::templates::rendering_helpers::template_string_documentation::render_documentation;
 use crate::templates::{
     ConfigurationContext, NonFatalErrorRecorder, SchemaFileType, Scope, TemplateRenderer,
@@ -61,7 +60,7 @@ impl SchemaMetadataTemplate {
              where Schema == {ns}.SchemaMetadata {{}}",
             access_level = access_level,
             prefix_str = prefix_str,
-            api = APOLLO_API_TARGET_NAME,
+            api = self.config.apollo_api_target_name(),
             ns = self.schema_namespace,
         )
     }
@@ -99,7 +98,7 @@ impl SchemaMetadataTemplate {
              \x20\x20\x20\x20}}\n\
              \x20\x20}}",
             access = access_level,
-            api = APOLLO_API_TARGET_NAME,
+            api = self.config.apollo_api_target_name(),
             cases = cases_str,
         )
     }
@@ -160,7 +159,7 @@ impl TemplateRenderer for SchemaMetadataTemplate {
              {obj_fn}\n\
              }}",
             pa = parent_access,
-            api = APOLLO_API_TARGET_NAME,
+            api = self.config.apollo_api_target_name(),
             ma = member_access,
             obj_fn = object_type_fn,
         );
