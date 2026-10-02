@@ -509,6 +509,36 @@ impl TypeRegistry {
             }
         }
 
+        // Phase 8: Point every interface's `implementing_objects` at the final
+        // object instances (earlier phases captured pre-rebuild Arcs), so later
+        // in-place mutations such as schema customization names are visible
+        // through them. Order mirrors graphql-js `getImplementations`: schema
+        // definition order.
+        let interface_names: Vec<String> = types
+            .iter()
+            .filter_map(|(n, t)| matches!(t, GraphQLNamedType::Interface(_)).then(|| n.clone()))
+            .collect();
+        for iface_name in interface_names {
+            let implementors: Vec<Arc<GraphQLObjectType>> = types
+                .values()
+                .filter_map(|t| match t {
+                    GraphQLNamedType::Object(obj)
+                        if obj.interfaces.iter().any(|i| i.name.schema_name == iface_name) =>
+                    {
+                        Some(Arc::clone(obj))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if let Some(GraphQLNamedType::Interface(iface)) = types.get(&iface_name) {
+                // SAFETY: single-threaded construction; no outstanding readers.
+                unsafe {
+                    let ptr = Arc::as_ptr(iface) as *mut GraphQLInterfaceType;
+                    (*ptr).implementing_objects = implementors;
+                }
+            }
+        }
+
         TypeRegistry { types }
     }
 
