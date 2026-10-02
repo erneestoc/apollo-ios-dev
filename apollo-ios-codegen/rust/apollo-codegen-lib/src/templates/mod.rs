@@ -108,7 +108,7 @@ impl ConfigurationContext {
   pub fn schema_module_name(&self) -> String {
     match &self.config.output.schema_types.module_type {
       ModuleType::EmbeddedInTarget { name, .. } => name.clone(),
-      ModuleType::SwiftPackageManager | ModuleType::Other => {
+      ModuleType::SwiftPackage { .. } | ModuleType::Other => {
         first_uppercased(&self.config.schema_namespace)
       }
     }
