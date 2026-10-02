@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Mirrors Swift's `ApolloCodegenConfiguration.FileInput` struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub struct FileInput {
   /// An array of path matching pattern strings used to find GraphQL schema
   /// files to be included for code generation.
