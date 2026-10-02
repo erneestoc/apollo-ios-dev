@@ -469,7 +469,7 @@ mod compilation_apollo_specific_directive_tests {
         // The @apollo_client_ios_localCacheMutation directive should be stripped
         // from the network request source since it's a client-only directive.
         let source = "query HeroCacheMutation @apollo_client_ios_localCacheMutation {\n  hero {\n    name\n  }\n}";
-        let result = adapter::build_network_request_source(source);
+        let result = adapter::build_network_request_source(source, false);
         assert!(
             !result.contains("apollo_client_ios_localCacheMutation"),
             "localCacheMutation directive should be stripped from network source"
@@ -479,7 +479,7 @@ mod compilation_apollo_specific_directive_tests {
     #[test]
     fn test_build_network_request_source_strips_import_directive() {
         let source = "query HeroQuery @import(module: \"HeroModule\") {\n  hero {\n    name\n  }\n}";
-        let result = adapter::build_network_request_source(source);
+        let result = adapter::build_network_request_source(source, false);
         assert!(
             !result.contains("@import"),
             "import directive should be stripped from network source"
