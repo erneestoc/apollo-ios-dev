@@ -9,6 +9,7 @@ use graphql_compiler::graphql_type::GraphQLType;
 use graphql_compiler::schema::{GraphQLInputField, GraphQLInputObjectType, GraphQLNamedType};
 use indexmap::IndexMap;
 
+use crate::templates::SPI;
 use crate::config::composition::Composition;
 use crate::templates::rendering_helpers::graphql_input_field_rendered::{
     has_default_value, is_nullable, render_input_value_type,
@@ -49,6 +50,7 @@ impl TemplateRenderer for InputObjectTemplate {
         let member_access_control = self.access_control_renderer(Scope::Member);
         let parent_access_control = self.access_control_renderer(Scope::Parent).render();
         let member_str = member_access_control.render();
+        let member_unsafe_str = member_access_control.render_with_spis(&[SPI::Unsafe]);
 
         let typename = render_named_type(
             &GraphQLNamedType::InputObject(Arc::clone(&self.graphql_input_object)),
@@ -77,13 +79,13 @@ impl TemplateRenderer for InputObjectTemplate {
 
         // __data property and raw init
         struct_body.push(format!(
-            "  @_spi(Unsafe) {}private(set) var __data: InputDict",
-            member_str
+            "  {}private(set) var __data: InputDict",
+            member_unsafe_str
         ));
         struct_body.push(String::new());
         struct_body.push(format!(
-            "  @_spi(Unsafe) {}init(_ data: InputDict) {{\n    __data = data\n  }}",
-            member_str
+            "  {}init(_ data: InputDict) {{\n    __data = data\n  }}",
+            member_unsafe_str
         ));
         struct_body.push(String::new());
 
