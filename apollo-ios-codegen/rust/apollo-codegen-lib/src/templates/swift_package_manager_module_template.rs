@@ -13,7 +13,7 @@ use crate::templates::{
 /// The codegen version used for the default SDK dependency.
 ///
 /// Mirrors Swift's `Constants.CodegenVersion`.
-pub const CODEGEN_VERSION: &str = "1.15.1";
+pub const CODEGEN_VERSION: &str = "1.16.0";
 
 /// Provides the format to define a Swift Package Manager module.
 ///
@@ -110,10 +110,9 @@ impl TemplateRenderer for SwiftPackageManagerModuleTemplate {
             String::new()
         };
 
-        // Mirrors Swift 1.15.x `SwiftPackageManagerModuleTemplate` exactly: fixed
-        // tools version, platforms and `from: "1.0.0"` dependency (no SDK dependency
-        // customization existed before 1.16.0).
-        let _ = &dependency_string;
+        // Mirrors Swift 1.16.0+ `SwiftPackageManagerModuleTemplate`: tools version
+        // and platforms unchanged from 1.15.x, dependency line from
+        // `apolloSDKDependency.dependencyString` (defaults to `exact: CodegenVersion`).
         format!(
             "\
 // swift-tools-version:5.9
@@ -132,7 +131,7 @@ let package = Package(
     .library(name: \"{ns}\", targets: [\"{ns}\"]),{test_mock_product}
   ],
   dependencies: [
-    .package(url: \"https://github.com/apollographql/apollo-ios.git\", from: \"1.0.0\"),
+    {dependency_string},
   ],
   targets: [
     .target(
@@ -147,6 +146,7 @@ let package = Package(
 ",
             ns = cased_schema_namespace,
             test_mock_product = test_mock_product,
+            dependency_string = dependency_string,
             test_mock_target = test_mock_target,
         )
     }
