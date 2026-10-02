@@ -7,7 +7,6 @@ use super::field_merging::FieldMerging;
 /// Mirrors Swift's `ApolloCodegenConfiguration.ExperimentalFeatures` struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub struct ExperimentalFeatures {
   /// Determines which merged fields and named fragment accessors are generated.
   /// Defaults to `ALL`.
