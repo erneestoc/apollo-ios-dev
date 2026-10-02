@@ -130,9 +130,10 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
     /// In 1.15.1: `static var deferredFragments: [DeferredFragmentIdentifier: any ApolloAPI.SelectionSet.Type]? {[...]}`
     fn render_deferred_fragments_property(&self, infos: &[DeferredPathTypeInfo]) -> String {
         let mut result = String::new();
-        result.push_str(
-            "static var deferredFragments: [DeferredFragmentIdentifier: any ApolloAPI.SelectionSet.Type]? {[\n",
-        );
+        result.push_str(&format!(
+            "static var deferredFragments: [DeferredFragmentIdentifier: any {}.SelectionSet.Type]? {{[\n",
+            self.config.apollo_api_target_name(),
+        ));
 
         for info in infos {
             result.push_str(&format!(
