@@ -38,7 +38,7 @@ impl SchemaTypesFileOutput {
   /// Returns `true` if the schema types are in a module (SPM or Other).
   /// Mirrors Swift's `SchemaTypesFileOutput.isInModule` computed property.
   pub fn is_in_module(&self) -> bool {
-    matches!(self.module_type, ModuleType::SwiftPackageManager | ModuleType::Other)
+    matches!(self.module_type, ModuleType::SwiftPackage { .. } | ModuleType::Other)
   }
 }
 
