@@ -1605,11 +1605,18 @@ fn print_operation(op: &ast::OperationDefinition) -> String {
     }
 
     if !op.variables.is_empty() {
-        // Variable definitions: always inline with commas, never wrap
-        result.push('(');
+        // graphql-js (17.x, used by Swift 2.1.0+) wraps variable definitions onto
+        // separate lines when the inline form exceeds MAX_LINE_LENGTH, like
+        // field arguments; Swift's convertedToSingleLine() then renders it as
+        // `query Name( $a: A $b: B )`.
         let vars: Vec<String> = op.variables.iter().map(|v| print_variable_def(v.as_ref())).collect();
-        result.push_str(&vars.join(", "));
-        result.push(')');
+        // Block form only when an item is itself multi-line (graphql-js `hasMultilineItems`).
+        if vars.iter().any(|v| v.contains('\n')) {
+            let indented: Vec<String> = vars.iter().map(|v| v.replace('\n', "\n  ")).collect();
+            result.push_str(&format!("(\n  {}\n)", indented.join("\n  ")));
+        } else {
+            result.push_str(&format!("({})", vars.join(", ")));
+        }
     }
 
     result.push_str(&print_directives(&op.directives, ""));
@@ -1796,7 +1803,10 @@ fn print_value(value: &ast::Value) -> String {
             if inline.len() <= MAX_LINE_LENGTH {
                 inline
             } else {
-                format!("{{ {} }}", parts.join(" "))
+                // graphql-js block form: one field per line, indented. Swift's
+                // convertedToSingleLine() later collapses it to `{ a: x b: y }`.
+                let indented: Vec<String> = parts.iter().map(|p| p.replace('\n', "\n  ")).collect();
+                format!("{{\n  {}\n}}", indented.join("\n  "))
             }
         }
     }

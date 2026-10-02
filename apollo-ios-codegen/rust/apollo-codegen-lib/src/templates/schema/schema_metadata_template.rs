@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use graphql_compiler::schema::GraphQLNamedType;
 
+use crate::templates::SPI;
 use crate::templates::rendering_helpers::graphql_name_rendering::{render_named_type, RenderContext};
 use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::rendering_helpers::template_string_documentation::render_documentation;
@@ -66,13 +67,13 @@ impl SchemaMetadataTemplate {
         )
     }
 
-    /// Renders the objectType function with a switch statement.
+    /// Renders the objectType dictionary and lookup function.
     ///
-    /// Mirrors Swift's `objectTypeFunction` computed property (Swift 2.0.0: switch with @_spi(Execution)).
+    /// Mirrors Swift's `objectTypeFunction` computed property (Swift 1.25.4+ renders a dictionary lookup).
     fn object_type_function(&self) -> String {
-        let access_level = self.access_control_renderer(Scope::Member).render();
+        let access_level = self.access_control_renderer(Scope::Member).render_with_spis(&[SPI::Execution]);
 
-        let case_entries: Vec<String> = self
+        let dict_entries: Vec<String> = self
             .schema
             .referenced_types
             .objects
@@ -83,24 +84,25 @@ impl SchemaMetadataTemplate {
                     &RenderContext::Typename { is_input_value: false },
                 );
                 format!(
-                    "    case \"{}\": return {}.Objects.{}",
+                    "    \"{}\": {}.Objects.{}",
                     obj.name.schema_name, self.schema_namespace, typename
                 )
             })
             .collect();
 
-        let cases_str = case_entries.join("\n");
+        let dict_str = dict_entries.join(",\n");
 
         format!(
-            "  @_spi(Execution) {access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
-             \x20\x20\x20\x20switch typename {{\n\
-             {cases}\n\
-             \x20\x20\x20\x20default: return nil\n\
-             \x20\x20\x20\x20}}\n\
+            "  private static let objectTypeMap: [String: {api}.Object] = [\n\
+             {dict}\n\
+             \x20\x20]\n\
+             \n\
+             \x20\x20{access}static func objectType(forTypename typename: String) -> {api}.Object? {{\n\
+             \x20\x20\x20\x20objectTypeMap[typename]\n\
              \x20\x20}}",
-            access = access_level,
             api = self.config.apollo_api_target_name(),
-            cases = cases_str,
+            dict = dict_str,
+            access = access_level,
         )
     }
 }

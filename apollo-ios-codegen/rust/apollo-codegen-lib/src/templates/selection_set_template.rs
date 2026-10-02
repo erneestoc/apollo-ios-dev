@@ -24,6 +24,7 @@ use ir::scope_descriptor::{ScopeCondition, ScopeDescriptor};
 use ir::selection_set::{SelectionSet, TypeInfo};
 use utilities::linked_list::LinkedList;
 
+use crate::templates::SPI;
 use crate::config::composition::Composition;
 use crate::config::field_merging::FieldMerging;
 use crate::pluralizer::Pluralizer;
@@ -352,8 +353,8 @@ impl<'a> SelectionSetTemplate<'a> {
 
     fn data_property_template(&self) -> String {
         format!(
-            "@_spi(Unsafe) {}{} __data: DataDict",
-            self.access_control_renderer.render(),
+            "{}{} __data: DataDict",
+            self.access_control_renderer.render_with_spis(&[SPI::Unsafe]),
             if self.is_mutable() { "var" } else { "let" }
         )
     }
@@ -364,8 +365,8 @@ impl<'a> SelectionSetTemplate<'a> {
         if let Some(props) = extra_props {
             if !props.is_empty() {
                 return format!(
-                    "@_spi(Unsafe) {}init(_dataDict: DataDict) {{\n  {}\n  {}\n}}",
-                    self.access_control_renderer.render(),
+                    "{}init(_dataDict: DataDict) {{\n  {}\n  {}\n}}",
+                    self.access_control_renderer.render_with_spis(&[SPI::Unsafe]),
                     data_init,
                     props
                 );
@@ -373,8 +374,8 @@ impl<'a> SelectionSetTemplate<'a> {
         }
 
         format!(
-            "@_spi(Unsafe) {}init(_dataDict: DataDict) {{ {} }}",
-            self.access_control_renderer.render(),
+            "{}init(_dataDict: DataDict) {{ {} }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Unsafe]),
             data_init
         )
     }
@@ -405,8 +406,8 @@ impl<'a> SelectionSetTemplate<'a> {
 
     fn parent_type_template(&self, type_: &GraphQLCompositeType) -> String {
         format!(
-            "@_spi(Execution) {}static var __parentType: any {}.ParentType {{ {} }}",
-            self.access_control_renderer.render(),
+            "{}static var __parentType: any {}.ParentType {{ {} }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Execution]),
             self.config.apollo_api_target_name(),
             self.generated_schema_type_reference(type_)
         )
@@ -437,9 +438,10 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "@_spi(Execution) public static var __mergedSources: [any {}.SelectionSet.Type] {{ [
+            "{}static var __mergedSources: [any {}.SelectionSet.Type] {{ [
 {}
 ] }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Execution]),
             self.config.apollo_api_target_name(),
             items.join(",\n")
         )
@@ -482,8 +484,8 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "@_spi(Execution) {}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
-            self.access_control_renderer.render(),
+            "{}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Execution]),
             self.config.apollo_api_target_name(),
             items.join(",\n")
         )
@@ -530,7 +532,8 @@ impl<'a> SelectionSetTemplate<'a> {
             .collect();
 
         format!(
-            "@_spi(Execution) public static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
+            "{}static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Execution]),
             items.join(",\n")
         )
     }
@@ -625,8 +628,8 @@ impl<'a> SelectionSetTemplate<'a> {
         }
 
         result.push_str(&format!(
-            "@_spi(Execution) {}static var __selections: [{}.Selection] {{ [\n{}\n] }}",
-            self.access_control_renderer.render(),
+            "{}static var __selections: [{}.Selection] {{ [\n{}\n] }}",
+            self.access_control_renderer.render_with_spis(&[SPI::Execution]),
             self.config.apollo_api_target_name(),
             selection_items.join("\n")
         ));

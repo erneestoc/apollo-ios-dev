@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use graphql_compiler::schema::{GraphQLInputField, GraphQLInputObjectType, GraphQLNamedType};
 
+use crate::templates::SPI;
 use crate::templates::rendering_helpers::graphql_name_rendering::{
     render_input_field, render_named_type, RenderContext,
 };
@@ -45,6 +46,7 @@ impl TemplateRenderer for OneOfInputObjectTemplate {
         let member_access_control = self.access_control_renderer(Scope::Member);
         let parent_access_control = self.access_control_renderer(Scope::Parent).render();
         let member_str = member_access_control.render();
+        let member_unsafe_str = member_access_control.render_with_spis(&[SPI::Unsafe]);
 
         let typename = render_named_type(
             &GraphQLNamedType::InputObject(Arc::clone(&self.graphql_input_object)),
@@ -88,8 +90,8 @@ impl TemplateRenderer for OneOfInputObjectTemplate {
 
         enum_body.push(String::new());
         enum_body.push(format!(
-            "  @_spi(Unsafe) {}var __data: InputDict {{\n    switch self {{\n{}\n    }}\n  }}",
-            member_str,
+            "  {}var __data: InputDict {{\n    switch self {{\n{}\n    }}\n  }}",
+            member_unsafe_str,
             case_data_entries.join("\n"),
         ));
 
