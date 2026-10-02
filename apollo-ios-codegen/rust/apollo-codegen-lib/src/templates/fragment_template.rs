@@ -61,16 +61,18 @@ impl TemplateRenderer for FragmentTemplate {
 
         let mut result = String::new();
 
-        // Struct declaration (1.15.1 does not include Identifiable conformance)
+        // Struct declaration; `Identifiable` conformance mirrors Swift 1.18.0.
         let fragment_name = as_fragment_name(&first_uppercased(&self.fragment.definition.name));
         let is_mutable = self.fragment.definition.is_local_cache_mutation();
         let selection_set_type = rendered_selection_set_type(&self.config, is_mutable);
+        let identifiable = if self.fragment.is_identifiable() { ", Identifiable" } else { "" };
 
         result.push_str(&format!(
-            "{}struct {}: {}, Fragment {{\n",
+            "{}struct {}: {}, Fragment{} {{\n",
             parent_access.render(),
             fragment_name,
             selection_set_type,
+            identifiable,
         ));
 
         // Fragment definition (if config includes definitions)
