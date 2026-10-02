@@ -178,12 +178,13 @@ mod tests {
         let result = template.render();
         let body = result.body;
 
-        assert!(body.contains("// swift-tools-version:6.1"));
+        assert!(body.contains("// swift-tools-version:5.9"));
         assert!(body.contains("name: \"MySchema\""));
         assert!(body.contains(".library(name: \"MySchema\", targets: [\"MySchema\"])"));
         assert!(body.contains(".product(name: \"ApolloAPI\", package: \"apollo-ios\")"));
         assert!(body.contains("path: \"./Sources\""));
-        assert!(body.contains("swiftLanguageModes: [.v6, .v5]"));
+        assert!(body.contains(".package(url: \"https://github.com/apollographql/apollo-ios.git\", from: \"1.0.0\")"));
+        assert!(!body.contains("swiftLanguageModes"));
         // No test mock target
         assert!(!body.contains("ApolloTestSupport"));
     }

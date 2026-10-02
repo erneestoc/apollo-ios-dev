@@ -155,7 +155,7 @@ mod tests {
         unions.insert(pet);
         let subject = build_subject(unions, swift_package_config());
 
-        let expected = "public extension MockObject {\n  typealias Pet = Union\n}\n\n";
+        let expected = "public extension MockObject {\n  typealias Pet = Union\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
@@ -174,7 +174,7 @@ mod tests {
         let subject = build_subject(unions, swift_package_config());
 
         let expected =
-            "public extension MockObject {\n  typealias UnionA = Union\n  typealias UnionB = Union\n  typealias Unionc = Union\n}\n\n";
+            "public extension MockObject {\n  typealias UnionA = Union\n  typealias UnionB = Union\n  typealias Unionc = Union\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
@@ -259,7 +259,7 @@ mod tests {
         let subject = build_subject(unions, swift_package_config());
 
         let expected =
-            "public extension MockObject {\n  typealias MyCustomUnion = Union\n}\n\n";
+            "public extension MockObject {\n  typealias MyCustomUnion = Union\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
