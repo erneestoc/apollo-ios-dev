@@ -182,16 +182,9 @@ impl InputObjectTemplate {
             .map(|field| {
                 let field_name = render_input_field(field, &self.config.config);
                 let schema_name = &field.name.schema_name;
-                let null_coalescing =
-                    if !is_nullable(field) && has_default_value(field) {
-                        " ?? GraphQLNullable.none"
-                    } else {
-                        ""
-                    };
-                format!(
-                    "      \"{}\": {}{}",
-                    schema_name, field_name, null_coalescing
-                )
+                // Swift 1.x `InputDictInitializerTemplate` renders `"name": name` only.
+                // (The `?? GraphQLNullable.none` coalescing was introduced in 2.0.0.)
+                format!("      \"{}\": {}", schema_name, field_name)
             })
             .collect();
         entries.join(",\n")
