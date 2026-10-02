@@ -581,7 +581,12 @@ fn compile_graphql(
     // Collect referenced types
     let fragment_defs_vec: Vec<FragmentDefinition> =
         fragment_defs.values().map(|f| (**f).clone()).collect();
-    let all_types = collect_referenced_types(&registry, &operation_defs, &fragment_defs_vec);
+    let all_types = collect_referenced_types(
+        &registry,
+        &operation_defs,
+        &fragment_defs_vec,
+        config.config.options.reduce_generated_schema_types,
+    );
 
     // Assemble CompilationResult
     Ok(CompilationResult {
