@@ -20,7 +20,12 @@ pub struct EnumFileGenerator {
 
 impl FileGenerator for EnumFileGenerator {
     fn file_name(&self) -> String {
-        self.graphql_enum.name.schema_name.clone()
+        // Mirrors Swift `render(as: .filename)`: a customized name is used unchanged.
+        self.graphql_enum
+            .name
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| self.graphql_enum.name.schema_name.clone())
     }
 
     fn file_suffix(&self) -> Option<&str> {
