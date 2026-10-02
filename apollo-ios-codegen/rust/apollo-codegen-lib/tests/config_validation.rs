@@ -151,7 +151,7 @@ fn allows_test_mocks_swift_package_with_spm_module() {
   config.output.test_mocks = TestMockFileOutput::SwiftPackage {
     target_name: Some("TestMocks".to_string()),
   };
-  config.output.schema_types.module_type = ModuleType::SwiftPackageManager;
+  config.output.schema_types.module_type = ModuleType::SwiftPackage { apollo_sdk_dependency: apollo_codegen_lib::config::module_type::ApolloSDKDependency::default() };
   let result = validate_config_values(&config);
   assert!(result.is_ok());
 }
@@ -159,7 +159,7 @@ fn allows_test_mocks_swift_package_with_spm_module() {
 #[test]
 fn rejects_cocoapods_import_with_spm_module() {
   let mut config = make_valid_config();
-  config.output.schema_types.module_type = ModuleType::SwiftPackageManager;
+  config.output.schema_types.module_type = ModuleType::SwiftPackage { apollo_sdk_dependency: apollo_codegen_lib::config::module_type::ApolloSDKDependency::default() };
   config.options.cocoapods_compatible_import_statements = true;
   let result = validate_config_values(&config);
   assert!(result.is_err());
