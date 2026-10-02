@@ -195,7 +195,7 @@ fn build_pipeline(
                 selection_set,
                 directives: convert_directives(&frag.directives),
                 referenced_fragments: referenced,
-                source: build_network_request_source(&frag.to_string()),
+                source: build_network_request_source(&frag.to_string(), false),
                 file_path: pf.abs_path.clone(),
             });
             fragment_defs.insert(name.as_str().to_string(), full);
@@ -253,7 +253,7 @@ fn build_pipeline(
                 selection_set,
                 directives: convert_directives(&op.directives),
                 referenced_fragments: referenced,
-                source: build_network_request_source(&op.to_string()),
+                source: build_network_request_source(&op.to_string(), false),
                 file_path: pf.abs_path.clone(),
             });
         }
