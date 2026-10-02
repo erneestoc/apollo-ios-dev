@@ -35,6 +35,29 @@ pub struct NamedFragment {
 }
 
 impl NamedFragment {
+    /// Indicates if a field named `id` is selected directly on the fragment and
+    /// the fragment's parent type is identifiable (single key field `id`).
+    ///
+    /// Mirrors Swift `IR.NamedFragment.isIdentifiable` (1.18.0).
+    pub fn is_identifiable(&self) -> bool {
+        use graphql_compiler::compilation_result::Selection;
+        let selects_id = self.definition.selection_set.selections.iter().any(|sel| {
+            matches!(sel, Selection::Field(f) if f.name == "id")
+        });
+        if !selects_id {
+            return false;
+        }
+        match &self.definition.type_ {
+            graphql_compiler::GraphQLCompositeType::Object(o) => {
+                o.key_fields.as_deref() == Some(&["id".to_string()][..])
+            }
+            graphql_compiler::GraphQLCompositeType::Interface(i) => {
+                i.key_fields.as_deref() == Some(&["id".to_string()][..])
+            }
+            graphql_compiler::GraphQLCompositeType::Union(_) => false,
+        }
+    }
+
     pub fn new(
         definition: Arc<compilation_result::FragmentDefinition>,
         root_field: EntityField,
