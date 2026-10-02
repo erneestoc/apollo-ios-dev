@@ -52,7 +52,7 @@ impl TemplateRenderer for MockInterfacesTemplate {
             .collect();
 
         format!(
-            "{}extension MockObject {{\n{}\n}}\n\n",
+            "{}extension MockObject {{\n{}\n}}\n",
             access,
             lines.join("\n"),
         )
