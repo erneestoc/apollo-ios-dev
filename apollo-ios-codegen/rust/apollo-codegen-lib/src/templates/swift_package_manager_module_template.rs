@@ -110,26 +110,29 @@ impl TemplateRenderer for SwiftPackageManagerModuleTemplate {
             String::new()
         };
 
+        // Mirrors Swift 1.15.x `SwiftPackageManagerModuleTemplate` exactly: fixed
+        // tools version, platforms and `from: "1.0.0"` dependency (no SDK dependency
+        // customization existed before 1.16.0).
+        let _ = &dependency_string;
         format!(
             "\
-// swift-tools-version:6.1
+// swift-tools-version:5.9
 
 import PackageDescription
 
 let package = Package(
   name: \"{ns}\",
   platforms: [
-    .iOS(.v15),
-    .macOS(.v12),
-    .tvOS(.v15),
-    .watchOS(.v8),
-    .visionOS(.v1),
+    .iOS(.v12),
+    .macOS(.v10_14),
+    .tvOS(.v12),
+    .watchOS(.v5),
   ],
   products: [
     .library(name: \"{ns}\", targets: [\"{ns}\"]),{test_mock_product}
   ],
   dependencies: [
-    {dependency_string},
+    .package(url: \"https://github.com/apollographql/apollo-ios.git\", from: \"1.0.0\"),
   ],
   targets: [
     .target(
@@ -139,13 +142,11 @@ let package = Package(
       ],
       path: \"./Sources\"
     ),{test_mock_target}
-  ],
-  swiftLanguageModes: [.v6, .v5]
+  ]
 )
 ",
             ns = cased_schema_namespace,
             test_mock_product = test_mock_product,
-            dependency_string = dependency_string,
             test_mock_target = test_mock_target,
         )
     }
