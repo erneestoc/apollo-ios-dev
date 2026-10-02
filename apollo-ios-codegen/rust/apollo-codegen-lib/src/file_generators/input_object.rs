@@ -23,7 +23,12 @@ pub struct InputObjectFileGenerator {
 
 impl FileGenerator for InputObjectFileGenerator {
     fn file_name(&self) -> String {
-        self.graphql_input_object.name.schema_name.clone()
+        // Mirrors Swift `render(as: .filename)`: a customized name is used unchanged.
+        self.graphql_input_object
+            .name
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| self.graphql_input_object.name.schema_name.clone())
     }
 
     fn file_suffix(&self) -> Option<&str> {
