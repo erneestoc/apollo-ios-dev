@@ -159,7 +159,7 @@ mod tests {
         interfaces.insert(pet);
         let subject = build_subject(interfaces, swift_package_config());
 
-        let expected = "public extension MockObject {\n  typealias Pet = Interface\n}\n\n";
+        let expected = "public extension MockObject {\n  typealias Pet = Interface\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
@@ -178,7 +178,7 @@ mod tests {
         let subject = build_subject(interfaces, swift_package_config());
 
         let expected =
-            "public extension MockObject {\n  typealias InterfaceA = Interface\n  typealias InterfaceB = Interface\n  typealias Interfacec = Interface\n}\n\n";
+            "public extension MockObject {\n  typealias InterfaceA = Interface\n  typealias InterfaceB = Interface\n  typealias Interfacec = Interface\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
@@ -264,7 +264,7 @@ mod tests {
         let subject = build_subject(interfaces, swift_package_config());
 
         let expected =
-            "public extension MockObject {\n  typealias MyCustomInterface = Interface\n}\n\n";
+            "public extension MockObject {\n  typealias MyCustomInterface = Interface\n}\n";
 
         let actual = render_body(&subject);
         assert_eq!(actual, expected);
