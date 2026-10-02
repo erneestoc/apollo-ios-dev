@@ -728,7 +728,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("nonNullableWithDefault: Int32? = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("nonNullableWithDefault ?? GraphQLNullable.none"), "actual:\n{}", actual);
+        assert!(actual.contains("\"nonNullableWithDefault\": nonNullableWithDefault"), "actual:\n{}", actual);
         assert!(actual.contains("public var nonNullableWithDefault: Int32? {"), "actual:\n{}", actual);
     }
 
@@ -814,7 +814,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("nonNullableListNullableItemWithDefault: [String?]? = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("nonNullableListNullableItemWithDefault ?? GraphQLNullable.none"), "actual:\n{}", actual);
+        assert!(actual.contains("\"nonNullableListNullableItemWithDefault\": nonNullableListNullableItemWithDefault\n"), "actual:\n{}", actual);
     }
 
     #[test]
@@ -859,7 +859,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("nonNullableListNonNullableItemWithDefault: [String]? = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("nonNullableListNonNullableItemWithDefault ?? GraphQLNullable.none"), "actual:\n{}", actual);
+        assert!(actual.contains("\"nonNullableListNonNullableItemWithDefault\": nonNullableListNonNullableItemWithDefault\n"), "actual:\n{}", actual);
     }
 
     #[test]
