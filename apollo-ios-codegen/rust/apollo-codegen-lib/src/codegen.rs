@@ -524,8 +524,12 @@ fn prepend_custom_directive_stubs(schema_sdl: &str) -> String {
 fn compile_graphql(
     schema: &Valid<schema::Schema>,
     operation_matches: &indexmap::IndexSet<String>,
-    _config: &ConfigurationContext,
+    config: &ConfigurationContext,
 ) -> Result<CompilationResult, CodegenError> {
+    let legacy_safelisting = config
+        .config
+        .experimental_features
+        .legacy_safelisting_compatible_operations;
     // Parse each operation file
     let parsed_files: Vec<ParsedFile> = operation_matches
         .iter()
@@ -563,7 +567,7 @@ fn compile_graphql(
     let schema_root_types = build_root_types(schema, &registry)?;
 
     // Build fragment definitions (two-pass: stubs then full)
-    let fragment_defs = build_fragment_definitions(&parsed_files, &registry)?;
+    let fragment_defs = build_fragment_definitions(&parsed_files, &registry, legacy_safelisting)?;
 
     // Build operation definitions
     let operation_defs = build_operation_definitions(
@@ -571,6 +575,7 @@ fn compile_graphql(
         &registry,
         schema,
         &fragment_defs,
+        legacy_safelisting,
     )?;
 
     // Collect referenced types
@@ -637,6 +642,7 @@ fn build_root_types(
 fn build_fragment_definitions(
     parsed_files: &[impl HasAbsPathAndDoc],
     registry: &TypeRegistry,
+    legacy_safelisting: bool,
 ) -> Result<IndexMap<String, Arc<FragmentDefinition>>, CodegenError> {
     let mut fragment_defs: IndexMap<String, Arc<FragmentDefinition>> = IndexMap::new();
 
@@ -655,7 +661,7 @@ fn build_fragment_definitions(
                 },
                 directives: None,
                 referenced_fragments: vec![],
-                source: build_network_request_source(&frag.to_string()),
+                source: build_network_request_source(&frag.to_string(), legacy_safelisting),
                 file_path: pf.abs_path().to_string(),
             });
             fragment_defs.insert(name.as_str().to_string(), stub);
@@ -686,7 +692,7 @@ fn build_fragment_definitions(
                 selection_set,
                 directives: convert_directives(&frag.directives),
                 referenced_fragments: referenced,
-                source: build_network_request_source(&frag.to_string()),
+                source: build_network_request_source(&frag.to_string(), legacy_safelisting),
                 file_path: pf.abs_path().to_string(),
             });
             fragment_defs.insert(name.as_str().to_string(), full);
@@ -741,6 +747,7 @@ fn build_operation_definitions(
     registry: &TypeRegistry,
     schema: &Valid<schema::Schema>,
     fragment_defs: &IndexMap<String, Arc<FragmentDefinition>>,
+    legacy_safelisting: bool,
 ) -> Result<Vec<OperationDefinition>, CodegenError> {
     let mut operations = Vec::new();
 
@@ -812,7 +819,7 @@ fn build_operation_definitions(
                 selection_set,
                 directives: convert_directives(&op.directives),
                 referenced_fragments: referenced,
-                source: build_network_request_source(&op.to_string()),
+                source: build_network_request_source(&op.to_string(), legacy_safelisting),
                 file_path: pf.abs_path().to_string(),
             });
         }
@@ -1277,19 +1284,15 @@ fn generate_schema_files(
     // Test mock union and interface files
     if config.config.output.test_mocks != TestMockFileOutput::None {
         if !ir.schema.referenced_types.unions.is_empty() {
-            let mut sorted_unions = ir.schema.referenced_types.unions.clone();
-            sorted_unions.sort_by(|a, b| a.name.schema_name.cmp(&b.name.schema_name));
             generators.push(Box::new(MockUnionsFileGenerator {
-                graphql_unions: sorted_unions,
+                graphql_unions: ir.schema.referenced_types.unions.clone(),
                 config: config.clone(),
             }));
         }
 
         if !ir.schema.referenced_types.interfaces.is_empty() {
-            let mut sorted_interfaces = ir.schema.referenced_types.interfaces.clone();
-            sorted_interfaces.sort_by(|a, b| a.name.schema_name.cmp(&b.name.schema_name));
             generators.push(Box::new(MockInterfacesFileGenerator {
-                graphql_interfaces: sorted_interfaces,
+                graphql_interfaces: ir.schema.referenced_types.interfaces.clone(),
                 config: config.clone(),
             }));
         }

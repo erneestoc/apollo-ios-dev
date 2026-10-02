@@ -63,18 +63,45 @@ pub fn match_search_paths(
             continue;
         }
 
+        // Swift's `Glob` expands `**` into the root directory followed by every
+        // subdirectory (FileManager enumerator order) and runs glob(3) with
+        // GLOB_NOSORT on each, so matches come grouped per directory, in raw
+        // directory (readdir) order. WalkDir yields entries in readdir order with
+        // depth-first descent, so group its matches by parent directory, keeping
+        // directories in order of first appearance (root first).
+        let mut dir_order: Vec<std::path::PathBuf> = Vec::new();
+        let mut by_dir: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
+            std::collections::HashMap::new();
         for entry in WalkDir::new(base)
             .into_iter()
             .filter_entry(|e| !is_excluded_directory(e))
             .filter_map(|e| e.ok())
         {
+            let path = entry.path();
+            if entry.file_type().is_dir() {
+                if !by_dir.contains_key(path) {
+                    dir_order.push(path.to_path_buf());
+                    by_dir.insert(path.to_path_buf(), Vec::new());
+                }
+                continue;
+            }
             if entry.file_type().is_file() {
-                let path = entry.path();
                 let path_str = path.to_string_lossy().to_string();
                 if glob.is_match(&path_str) {
+                    let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                    if !by_dir.contains_key(&parent) {
+                        dir_order.push(parent.clone());
+                        by_dir.insert(parent.clone(), Vec::new());
+                    }
                     // Use canonical absolute path for consistent matching
-                    let abs_path = make_absolute(path);
-                    results.insert(abs_path);
+                    by_dir.get_mut(&parent).unwrap().push(make_absolute(path));
+                }
+            }
+        }
+        for dir in dir_order {
+            if let Some(files) = by_dir.remove(&dir) {
+                for m in files {
+                    results.insert(m);
                 }
             }
         }
