@@ -61,8 +61,9 @@ impl TemplateRenderer for ObjectTemplate {
         let key_fields = self.render_key_fields();
 
         parts.push(format!(
-            "static let {} = ApolloAPI.Object(\n  typename: \"{}\",\n  implementedInterfaces: {},\n  keyFields: {}\n)",
+            "static let {} = {}.Object(\n  typename: \"{}\",\n  implementedInterfaces: {},\n  keyFields: {}\n)",
             typename,
+            self.config.apollo_api_target_name(),
             self.graphql_object.name.schema_name,
             implemented_interfaces,
             key_fields,
