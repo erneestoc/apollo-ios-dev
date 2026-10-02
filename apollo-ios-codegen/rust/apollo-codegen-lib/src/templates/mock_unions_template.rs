@@ -52,7 +52,7 @@ impl TemplateRenderer for MockUnionsTemplate {
             .collect();
 
         format!(
-            "{}extension MockObject {{\n{}\n}}\n\n",
+            "{}extension MockObject {{\n{}\n}}\n",
             access,
             lines.join("\n"),
         )
