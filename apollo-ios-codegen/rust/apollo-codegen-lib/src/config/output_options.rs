@@ -28,6 +28,10 @@ pub struct OutputOptions {
   pub operation_document_format: OperationDocumentFormat,
   /// Customization options to be applied to the schema during code generation.
   pub schema_customization: SchemaCustomization,
+  /// Whether to reduce the number of schema types that are generated to only those that are
+  /// referenced in an operation. When `true`, object types that merely implement a referenced
+  /// interface are not generated unless they declare `@typePolicy` themselves.
+  pub reduce_generated_schema_types: bool,
   /// Generate import statements that are compatible with including `Apollo` via Cocoapods.
   pub cocoapods_compatible_import_statements: bool,
   /// Annotate generated Swift code with the Swift `available` attribute and `deprecated`
@@ -55,6 +59,7 @@ impl Default for OutputOptions {
       selection_set_initializers: SelectionSetInitializers::empty(),
       operation_document_format: OperationDocumentFormat::DEFINITION,
       schema_customization: SchemaCustomization::default(),
+      reduce_generated_schema_types: false,
       cocoapods_compatible_import_statements: false,
       warnings_on_deprecated_usage: Composition::Include,
       conversion_strategies: ConversionStrategies::default(),
@@ -75,6 +80,7 @@ const VALID_OUTPUT_OPTIONS_KEYS: &[&str] = &[
   "apqs",
   "operationDocumentFormat",
   "schemaCustomization",
+  "reduceGeneratedSchemaTypes",
   "cocoapodsCompatibleImportStatements",
   "warningsOnDeprecatedUsage",
   "conversionStrategies",
@@ -104,6 +110,7 @@ impl<'de> Deserialize<'de> for OutputOptions {
         let mut operation_document_format: Option<OperationDocumentFormat> = None;
         let mut apqs: Option<APQConfig> = None;
         let mut schema_customization: Option<SchemaCustomization> = None;
+        let mut reduce_generated_schema_types: Option<bool> = None;
         let mut cocoapods_compatible_import_statements: Option<bool> = None;
         let mut warnings_on_deprecated_usage: Option<Composition> = None;
         let mut conversion_strategies: Option<ConversionStrategies> = None;
@@ -143,6 +150,9 @@ impl<'de> Deserialize<'de> for OutputOptions {
             }
             "schemaCustomization" => {
               schema_customization = Some(map.next_value()?);
+            }
+            "reduceGeneratedSchemaTypes" => {
+              reduce_generated_schema_types = Some(map.next_value()?);
             }
             "cocoapodsCompatibleImportStatements" => {
               cocoapods_compatible_import_statements = Some(map.next_value()?);
@@ -185,6 +195,8 @@ impl<'de> Deserialize<'de> for OutputOptions {
           operation_document_format,
           schema_customization: schema_customization
             .unwrap_or(defaults.schema_customization),
+          reduce_generated_schema_types: reduce_generated_schema_types
+            .unwrap_or(defaults.reduce_generated_schema_types),
           cocoapods_compatible_import_statements: cocoapods_compatible_import_statements
             .unwrap_or(defaults.cocoapods_compatible_import_statements),
           warnings_on_deprecated_usage: warnings_on_deprecated_usage
@@ -207,7 +219,7 @@ impl<'de> Deserialize<'de> for OutputOptions {
 
 impl Serialize for OutputOptions {
   fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut map = serializer.serialize_map(Some(12))?;
+    let mut map = serializer.serialize_map(Some(13))?;
     map.serialize_entry(
       "additionalInflectionRules",
       &self.additional_inflection_rules,
@@ -220,6 +232,10 @@ impl Serialize for OutputOptions {
     )?;
     map.serialize_entry("operationDocumentFormat", &self.operation_document_format)?;
     map.serialize_entry("schemaCustomization", &self.schema_customization)?;
+    map.serialize_entry(
+      "reduceGeneratedSchemaTypes",
+      &self.reduce_generated_schema_types,
+    )?;
     map.serialize_entry(
       "cocoapodsCompatibleImportStatements",
       &self.cocoapods_compatible_import_statements,
