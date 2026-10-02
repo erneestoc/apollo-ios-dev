@@ -451,6 +451,64 @@ impl TypeRegistry {
             }
         }
 
+        // Phase 6: Resolve `@typePolicy(keyFields:)` for objects and interfaces.
+        // Mirrors `typePolicyDirectiveFor` / `keyFieldsFor` in
+        // `JavaScript/src/utilities/typePolicyDirective.ts`: a type's own
+        // directive wins, otherwise the directive is inherited from an implemented
+        // interface (searched recursively, in declaration order).
+        fn own_key_fields(directives: &schema::DirectiveList) -> Option<Vec<String>> {
+            let directive = directives.get("typePolicy")?;
+            let value = directive.arguments.iter().find(|a| a.name == "keyFields")?;
+            let text = value.value.as_str()?;
+            Some(text.split(' ').map(|f| f.to_string()).collect())
+        }
+        fn key_fields_for(
+            name: &str,
+            schema: &Valid<schema::Schema>,
+            depth: usize,
+        ) -> Option<Vec<String>> {
+            if depth > 32 {
+                return None;
+            }
+            let (directives, interfaces): (&schema::DirectiveList, Vec<String>) =
+                match schema.types.get(name)? {
+                    ExtendedType::Object(o) => (
+                        &o.directives,
+                        o.implements_interfaces.iter().map(|i| i.name.to_string()).collect(),
+                    ),
+                    ExtendedType::Interface(i) => (
+                        &i.directives,
+                        i.implements_interfaces.iter().map(|i| i.name.to_string()).collect(),
+                    ),
+                    _ => return None,
+                };
+            if let Some(own) = own_key_fields(directives) {
+                return Some(own);
+            }
+            interfaces
+                .iter()
+                .find_map(|iface| key_fields_for(iface, schema, depth + 1))
+        }
+        for (name, named_type) in types.iter() {
+            let resolved = key_fields_for(name, schema, 0).filter(|f| !f.is_empty());
+            match named_type {
+                GraphQLNamedType::Object(obj) => {
+                    // SAFETY: single-threaded construction; no outstanding readers.
+                    unsafe {
+                        let ptr = Arc::as_ptr(obj) as *mut GraphQLObjectType;
+                        (*ptr).key_fields = resolved;
+                    }
+                }
+                GraphQLNamedType::Interface(iface) => {
+                    unsafe {
+                        let ptr = Arc::as_ptr(iface) as *mut GraphQLInterfaceType;
+                        (*ptr).key_fields = resolved;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         TypeRegistry { types }
     }
 
