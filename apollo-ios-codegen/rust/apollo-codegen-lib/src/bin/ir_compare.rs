@@ -153,6 +153,7 @@ fn main() {
         &registry,
         &operation_defs,
         &fragment_defs_vec,
+        false,
     );
 
     // 8. Assemble CompilationResult
