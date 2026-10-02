@@ -58,7 +58,6 @@ impl<'de> Deserialize<'de> for OperationsFileOutput {
           }
           "relative" => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct Inner {
               subpath: Option<String>,
               #[serde(rename = "accessModifier", default = "crate::config::access_modifier::default_public")]
@@ -72,7 +71,6 @@ impl<'de> Deserialize<'de> for OperationsFileOutput {
           }
           "absolute" => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct Inner {
               path: String,
               #[serde(rename = "accessModifier", default = "crate::config::access_modifier::default_public")]
