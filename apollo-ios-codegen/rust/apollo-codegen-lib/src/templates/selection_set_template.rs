@@ -484,7 +484,7 @@ impl<'a> SelectionSetTemplate<'a> {
         format!(
             "@_spi(Execution) {}static var __fulfilledFragments: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
             self.access_control_renderer.render(),
-            APOLLO_API_TARGET_NAME,
+            self.config.apollo_api_target_name(),
             items.join(",\n")
         )
     }
