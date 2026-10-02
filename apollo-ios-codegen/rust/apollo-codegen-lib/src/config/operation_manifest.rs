@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Mirrors Swift's `ApolloCodegenConfiguration.OperationManifestConfiguration` struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub struct OperationManifestConfiguration {
   /// Local path where the generated operation manifest file should be written.
   pub path: String,
