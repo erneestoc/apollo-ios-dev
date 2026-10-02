@@ -61,12 +61,8 @@ impl TemplateRenderer for ObjectTemplate {
         let key_fields = self.render_key_fields();
 
         parts.push(format!(
-<<<<<<< HEAD
-            "{}static let {} = ApolloAPI.Object(\n  typename: \"{}\",\n  implementedInterfaces: {},\n  keyFields: {}\n)",
+            "{}static let {} = {}.Object(\n  typename: \"{}\",\n  implementedInterfaces: {},\n  keyFields: {}\n)",
             self.config.nonisolated_modifier(),
-=======
-            "static let {} = {}.Object(\n  typename: \"{}\",\n  implementedInterfaces: {},\n  keyFields: {}\n)",
->>>>>>> 8320843fe (fix(templates): honor cocoapodsCompatibleImportStatements module name)
             typename,
             self.config.apollo_api_target_name(),
             self.graphql_object.name.schema_name,
