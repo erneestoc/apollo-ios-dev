@@ -10,6 +10,7 @@ use crate::named_fragment_spread::NamedFragmentSpread;
 use crate::scope_descriptor::{ScopeCondition, ScopeDescriptor};
 use crate::scoped_selection_set_hashable::ScopedSelectionSetHashable;
 use crate::selection_set::{SelectionSet, TypeInfo};
+use utilities::linked_list::LinkedList;
 
 // MARK: - DirectSelections
 
@@ -163,15 +164,11 @@ impl DirectSelections {
                 scope.appending_conditions(new_field_conditions.clone())
             });
 
-            let new_type_info = Arc::new(TypeInfo::new(
-                Arc::clone(&new_field.selection_set.type_info.entity),
-                new_scope_path,
-            ));
-
-            let new_selection_set = Arc::new(SelectionSet::new(
-                new_type_info,
-                new_field.selection_set.selections.clone(),
-            ));
+            // Mirrors Swift `newField.selectionSet.updateScopePath(to:)`, which also
+            // updates the scope paths of every nested selection set.
+            let new_selection_set = Arc::new(
+                new_field.selection_set.updating_scope_path(new_scope_path),
+            );
 
             let inline_fragment = InlineFragmentSpread::new(new_selection_set);
 
@@ -193,6 +190,50 @@ impl DirectSelections {
                 ));
             }
         }
+    }
+
+    /// Returns a copy of these selections with every nested selection set's
+    /// scope path rebuilt under `new_parent_scope_path`.
+    ///
+    /// Mirrors Swift `DirectSelections.updateParentScopePath(to:)`.
+    pub fn updating_parent_scope_path(
+        &self,
+        new_parent_scope_path: &LinkedList<ScopeDescriptor>,
+    ) -> DirectSelections {
+        let mut result = self.clone();
+
+        for field in result.fields.values_mut() {
+            if let Field::Entity(ef) = field {
+                let child_path =
+                    new_parent_scope_path.appending(ef.selection_set.scope().clone());
+                ef.selection_set = Arc::new(ef.selection_set.updating_scope_path(child_path));
+            }
+        }
+
+        for inline_fragment in result.inline_fragments.values_mut() {
+            let last_condition = inline_fragment
+                .selection_set
+                .scope()
+                .scope_path
+                .last()
+                .clone();
+            let child_path = new_parent_scope_path
+                .mutating_last(|scope| scope.appending(last_condition.clone()));
+            inline_fragment.selection_set =
+                Arc::new(inline_fragment.selection_set.updating_scope_path(child_path));
+        }
+
+        for named_fragment in result.named_fragments.values_mut() {
+            let mut type_info = TypeInfo::new(
+                Arc::clone(&named_fragment.type_info.entity),
+                new_parent_scope_path.clone(),
+            );
+            type_info.derived_from_merged_sources =
+                named_fragment.type_info.derived_from_merged_sources.clone();
+            named_fragment.type_info = Arc::new(type_info);
+        }
+
+        result
     }
 
     /// Merges an inline fragment spread into the selections.
