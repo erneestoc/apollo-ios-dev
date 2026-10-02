@@ -60,7 +60,7 @@ fn render_variable_default_value_inner(
     Some(GraphQLValue::String(s)) => format!("\"{}\"", s),
     Some(GraphQLValue::Boolean(b)) => if *b { "true".to_string() } else { "false".to_string() },
     Some(GraphQLValue::Int(i)) => i.to_string(),
-    Some(GraphQLValue::Float(f)) => f.to_string(),
+    Some(GraphQLValue::Float(f)) => swift_double_description(*f),
     Some(GraphQLValue::Enum(enum_value)) => {
       let enum_case = GraphQLEnumValue {
         name: GraphQLName::new(enum_value.clone()),
@@ -105,14 +105,12 @@ fn render_variable_default_value_inner(
           }
         }
         GraphQLType::InputObject(input_obj_type) => {
-          if in_list {
-            render_initializer(input_obj_type, object, config)
-          } else {
-            format!(
-              ".init(\n  {}\n)",
-              render_initializer(input_obj_type, object, config)
-            )
-          }
+          // Swift renders `.init(\n  <initializer>\n)` regardless of `inList`; the
+          // interpolation after "\n  " indents the initializer's continuation lines.
+          format!(
+            ".init(\n  {}\n)",
+            indent_continuation_lines(&render_initializer(input_obj_type, object, config), "  ")
+          )
         }
         _ => panic!("Variable type must be InputObject with value of .object type."),
       }
@@ -158,7 +156,59 @@ fn render_initializer(
     String::new()
   };
 
-  format!("{}{}({})", prefix, type_name, entries.join(", "))
+  // Mirrors TemplateString's `\(list: entries)`: more than one entry wraps the
+  // list in newlines with a 2-space indent applied to every subsequent line.
+  let list = if entries.len() > 1 {
+    format!("\n  {}\n", indent_continuation_lines(&entries.join(",\n"), "  "))
+  } else {
+    entries.join(",\n")
+  };
+  format!("{}{}({})", prefix, type_name, list)
+}
+
+/// Indents every line after the first by `indent`, mirroring how Swift's
+/// `TemplateString` interpolation applies the current line's indentation to a
+/// multi-line interpolated value.
+pub fn indent_continuation_lines(s: &str, indent: &str) -> String {
+  let mut lines = s.split('\n');
+  let mut out = String::new();
+  if let Some(first) = lines.next() {
+    out.push_str(first);
+  }
+  for line in lines {
+    out.push('\n');
+    if !line.is_empty() {
+      out.push_str(indent);
+    }
+    out.push_str(line);
+  }
+  out
+}
+
+/// Mirrors Swift's `Double.description` formatting for finite values:
+/// integral values render with a trailing `.0` (e.g. `5.0`), exponents use the
+/// `e+NN` / `e-NN` form.
+pub fn swift_double_description(f: f64) -> String {
+  if !f.is_finite() {
+    return if f.is_nan() { "nan".to_string() } else if f > 0.0 { "inf".to_string() } else { "-inf".to_string() };
+  }
+  if f == 0.0 {
+    return if f.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() };
+  }
+  let exp = f.abs().log10().floor() as i32;
+  if exp < -4 || exp >= 16 {
+    // Shortest round-trip mantissa with Swift-style exponent.
+    let s = format!("{:e}", f);
+    let (mant, e) = s.split_once('e').unwrap();
+    let e: i32 = e.parse().unwrap();
+    let sign = if e < 0 { "-" } else { "+" };
+    return format!("{}e{}{:02}", mant, sign, e.abs());
+  }
+  if f.fract() == 0.0 {
+    format!("{:.1}", f)
+  } else {
+    f.to_string()
+  }
 }
 
 #[cfg(test)]
