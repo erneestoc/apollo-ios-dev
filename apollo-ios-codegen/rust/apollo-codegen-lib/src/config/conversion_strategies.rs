@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 /// Mirrors Swift's `ApolloCodegenConfiguration.ConversionStrategies` struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub struct ConversionStrategies {
   /// Determines how the names of enum cases in the GraphQL schema will be converted into
   /// cases on the generated Swift enums.

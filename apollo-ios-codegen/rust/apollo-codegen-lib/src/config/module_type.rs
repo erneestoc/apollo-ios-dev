@@ -202,7 +202,6 @@ impl<'de> Deserialize<'de> for ModuleType {
         match key.as_str() {
           "embeddedInTarget" => {
             #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
             struct Inner {
               name: String,
               #[serde(rename = "accessModifier", default = "crate::config::access_modifier::default_internal")]
