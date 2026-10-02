@@ -148,7 +148,7 @@ impl FileTarget {
             let mut url = resolve_url(&config.output().schema_types.path, config.root_url());
             if matches!(
                 config.output().schema_types.module_type,
-                ModuleType::SwiftPackageManager
+                ModuleType::SwiftPackage { .. }
             ) {
                 url = url.join("Sources");
             }
@@ -202,7 +202,7 @@ impl FileTarget {
                         resolve_url(&config.output().schema_types.path, config.root_url());
                     if matches!(
                         config.output().schema_types.module_type,
-                        ModuleType::SwiftPackageManager
+                        ModuleType::SwiftPackage { .. }
                     ) {
                         url = url.join("Sources");
                     }
@@ -259,7 +259,7 @@ impl FileTarget {
                         resolve_url(&config.output().schema_types.path, config.root_url());
                     if matches!(
                         config.output().schema_types.module_type,
-                        ModuleType::SwiftPackageManager
+                        ModuleType::SwiftPackage { .. }
                     ) {
                         url = url.join("Sources");
                     }
