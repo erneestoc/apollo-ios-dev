@@ -67,6 +67,16 @@ impl ConfigurationContext {
   }
 
   /// Returns the schema namespace.
+  /// Mirrors Swift's `ConfigurationContext.ApolloAPITargetName`: `"Apollo"` when
+  /// `cocoapodsCompatibleImportStatements` is enabled, otherwise `"ApolloAPI"`.
+  pub fn apollo_api_target_name(&self) -> &'static str {
+    if self.config.options.cocoapods_compatible_import_statements {
+      "Apollo"
+    } else {
+      "ApolloAPI"
+    }
+  }
+
   pub fn schema_namespace(&self) -> &str {
     &self.config.schema_namespace
   }
@@ -299,8 +309,7 @@ impl ImportStatementTemplate {
     config: &ConfigurationContext,
     _file_type: &SchemaFileType,
   ) -> String {
-    let _ = config; // config used for cocoapods check in Swift -- not yet needed
-    "import ApolloAPI".to_string()
+    format!("import {}", config.apollo_api_target_name())
   }
 
   /// Returns the import statement for an operation file.
@@ -309,7 +318,7 @@ impl ImportStatementTemplate {
   /// In 1.15.1, operation files use `@_exported import ApolloAPI` only (no @_spi line).
   pub fn operation(config: &ConfigurationContext) -> String {
     let schema_module = config.schema_module_name();
-    let base_import = "@_exported import ApolloAPI";
+    let base_import = format!("@_exported import {}", config.apollo_api_target_name());
 
     if !config.output().operations.is_in_module() {
       format!("{}\nimport {}", base_import, schema_module)
