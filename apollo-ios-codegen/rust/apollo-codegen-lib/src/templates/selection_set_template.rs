@@ -44,7 +44,6 @@ use crate::templates::rendering_helpers::string_swift_name_escaping::{
     as_fragment_name, render_as_field_property_name,
     render_as_initializer_parameter_accessor_name, render_as_initializer_parameter_name,
 };
-use crate::templates::rendering_helpers::template_constants::APOLLO_API_TARGET_NAME;
 use crate::templates::rendering_helpers::template_string_deprecation::render_field_argument_warning;
 use crate::templates::rendering_helpers::template_string_documentation::render_documentation;
 use crate::templates::{AccessControlRenderer, ConfigurationContext, NonFatalErrorRecorder};
@@ -168,7 +167,7 @@ impl<'a> SelectionSetTemplate<'a> {
         let inline_fragment = &context.selection_set;
         let type_name = rendered_type_name(&inline_fragment.type_info);
         let composite = if is_composite_inline_fragment(inline_fragment) {
-            format!(", {}.CompositeInlineFragment", APOLLO_API_TARGET_NAME)
+            format!(", {}.CompositeInlineFragment", self.config.apollo_api_target_name())
         } else {
             String::new()
         };
@@ -389,7 +388,7 @@ impl<'a> SelectionSetTemplate<'a> {
         format!(
             "{}static var __parentType: any {}.ParentType {{ {} }}",
             self.access_control_renderer.render(),
-            APOLLO_API_TARGET_NAME,
+            self.config.apollo_api_target_name(),
             self.generated_schema_type_reference(type_)
         )
     }
@@ -420,7 +419,7 @@ impl<'a> SelectionSetTemplate<'a> {
 
         format!(
             "public static var __mergedSources: [any {}.SelectionSet.Type] {{ [\n{}\n] }}",
-            APOLLO_API_TARGET_NAME,
+            self.config.apollo_api_target_name(),
             items.join(",\n")
         )
     }
@@ -478,12 +477,14 @@ impl<'a> SelectionSetTemplate<'a> {
                 let cond_expr = condition_variable_expression(conditions);
                 let is_group = rendered.len() > 1;
                 if is_group {
+                    // Mirrors Swift: `[` + `\(list: renderedSelections, terminator: ",")` + `]`
+                    // where `list:` wraps in "\n  " ... "\n" and each item ends with ",".
                     let inner: Vec<String> =
-                        rendered.iter().map(|s| format!("    {}", s)).collect();
+                        rendered.iter().map(|s| format!("    {},", s)).collect();
                     selection_items.push(format!(
-                        "  .include(if: {}, [{}]),",
+                        "  .include(if: {}, [\n{}\n  ]),",
                         cond_expr,
-                        inner.join(",\n") // Simplified - each on own line for groups
+                        inner.join("\n")
                     ));
                 } else if let Some(single) = rendered.first() {
                     selection_items.push(format!(
@@ -515,7 +516,7 @@ impl<'a> SelectionSetTemplate<'a> {
         result.push_str(&format!(
             "{}static var __selections: [{}.Selection] {{ [\n{}\n] }}",
             self.access_control_renderer.render(),
-            APOLLO_API_TARGET_NAME,
+            self.config.apollo_api_target_name(),
             selection_items.join("\n")
         ));
 
@@ -1213,8 +1214,10 @@ pub fn generated_selection_set_name_path(
         );
     }
 
-    let mut target_node = source.type_info.scope_path.last_node();
-    let mut source_node = target_type_info.scope_path.last_node();
+    // Mirrors Swift: `targetTypePathCurrentNode = targetTypeInfo.scopePath.last`,
+    // `sourceTypePathCurrentNode = typeInfo.scopePath.last` (the merged source's).
+    let mut target_node = target_type_info.scope_path.last_node();
+    let mut source_node = source.type_info.scope_path.last_node();
     let mut nodes_to_shared_root: usize = 0;
 
     while represents_same_scope(target_node.value(), source_node.value()) {
