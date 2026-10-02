@@ -20,7 +20,12 @@ pub struct UnionFileGenerator {
 
 impl FileGenerator for UnionFileGenerator {
     fn file_name(&self) -> String {
-        self.graphql_union.name.schema_name.clone()
+        // Mirrors Swift `render(as: .filename)`: a customized name is used unchanged.
+        self.graphql_union
+            .name
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| self.graphql_union.name.schema_name.clone())
     }
 
     fn file_suffix(&self) -> Option<&str> {
