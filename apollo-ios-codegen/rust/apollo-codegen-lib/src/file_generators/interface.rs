@@ -20,7 +20,12 @@ pub struct InterfaceFileGenerator {
 
 impl FileGenerator for InterfaceFileGenerator {
     fn file_name(&self) -> String {
-        self.graphql_interface.name.schema_name.clone()
+        // Mirrors Swift `render(as: .filename)`: a customized name is used unchanged.
+        self.graphql_interface
+            .name
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| self.graphql_interface.name.schema_name.clone())
     }
 
     fn file_suffix(&self) -> Option<&str> {
