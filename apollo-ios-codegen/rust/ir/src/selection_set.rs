@@ -123,6 +123,23 @@ pub struct SelectionSet {
 }
 
 impl SelectionSet {
+    /// Returns a copy of this selection set with its scope path replaced and the
+    /// scope paths of all nested selection sets rebuilt accordingly.
+    ///
+    /// Mirrors Swift `SelectionSet.updateScopePath(to:)`.
+    pub fn updating_scope_path(&self, new_scope_path: LinkedList<ScopeDescriptor>) -> SelectionSet {
+        let mut type_info = TypeInfo::new(Arc::clone(&self.type_info.entity), new_scope_path.clone());
+        type_info.derived_from_merged_sources = self.type_info.derived_from_merged_sources.clone();
+        let selections = self
+            .selections
+            .as_ref()
+            .map(|sels| Arc::new(sels.updating_parent_scope_path(&new_scope_path)));
+        SelectionSet {
+            type_info: Arc::new(type_info),
+            selections,
+        }
+    }
+
     pub fn new(
         type_info: Arc<TypeInfo>,
         selections: Option<Arc<crate::direct_selections::DirectSelections>>,
