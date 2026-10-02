@@ -23,7 +23,13 @@ pub struct MockObjectFileGenerator {
 
 impl FileGenerator for MockObjectFileGenerator {
     fn file_name(&self) -> String {
-        format!("{}+Mock", self.graphql_object.name.schema_name)
+        let name = self
+            .graphql_object
+            .name
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| self.graphql_object.name.schema_name.clone());
+        format!("{}+Mock", name)
     }
 
     fn template(&self) -> Box<dyn TemplateRenderer + '_> {
