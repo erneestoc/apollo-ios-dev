@@ -116,7 +116,7 @@ impl TemplateRenderer for SwiftPackageManagerModuleTemplate {
         let _ = &dependency_string;
         format!(
             "\
-// swift-tools-version:5.9
+// swift-tools-version:5.7
 
 import PackageDescription
 
@@ -179,7 +179,7 @@ mod tests {
         let result = template.render();
         let body = result.body;
 
-        assert!(body.contains("// swift-tools-version:5.9"));
+        assert!(body.contains("// swift-tools-version:5.7"));
         assert!(body.contains("name: \"MySchema\""));
         assert!(body.contains(".library(name: \"MySchema\", targets: [\"MySchema\"])"));
         assert!(body.contains(".product(name: \"ApolloAPI\", package: \"apollo-ios\")"));

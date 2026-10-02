@@ -783,12 +783,23 @@ impl<'a> SelectionSetTemplate<'a> {
         }
 
         let type_name = rendered_type_name(&inline_fragment.type_info);
-        format!(
-            "{}var {}: {}? {{ _asInlineFragment() }}",
-            self.access_control_renderer.render(),
-            first_lowercased(&type_name),
-            type_name
-        )
+        // Swift 1.15.1 renders mutable selection sets' type case accessors with an
+        // explicit getter and setter (simplified to `{ _asInlineFragment() }` in 1.15.2).
+        if self.is_mutable() {
+            format!(
+                "{access}var {name}: {ty}? {{\n  get {{ _asInlineFragment() }}\n  set {{ if let newData = newValue?.__data._data {{ __data._data = newData }}}}\n}}",
+                access = self.access_control_renderer.render(),
+                name = first_lowercased(&type_name),
+                ty = type_name
+            )
+        } else {
+            format!(
+                "{}var {}: {}? {{ _asInlineFragment() }}",
+                self.access_control_renderer.render(),
+                first_lowercased(&type_name),
+                type_name
+            )
+        }
     }
 
     fn fragment_accessors_template(&self, selection_set: &ComputedSelectionSet) -> String {
