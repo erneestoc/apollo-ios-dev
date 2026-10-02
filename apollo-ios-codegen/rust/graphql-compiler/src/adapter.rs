@@ -38,6 +38,9 @@ use crate::schema::{
 /// everywhere a type is referenced.
 pub struct TypeRegistry {
     types: IndexMap<String, GraphQLNamedType>,
+    /// Names of the types whose own definition carries a `@typePolicy` directive
+    /// (graphql-js `type.astNode.directives`; inherited directives do not count).
+    type_policy_names: HashSet<String>,
 }
 
 impl TypeRegistry {
@@ -137,6 +140,7 @@ impl TypeRegistry {
         // All type names are now resolvable.
         let full_registry = TypeRegistry {
             types: types.clone(),
+            type_policy_names: HashSet::new(),
         };
 
         // Phase 3: Rebuild types that need field resolution.
@@ -174,6 +178,7 @@ impl TypeRegistry {
                 // Rebuild the full_registry snapshot to include rebuilt interfaces
                 let updated_registry = TypeRegistry {
                     types: types.clone(),
+                    type_policy_names: HashSet::new(),
                 };
                 let mut fields = IndexMap::new();
                 for (field_name, field_def) in &obj.fields {
@@ -225,6 +230,7 @@ impl TypeRegistry {
             if let ExtendedType::InputObject(io) = ext_type {
                 let current_registry = TypeRegistry {
                     types: types.clone(),
+                    type_policy_names: HashSet::new(),
                 };
                 let mut fields = IndexMap::new();
                 for (field_name, field_def) in &io.fields {
@@ -254,6 +260,7 @@ impl TypeRegistry {
         // and unions using the now-complete registry to ensure Arc identity.
         let final_registry = TypeRegistry {
             types: types.clone(),
+            type_policy_names: HashSet::new(),
         };
 
         // Phase 4a: Rebuild interfaces with resolved fields.
@@ -289,7 +296,7 @@ impl TypeRegistry {
             if let ExtendedType::Interface(iface) = ext_type {
                 if !iface.implements_interfaces.is_empty() {
                     let mut fields = IndexMap::new();
-                    let updated_registry = TypeRegistry { types: types.clone() };
+                    let updated_registry = TypeRegistry { types: types.clone(), type_policy_names: HashSet::new() };
                     for (field_name, field_def) in &iface.fields {
                         let field = convert_field_definition(field_def, &updated_registry);
                         fields.insert(field_name.as_str().to_string(), field);
@@ -320,6 +327,7 @@ impl TypeRegistry {
         // plus the just-rebuilt interfaces.
         let final_registry2 = TypeRegistry {
             types: types.clone(),
+            type_policy_names: HashSet::new(),
         };
         for (name, ext_type) in &schema.types {
             let name_str = name.as_str().to_string();
@@ -403,6 +411,7 @@ impl TypeRegistry {
         // `predators: [Animal!]!` would hold stale interface Arcs.
         let final_registry3 = TypeRegistry {
             types: types.clone(),
+            type_policy_names: HashSet::new(),
         };
         object_arcs.clear();
         for (name, ext_type) in &schema.types {
@@ -539,7 +548,24 @@ impl TypeRegistry {
             }
         }
 
-        TypeRegistry { types }
+        let type_policy_names: HashSet<String> = schema
+            .types
+            .iter()
+            .filter(|(_, t)| match t {
+                ExtendedType::Object(o) => o.directives.get("typePolicy").is_some(),
+                ExtendedType::Interface(i) => i.directives.get("typePolicy").is_some(),
+                _ => false,
+            })
+            .map(|(n, _)| n.as_str().to_string())
+            .collect();
+
+        TypeRegistry { types, type_policy_names }
+    }
+
+    /// Whether the type's own definition declares a `@typePolicy` directive
+    /// (graphql-js `hasTypePolicyDirective`).
+    pub fn has_own_type_policy_directive(&self, name: &str) -> bool {
+        self.type_policy_names.contains(name)
     }
 
     /// Look up a named type by name.
@@ -1154,10 +1180,15 @@ fn collect_direct_fragments(
 ///
 /// Introspection meta-types (`__Schema`, ...) are excluded, matching graphql-js
 /// which only reports types reachable from the operations.
+///
+/// `reduce_schema_types` mirrors `options.reduceGeneratedSchemaTypes`: when set, the
+/// implementing objects of a referenced interface are only pulled in when they declare
+/// `@typePolicy` themselves (graphql-js `addReferencedType`).
 pub fn collect_referenced_types(
     registry: &TypeRegistry,
     operations: &[compilation_result::OperationDefinition],
     fragments: &[compilation_result::FragmentDefinition],
+    reduce_schema_types: bool,
 ) -> Vec<GraphQLNamedType> {
     let fragment_map: IndexMap<&str, &compilation_result::FragmentDefinition> = fragments
         .iter()
@@ -1168,6 +1199,7 @@ pub fn collect_referenced_types(
         names: IndexSet::new(),
         compiled_fragments: HashSet::new(),
         fragment_map: &fragment_map,
+        reduce_schema_types,
     };
 
     for op in operations {
@@ -1196,6 +1228,7 @@ struct ReferencedTypeCollector<'a> {
     names: IndexSet<String>,
     compiled_fragments: HashSet<String>,
     fragment_map: &'a IndexMap<&'a str, &'a compilation_result::FragmentDefinition>,
+    reduce_schema_types: bool,
 }
 
 impl<'a> ReferencedTypeCollector<'a> {
@@ -1224,7 +1257,11 @@ impl<'a> ReferencedTypeCollector<'a> {
                     })
                     .collect();
                 for obj_name in implementors {
-                    self.add(&obj_name);
+                    if !self.reduce_schema_types
+                        || self.registry.has_own_type_policy_directive(&obj_name)
+                    {
+                        self.add(&obj_name);
+                    }
                 }
             }
             Some(GraphQLNamedType::Union(u)) => {
@@ -2681,7 +2718,7 @@ mod tests {
             file_path: String::new(),
         };
 
-        let referenced = collect_referenced_types(&registry, &[op], &[]);
+        let referenced = collect_referenced_types(&registry, &[op], &[], false);
 
         // GAP-03: No introspection types should appear in the result
         for rt in &referenced {
@@ -2764,7 +2801,7 @@ mod tests {
             file_path: String::new(),
         };
 
-        let referenced = collect_referenced_types(&registry, &[op], &[]);
+        let referenced = collect_referenced_types(&registry, &[op], &[], false);
         let ref_names: Vec<&str> = referenced
             .iter()
             .map(|rt| rt.name().schema_name.as_str())
@@ -2834,7 +2871,7 @@ mod tests {
             file_path: String::new(),
         };
 
-        let referenced = collect_referenced_types(&registry, &[], &[frag]);
+        let referenced = collect_referenced_types(&registry, &[], &[frag], false);
         let ref_names: Vec<&str> = referenced
             .iter()
             .map(|rt| rt.name().schema_name.as_str())
