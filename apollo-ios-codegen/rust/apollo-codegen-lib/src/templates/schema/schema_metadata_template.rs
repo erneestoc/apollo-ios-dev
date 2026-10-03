@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_object_type_function_no_spi_for_public() {
+    fn test_render_object_type_function_has_execution_spi() {
         let schema = make_schema(
             vec![make_object("objA"), make_object("objB"), make_object("objC")],
             None,
@@ -531,9 +531,12 @@ mod tests {
 
         let body = render_body(&template);
 
-        // 1.15.1: No @_spi on objectType function
-        assert!(body.contains("public static func objectType(forTypename typename: String) -> ApolloAPI.Object?"));
-        assert!(!body.contains("@_spi(Execution)"));
+        // 2.0.0+: objectType(forTypename:) is exposed through the Execution SPI
+        assert!(
+            body.contains("@_spi(Execution) public static func objectType(forTypename typename: String) -> ApolloAPI.Object?"),
+            "body:\n{}",
+            body
+        );
     }
 
     // MARK: - Type Namespace Enum Tests
