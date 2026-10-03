@@ -253,7 +253,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(
-            actual.starts_with("/// This is some great documentation!\nstatic let Dog = ApolloAPI.Interface("),
+            actual.starts_with("/// This is some great documentation!\nnonisolated static let Dog = ApolloAPI.Interface("),
             "actual:\n{}",
             actual
         );
@@ -279,7 +279,7 @@ mod tests {
             actual
         );
         assert!(
-            actual.starts_with("static let Dog = ApolloAPI.Interface("),
+            actual.starts_with("nonisolated static let Dog = ApolloAPI.Interface("),
             "actual:\n{}",
             actual
         );

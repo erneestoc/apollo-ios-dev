@@ -445,7 +445,7 @@ mod tests {
             actual
         );
         assert!(
-            actual.starts_with("static let Dog"),
+            actual.starts_with("nonisolated static let Dog"),
             "actual:\n{}",
             actual
         );
