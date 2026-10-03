@@ -66,8 +66,10 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
         // and indents it), introduced by a blank line and a "- " MARK, no extension wrapper.
         let identifiers = self.render_deferred_fragment_identifiers(&path_type_info);
         let property = self.render_deferred_fragments_property(&path_type_info);
+        // Swift 1.25.3+: no leading blank line; the operation template supplies the empty line
+        // and interpolates this as a `section:`.
         format!(
-            "\n// MARK: - Deferred Fragment Metadata\n\n{}\n{}",
+            "// MARK: - Deferred Fragment Metadata\n\n{}\n{}",
             identifiers,
             property.trim_end(),
         )
