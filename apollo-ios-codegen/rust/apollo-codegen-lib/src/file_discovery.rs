@@ -62,6 +62,10 @@ pub fn match_search_paths(
         if !base.exists() {
             continue;
         }
+        // Walking `.` yields `./x` entries, which a bare relative pattern such as
+        // `schema.graphqls` or `*.graphql` (no `./` prefix) would never match, although
+        // Swift's glob(3) matches it against the plain relative path.
+        let strip_dot_slash = base_dir == ".";
 
         // Swift's `Glob` expands `**` into the root directory followed by every
         // subdirectory (FileManager enumerator order) and runs glob(3) with
@@ -86,8 +90,8 @@ pub fn match_search_paths(
                 continue;
             }
             if entry.file_type().is_file() {
-                let path_str = path.to_string_lossy().to_string();
-                if glob.is_match(&path_str) {
+                let path_str = path.to_string_lossy();
+                if glob.is_match(candidate_path(&path_str, strip_dot_slash)) {
                     let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                     if !by_dir.contains_key(&parent) {
                         dir_order.push(parent.clone());
@@ -127,6 +131,16 @@ fn is_excluded_directory(entry: &walkdir::DirEntry) -> bool {
 /// Uses the current working directory for relative paths, matching Swift's
 /// behavior of not resolving symlinks (which would cause `/tmp` -> `/private/tmp`
 /// mismatches on macOS).
+/// The string a walked entry is matched against: entries under a `.` base come back as
+/// `./x` and must still match a bare relative pattern.
+fn candidate_path(path: &str, strip_dot_slash: bool) -> &str {
+    if strip_dot_slash {
+        path.strip_prefix("./").unwrap_or(path)
+    } else {
+        path
+    }
+}
+
 fn make_absolute(path: &Path) -> String {
     if path.is_absolute() {
         path.to_string_lossy().to_string()
@@ -199,6 +213,46 @@ mod tests {
         assert!(EXCLUDED_DIRECTORIES.contains(&".Pods"));
         assert!(!EXCLUDED_DIRECTORIES.contains(&"src"));
         assert!(!EXCLUDED_DIRECTORIES.contains(&"node_modules"));
+    }
+
+    #[test]
+    fn test_candidate_path_strips_dot_slash_only_for_dot_base() {
+        assert_eq!(candidate_path("./schema.graphqls", true), "schema.graphqls");
+        assert_eq!(candidate_path("./a/b.graphql", true), "a/b.graphql");
+        assert_eq!(candidate_path("schema.graphqls", true), "schema.graphqls");
+        assert_eq!(candidate_path("./schema.graphqls", false), "./schema.graphqls");
+        assert_eq!(candidate_path("sub/x.graphql", false), "sub/x.graphql");
+    }
+
+    /// Bare relative patterns (`schema.graphqls`, `*.graphql`) resolve against the current
+    /// directory, like Swift's glob(3) does. The test changes the process cwd, so it is
+    /// serialized with a lock in case other cwd-changing tests are added.
+    #[test]
+    fn test_match_search_paths_bare_relative_pattern_matches_in_cwd() {
+        use std::sync::Mutex;
+        use tempfile::tempdir;
+        static CWD_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("schema.graphqls"), "type Query { a: Int }").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/Q.graphql"), "query Q { a }").unwrap();
+        std::fs::write(dir.path().join("R.graphql"), "query R { a }").unwrap();
+
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let schema = match_search_paths(&["schema.graphqls".to_string()], None);
+        let ops = match_search_paths(&["*.graphql".to_string(), "**/*.graphql".to_string()], None);
+        std::env::set_current_dir(previous).unwrap();
+
+        let schema = schema.unwrap();
+        assert_eq!(schema.len(), 1, "{:?}", schema);
+        assert!(schema.iter().next().unwrap().ends_with("/schema.graphqls"));
+        let ops = ops.unwrap();
+        assert_eq!(ops.len(), 2, "{:?}", ops);
+        assert!(ops.iter().any(|p| p.ends_with("/R.graphql")));
+        assert!(ops.iter().any(|p| p.ends_with("/sub/Q.graphql")));
     }
 
     #[test]
