@@ -281,7 +281,8 @@ fn indent(text: &str, spaces: usize) -> String {
     let prefix: String = " ".repeat(spaces);
     text.lines()
         .map(|line| {
-            if line.trim().is_empty() {
+            // Like TemplateString.joinedAsLines: only strictly empty lines stay unindented.
+            if line.is_empty() {
                 String::new()
             } else {
                 format!("{}{}", prefix, line)
