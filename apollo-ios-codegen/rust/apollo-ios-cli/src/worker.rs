@@ -464,7 +464,7 @@ mod tests {
             arguments: vec![
                 "init".to_string(),
                 "--module-type".to_string(),
-                "swift-package".to_string(),
+                "swiftPackageManager".to_string(),
             ],
             inputs: vec![],
             request_id: 0,
