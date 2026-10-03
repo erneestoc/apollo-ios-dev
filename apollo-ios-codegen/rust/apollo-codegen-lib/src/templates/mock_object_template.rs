@@ -409,7 +409,7 @@ mod tests {
     const NESTED_OPTIONALS_IN_MOCK_TYPES: bool = true;
     //   1.23.0-2.0.2: non-null custom scalars default to `try! .init(_jsonValue: "")`,
     //   2.0.3+: `.defaultMockValue`
-    const CUSTOM_SCALAR_DEFAULT: &str = "try! .init(_jsonValue: \"\")";
+    const CUSTOM_SCALAR_DEFAULT: &str = ".defaultMockValue";
     const CLASS_DECL: &str = "final class";
     const MOCK_FIELDS_DECL: &str = "struct MockFields: Sendable {";
 
