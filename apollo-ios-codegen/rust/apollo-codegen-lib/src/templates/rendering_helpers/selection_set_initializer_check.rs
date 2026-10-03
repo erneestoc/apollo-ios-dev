@@ -2,17 +2,23 @@
 //!
 //! Mirrors Swift's `ApolloCodegen.ConfigurationContext.shouldGenerateSelectionSetInitializers(for:)`.
 
-use crate::config::selection_set_initializers::SelectionSetInitializers;
+use crate::config::ApolloCodegenConfiguration;
 use ir::definition::Definition;
 
 /// Returns true if selection set initializers should be generated for the given definition.
 ///
 /// Mirrors Swift's `ConfigurationContext.shouldGenerateSelectionSetInitializers(for:)`.
 pub fn should_generate_selection_set_initializers(
-    config: &SelectionSetInitializers,
+    full_config: &ApolloCodegenConfiguration,
     definition: &dyn Definition,
     is_fragment: bool,
 ) -> bool {
+    // `guard experimentalFeatures.fieldMerging == .all else { return false }`
+    if full_config.experimental_features.field_merging != crate::config::FieldMerging::ALL {
+        return false;
+    }
+    let config = &full_config.options.selection_set_initializers;
+
     // Local cache mutations always generate initializers
     if definition.is_local_cache_mutation() {
         return true;
@@ -38,6 +44,22 @@ mod tests {
 
     use ir::definition_entity_storage::DefinitionEntityStorage;
     use ir::fields::EntityField;
+    use crate::config::selection_set_initializers::SelectionSetInitializers;
+
+    /// Wraps the initializer options in a full configuration (fieldMerging defaults to all).
+    fn with(init: SelectionSetInitializers) -> ApolloCodegenConfiguration {
+        let mut config: ApolloCodegenConfiguration = serde_json::from_str(r#"{
+          "schemaNamespace": "mySchema",
+          "input": {},
+          "output": {
+            "schemaTypes": { "path": "./gen", "moduleType": {"swiftPackageManager": {}} },
+            "operations": {"inSchemaModule": {}},
+            "testMocks": {"none": {}}
+          }
+        }"#).unwrap();
+        config.options.selection_set_initializers = init;
+        config
+    }
 
     /// A minimal mock implementing the Definition trait for testing.
     /// Avoids constructing full Entity/EntityField/DefinitionEntityStorage which
@@ -78,14 +100,14 @@ mod tests {
     fn local_cache_mutation_always_returns_true() {
         let config = SelectionSetInitializers::empty();
         let def = MockDefinition::new("MyMutation", true);
-        assert!(should_generate_selection_set_initializers(&config, &def, false));
+        assert!(should_generate_selection_set_initializers(&with(config.clone()), &def, false));
     }
 
     #[test]
     fn local_cache_mutation_true_even_as_fragment() {
         let config = SelectionSetInitializers::empty();
         let def = MockDefinition::new("MyFragment", true);
-        assert!(should_generate_selection_set_initializers(&config, &def, true));
+        assert!(should_generate_selection_set_initializers(&with(config.clone()), &def, true));
     }
 
     #[test]
@@ -96,7 +118,7 @@ mod tests {
             definitions: BTreeSet::new(),
         };
         let def = MockDefinition::new("MyQuery", false);
-        assert!(should_generate_selection_set_initializers(&config, &def, false));
+        assert!(should_generate_selection_set_initializers(&with(config.clone()), &def, false));
     }
 
     #[test]
@@ -107,7 +129,7 @@ mod tests {
             definitions: BTreeSet::new(),
         };
         let def = MockDefinition::new("MyQuery", false);
-        assert!(!should_generate_selection_set_initializers(&config, &def, false));
+        assert!(!should_generate_selection_set_initializers(&with(config.clone()), &def, false));
     }
 
     #[test]
@@ -118,7 +140,7 @@ mod tests {
             definitions: BTreeSet::new(),
         };
         let def = MockDefinition::new("MyFragment", false);
-        assert!(should_generate_selection_set_initializers(&config, &def, true));
+        assert!(should_generate_selection_set_initializers(&with(config.clone()), &def, true));
     }
 
     #[test]
@@ -129,7 +151,7 @@ mod tests {
             definitions: BTreeSet::new(),
         };
         let def = MockDefinition::new("MyFragment", false);
-        assert!(!should_generate_selection_set_initializers(&config, &def, true));
+        assert!(!should_generate_selection_set_initializers(&with(config.clone()), &def, true));
     }
 
     #[test]
@@ -142,7 +164,7 @@ mod tests {
             definitions: defs,
         };
         let def = MockDefinition::new("MyQuery", false);
-        assert!(should_generate_selection_set_initializers(&config, &def, false));
+        assert!(should_generate_selection_set_initializers(&with(config.clone()), &def, false));
     }
 
     #[test]
@@ -155,14 +177,14 @@ mod tests {
             definitions: defs,
         };
         let def = MockDefinition::new("MyQuery", false);
-        assert!(!should_generate_selection_set_initializers(&config, &def, false));
+        assert!(!should_generate_selection_set_initializers(&with(config.clone()), &def, false));
     }
 
     #[test]
     fn empty_config_returns_false_for_non_lcm() {
         let config = SelectionSetInitializers::empty();
         let def = MockDefinition::new("MyQuery", false);
-        assert!(!should_generate_selection_set_initializers(&config, &def, false));
-        assert!(!should_generate_selection_set_initializers(&config, &def, true));
+        assert!(!should_generate_selection_set_initializers(&with(config.clone()), &def, false));
+        assert!(!should_generate_selection_set_initializers(&with(config.clone()), &def, true));
     }
 }
