@@ -150,6 +150,10 @@ pub fn render_variable_accessors(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Attribute Apollo iOS renders before the `__variables` accessor (`@_spi(Unsafe) ` from
+  /// 2.0.0, nothing before).
+  const VARIABLES_ACCESSOR_PREFIX: &str = "";
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::GraphQLScalarType;
   use std::sync::Arc;
@@ -221,7 +225,11 @@ mod tests {
       },
     ];
     let result = render_variable_accessors(&vars, &config, true);
-    assert!(result.contains("@_spi(Unsafe)"));
+    assert!(
+      result.starts_with(&format!("{}public var __variables: Variables?", VARIABLES_ACCESSOR_PREFIX)),
+      "actual:\n{}",
+      result
+    );
     assert!(result.contains("\"userId\": userId"));
   }
 
