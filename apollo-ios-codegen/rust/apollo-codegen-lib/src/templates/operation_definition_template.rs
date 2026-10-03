@@ -140,9 +140,8 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         result.push_str(&indent(&selection_body, 4));
         result.push_str("\n  }\n");
 
-        // Deferred fragments metadata (Swift 1.17.0+: nested inside the operation struct). The
-        // interpolation line keeps its two-space indentation in front of the template's leading
-        // blank line, so the first emitted line is whitespace-only, like Swift's output.
+        // Deferred fragments metadata (Swift 1.25.3+: nested inside the operation struct after
+        // an empty line, interpolated as a `section:` so nothing is emitted when absent).
         if self.operation.contains_deferred_fragment {
             let deferred = DeferredFragmentsMetadataTemplate {
                 operation: &self.operation,
@@ -151,7 +150,7 @@ impl TemplateRenderer for OperationDefinitionTemplate {
             };
             let deferred_output = deferred.render();
             if !deferred_output.is_empty() {
-                result.push_str("  ");
+                result.push('\n');
                 result.push_str(&indent(&deferred_output, 2));
                 result.push('\n');
             }
