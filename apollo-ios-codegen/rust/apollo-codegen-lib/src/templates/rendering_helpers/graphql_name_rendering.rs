@@ -203,7 +203,7 @@ mod tests {
 
   /// Swift type GraphQL `Int` maps to as an input value in this Apollo iOS version (`Int32`
   /// from 2.0.0).
-  const INT_INPUT_VALUE_SWIFT_TYPE: &str = "Int";
+  const INT_INPUT_VALUE_SWIFT_TYPE: &str = "Int32";
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::{
     GraphQLEnumType, GraphQLObjectType,

@@ -157,7 +157,7 @@ mod tests {
     use crate::templates::ConfigurationContext;
 
     /// Swift type GraphQL `Int` maps to in this Apollo iOS version (`Int32` from 2.0.0).
-    const INT_SWIFT_TYPE: &str = "Int";
+    const INT_SWIFT_TYPE: &str = "Int32";
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::graphql_type::GraphQLType;
     use graphql_compiler::schema::{GraphQLEnumType, GraphQLScalarType};

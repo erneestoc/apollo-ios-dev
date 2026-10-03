@@ -178,7 +178,7 @@ mod tests {
         let result = template.render();
         let body = result.body;
 
-        assert!(body.contains("// swift-tools-version:5.9"));
+        assert!(body.contains("// swift-tools-version:6.1"), "body:\n{}", body);
         assert!(body.contains("name: \"MySchema\""));
         assert!(body.contains(".library(name: \"MySchema\", targets: [\"MySchema\"])"));
         assert!(body.contains(".product(name: \"ApolloAPI\", package: \"apollo-ios\")"));
@@ -192,7 +192,8 @@ mod tests {
             "body:\n{}",
             body
         );
-        assert!(!body.contains("swiftLanguageModes"));
+        // 2.0.0+: Swift 6 package with both language modes
+        assert!(body.contains("swiftLanguageModes: [.v6, .v5]"), "body:\n{}", body);
         // No test mock target
         assert!(!body.contains("ApolloTestSupport"));
     }

@@ -154,7 +154,7 @@ mod tests {
 
   /// Attribute Apollo iOS renders before the `__variables` accessor (`@_spi(Unsafe) ` from
   /// 2.0.0, nothing before).
-  const VARIABLES_ACCESSOR_PREFIX: &str = "";
+  const VARIABLES_ACCESSOR_PREFIX: &str = "@_spi(Unsafe) ";
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::GraphQLScalarType;
   use std::sync::Arc;

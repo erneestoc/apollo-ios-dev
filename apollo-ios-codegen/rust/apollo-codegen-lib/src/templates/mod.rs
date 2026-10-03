@@ -719,21 +719,21 @@ mod tests {
   fn test_import_statement_schema_type_input_object() {
     let config = spm_config();
     let import = ImportStatementTemplate::schema_type(&config, &SchemaFileType::InputObject);
-    assert_eq!(import, "import ApolloAPI");
+    assert_eq!(import, "@_spi(Internal) @_spi(Unsafe) import ApolloAPI");
   }
 
   #[test]
   fn test_import_statement_schema_type_custom_scalar() {
     let config = spm_config();
     let import = ImportStatementTemplate::schema_type(&config, &SchemaFileType::CustomScalar);
-    assert_eq!(import, "import ApolloAPI");
+    assert_eq!(import, "@_spi(Internal) @_spi(Execution) import ApolloAPI");
   }
 
   #[test]
   fn test_import_statement_schema_type_enum() {
     let config = spm_config();
     let import = ImportStatementTemplate::schema_type(&config, &SchemaFileType::Enum);
-    assert_eq!(import, "import ApolloAPI");
+    assert_eq!(import, "@_spi(Internal) import ApolloAPI");
   }
 
   #[test]

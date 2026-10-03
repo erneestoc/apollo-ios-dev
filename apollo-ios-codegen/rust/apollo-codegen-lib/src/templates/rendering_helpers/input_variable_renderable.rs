@@ -330,6 +330,7 @@ mod tests {
       ])),
     };
     let result = render_variable_default_value(&var, &config);
-    assert_eq!(result, "[\"a\", \"b\"]");
+    // 2.0.0+: `\(list:)` formatting puts more than one item on separate lines
+    assert_eq!(result, "[\n  \"a\",\n  \"b\"\n]");
   }
 }
