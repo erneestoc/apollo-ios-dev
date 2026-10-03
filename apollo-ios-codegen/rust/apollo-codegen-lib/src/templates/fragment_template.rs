@@ -85,7 +85,7 @@ impl TemplateRenderer for FragmentTemplate {
 
         // Selection set body
         let generate_initializers = should_generate_selection_set_initializers(
-            &self.config.config.options.selection_set_initializers,
+            &self.config.config,
             self.fragment.as_ref(),
             true,
         );
