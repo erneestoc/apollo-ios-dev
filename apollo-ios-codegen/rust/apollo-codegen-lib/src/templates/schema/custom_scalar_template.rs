@@ -76,16 +76,14 @@ impl CustomScalarTemplate {
     /// Builds the documentation string, appending specifiedByURL if present.
     ///
     /// Mirrors Swift's `CustomScalarTemplate.documentationTemplate` property.
+    ///
+    /// Swift appends `Specified by: [](url)` when `GraphQLScalarType.specifiedByURL` is set,
+    /// but that property is read from the JavaScript value's `specifiedByUrl` key while
+    /// graphql-js exposes it as `specifiedByURL`, so it is never populated and the Swift CLI
+    /// never emits the line. The URL is therefore intentionally ignored here.
     fn documentation_template(&self) -> Option<String> {
-        let mut string = self.graphql_scalar.documentation.clone();
-        if let Some(url) = &self.graphql_scalar.specified_by_url {
-            let specified_by_docs = format!("Specified by: []({})", url);
-            string = Some(match string {
-                Some(existing) => format!("{}\n\n{}", existing, specified_by_docs),
-                None => specified_by_docs,
-            });
-        }
-        string
+        let _ = &self.graphql_scalar.specified_by_url;
+        self.graphql_scalar.documentation.clone()
     }
 }
 
@@ -395,10 +393,9 @@ typealias CustomScalar = String
             config: config_with_docs(true),
         };
         let actual = render_body(&template);
+        // The Swift CLI never renders the URL (see `documentation_template`).
         let expected = "\
 /// This is some great documentation!
-///
-/// Specified by: [](http://www.apollographql.com/scalarSpec)
 typealias CustomScalar = String
 ";
         assert_eq!(actual, expected);
