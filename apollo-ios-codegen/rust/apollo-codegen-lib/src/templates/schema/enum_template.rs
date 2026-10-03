@@ -165,6 +165,23 @@ mod tests {
     }
 
     /// Default config: embedded in target, default conversion strategies (camelCase enum cases)
+    /// 2.1.0+: `markTypesNonisolated` defaults to true, so every enum declaration is prefixed.
+    const NONISOLATED: &str = "nonisolated ";
+
+    fn with_nonisolated(expected: &str) -> String {
+        let mut out: Vec<String> = expected
+            .split('\n')
+            .map(|line| {
+                if (line.starts_with("enum ") || line.starts_with("public enum ")) && !line.starts_with(NONISOLATED) {
+                    format!("{}{}", NONISOLATED, line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+        out.join("\n")
+    }
+
     fn default_config() -> ConfigurationContext {
         make_config(
             r#"{
@@ -434,7 +451,7 @@ enum CasedEnum: String, EnumType {
   case `protocol` = \"Protocol\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -475,7 +492,7 @@ enum CasedEnum: String, EnumType {
   case `Protocol`
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     // MARK: - Deprecation Tests
@@ -501,7 +518,7 @@ enum TestEnum: String, EnumType {
   case three = \"THREE\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -525,7 +542,7 @@ enum TestEnum: String, EnumType {
   case three = \"THREE\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -546,7 +563,7 @@ enum TestEnum: String, EnumType {
   case two = \"TWO\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -567,7 +584,7 @@ enum TestEnum: String, EnumType {
   case two = \"TWO\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     // MARK: - Documentation Tests
@@ -598,7 +615,7 @@ enum TestEnum: String, EnumType {
   case three = \"THREE\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -627,7 +644,7 @@ enum TestEnum: String, EnumType {
   case three = \"THREE\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     #[test]
@@ -652,7 +669,7 @@ enum TestEnum: String, EnumType {
   case three = \"THREE\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 
     // MARK: - Reserved Keyword Tests
@@ -705,6 +722,6 @@ enum MyCustomEnum: String, EnumType {
   case myCustomCase = \"myCase\"
 }
 ";
-        assert_eq!(actual, expected);
+        assert_eq!(actual, with_nonisolated(expected));
     }
 }
