@@ -1175,6 +1175,7 @@ fn generate_graph_ql_definition_files(
             ir_operation,
             operation_identifier: Some(identifier),
             config: operation_config,
+            referenced_types: Arc::clone(&ir.schema.referenced_types),
         }));
         operation_count += 1;
     }
