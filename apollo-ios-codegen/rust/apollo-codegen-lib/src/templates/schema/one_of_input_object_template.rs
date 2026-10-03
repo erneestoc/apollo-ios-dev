@@ -154,6 +154,9 @@ mod tests {
     use super::*;
     use crate::config::ApolloCodegenConfiguration;
     use crate::templates::ConfigurationContext;
+
+    /// Swift type GraphQL `Int` maps to in this Apollo iOS version (`Int32` from 2.0.0).
+    const INT_SWIFT_TYPE: &str = "Int";
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::graphql_type::GraphQLType;
     use graphql_compiler::schema::{GraphQLEnumType, GraphQLScalarType};
@@ -366,7 +369,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("case fieldOne(String)"), "actual:\n{}", actual);
-        assert!(actual.contains("case fieldTwo(Int32)"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("case fieldTwo({})", INT_SWIFT_TYPE)), "actual:\n{}", actual);
         assert!(actual.contains("case .fieldOne(let value):"), "actual:\n{}", actual);
         assert!(actual.contains("case .fieldTwo(let value):"), "actual:\n{}", actual);
     }
