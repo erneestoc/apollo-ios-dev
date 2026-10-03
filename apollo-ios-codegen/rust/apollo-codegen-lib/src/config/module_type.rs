@@ -328,13 +328,19 @@ mod tests {
     );
   }
 
+  /// Since 1.16.0 the deprecated `swiftPackageManager` key decodes to
+  /// `.swiftPackage(apolloSDKDependency: .default)` and is encoded in that form (Swift's
+  /// `ModuleType.init(from:)` / `ApolloSDKDependency.encode(to:)`).
   #[test]
   fn test_module_type_swift_package_manager_roundtrip() {
     let json = r#"{"swiftPackageManager":{}}"#;
     let parsed: ModuleType = serde_json::from_str(json).unwrap();
     assert_eq!(parsed, ModuleType::SwiftPackage { apollo_sdk_dependency: ApolloSDKDependency::default() });
     let serialized = serde_json::to_string(&parsed).unwrap();
-    assert_eq!(serialized, json);
+    assert_eq!(
+      serialized,
+      r#"{"swiftPackage":{"apolloSDKDependency":{"url":"https://github.com/apollographql/apollo-ios","sdkVersion":"default"}}}"#
+    );
   }
 
   #[test]
