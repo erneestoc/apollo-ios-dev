@@ -28,6 +28,9 @@ use super::selection_set_template::SelectionSetTemplate;
 pub struct LocalCacheMutationDefinitionTemplate {
     pub operation: Arc<ir::Operation>,
     pub config: ConfigurationContext,
+    /// The schema's referenced types, used to resolve nested input object types when
+    /// rendering variable default values.
+    pub referenced_types: Arc<ir::ReferencedTypes>,
 }
 
 impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
@@ -96,9 +99,18 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
 
         // Initializer (always preceded by blank line)
         result.push('\n');
-        let init = operation_template_renderer::render_initializer(
+        let referenced_types = Arc::clone(&self.referenced_types);
+        let resolve_input_object = move |name: &str| {
+            referenced_types
+                .input_objects
+                .iter()
+                .find(|t| t.name.schema_name == name)
+                .cloned()
+        };
+        let init = operation_template_renderer::render_initializer_resolving(
             &variables,
             &self.config.config,
+            &resolve_input_object,
         );
         result.push_str(&indent(&init, 2));
         result.push('\n');
