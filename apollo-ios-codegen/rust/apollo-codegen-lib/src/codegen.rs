@@ -1113,7 +1113,6 @@ fn matches_prefix(file_path: &str, filter_prefix: Option<&str>) -> bool {
 ///
 /// Mirrors Swift's `generateGraphQLDefinitionFiles()`.
 ///
-/// For local cache mutations, uses a cloned config with `field_merging` overridden to `All`.
 /// When `filter_prefix` is `Some`, only operations/fragments whose `file_path`
 /// starts with `{prefix}/` are generated.
 fn generate_graph_ql_definition_files(
@@ -1131,16 +1130,8 @@ fn generate_graph_ql_definition_files(
         .field_merging
         .contains(FieldMerging::NAMED_FRAGMENTS);
 
-    // A ConfigurationContext for local cache mutations with field_merging overridden to All.
-    // Mirrors Swift's lazy `cacheMutationContext`.
-    let cache_mutation_config = {
-        let mut cache_config = config.config.clone();
-        cache_config.experimental_features.field_merging = FieldMerging::ALL;
-        let mut ctx = ConfigurationContext::new(cache_config, config.root_url.clone());
-        ctx.set_output_root(config.output_root.clone());
-        ctx
-    };
-
+    // Swift < 1.22.0 renders local cache mutations with the user's configuration as-is
+    // (the `cacheMutationContext` override of `fieldMerging` to `.all` arrived in 1.22.0).
     let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
 
     let t_ir = std::time::Instant::now();
@@ -1153,12 +1144,7 @@ fn generate_graph_ql_definition_files(
             continue;
         }
 
-        let is_lcm = fragment.is_local_cache_mutation();
-        let fragment_config = if is_lcm {
-            cache_mutation_config.clone()
-        } else {
-            config.clone()
-        };
+        let fragment_config = config.clone();
 
         let frag_arc = Arc::new(fragment.clone());
         let ir_fragment = ir.build_fragment(&frag_arc);
@@ -1176,12 +1162,7 @@ fn generate_graph_ql_definition_files(
             continue;
         }
 
-        let is_lcm = operation.is_local_cache_mutation();
-        let operation_config = if is_lcm {
-            cache_mutation_config.clone()
-        } else {
-            config.clone()
-        };
+        let operation_config = config.clone();
 
         let op_arc = Arc::new(operation.clone());
         let ir_operation = Arc::new(ir.build_operation(&op_arc));
