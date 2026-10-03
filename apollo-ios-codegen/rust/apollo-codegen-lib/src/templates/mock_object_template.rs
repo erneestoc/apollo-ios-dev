@@ -412,6 +412,8 @@ mod tests {
     //   2.0.3+: `.defaultMockValue`
     const CUSTOM_SCALAR_DEFAULT: &str = ".defaultMockValue";
     const CLASS_DECL: &str = "final class";
+    //   2.1.0+: `markTypesNonisolated` defaults to true
+    const NONISOLATED: &str = "nonisolated ";
     const MOCK_FIELDS_DECL: &str = "struct MockFields: Sendable {";
 
     fn class_decl(access: &str, name: &str) -> String {
@@ -602,7 +604,7 @@ mod tests {
 
         let expected = format!(
             "\
-public {} Dog: MockObject {{
+{}public {} Dog: MockObject {{
   public static let objectType: ApolloAPI.Object = TestSchema.Objects.Dog
   public static let _mockFields = MockFields()
   public typealias MockValueCollectionType = Array<Mock<Dog>>
@@ -611,7 +613,7 @@ public {} Dog: MockObject {{
   }}
 }}
 ",
-            CLASS_DECL, MOCK_FIELDS_DECL
+            NONISOLATED, CLASS_DECL, MOCK_FIELDS_DECL
         );
 
         // The number of trailing newlines varies by version and is covered by the file-level
