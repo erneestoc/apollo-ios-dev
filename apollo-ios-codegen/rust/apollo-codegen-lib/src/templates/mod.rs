@@ -592,7 +592,8 @@ pub fn wrap_in_namespace(body: &str, namespace: &str, access_modifier: &str) -> 
   let mut indented: Vec<String> = body
     .lines()
     .map(|line| {
-      if line.trim().is_empty() {
+      // Like TemplateString.joinedAsLines: only strictly empty lines stay unindented.
+      if line.is_empty() {
         String::new()
       } else {
         format!("  {}", line)
