@@ -150,7 +150,7 @@ mod tests {
 
     /// Whether this Apollo iOS version renders `@typePolicy` key fields into
     /// `ApolloAPI.Object(keyFields:)` (1.17.0+). The parity harness is the source of truth.
-    const RENDERS_KEY_FIELDS: bool = false;
+    const RENDERS_KEY_FIELDS: bool = true;
 
     fn assert_key_fields(actual: &str, expected: &str) {
         if RENDERS_KEY_FIELDS {
