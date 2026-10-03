@@ -975,32 +975,49 @@ impl<'a> SelectionSetTemplate<'a> {
     }
 
     fn fragment_initializer_template(&self, selection_set: &ComputedSelectionSet) -> String {
-        // Swift's `FragmentInitializerTemplate` only looks at the *direct* selections: merged
-        // deferred fragments are initialized by the selection set they were declared in.
-        let Some(direct) = selection_set.direct.as_ref() else {
-            return self.designated_initializer_template(None);
-        };
-        if !(contains_deferred_inline_fragment(&direct.inline_fragments)
-            || contains_deferred_named_fragment(&direct.named_fragments))
-        {
+        // Swift 1.24.0+: deferred fragments merged in from other selection sets are initialized
+        // here too (direct inline, direct named, then merged named fragments).
+        let direct = selection_set.direct.as_ref();
+        let has_deferred = direct.map_or(false, |d| {
+            contains_deferred_inline_fragment(&d.inline_fragments)
+                || contains_deferred_named_fragment(&d.named_fragments)
+        }) || contains_deferred_inline_fragment(&selection_set.merged.inline_fragments)
+            || contains_deferred_named_fragment(&selection_set.merged.named_fragments);
+        if !has_deferred {
             return self.designated_initializer_template(None);
         }
 
         // Each `forEachIn` maps non-deferred fragments to an empty template (see
         // `for_each_in_joined`); an empty block removes its line from the template.
-        let inline_statements = for_each_in_joined(
-            direct.inline_fragments.values().map(|inline_frag| {
-                match inline_frag.selection_set.type_info.defer_condition() {
-                    Some(defer_cond) => {
-                        format!("_{} = Deferred(_dataDict: _dataDict)", defer_cond.label)
+        let mut blocks: Vec<String> = Vec::new();
+        if let Some(direct) = direct {
+            blocks.push(for_each_in_joined(
+                direct.inline_fragments.values().map(|inline_frag| {
+                    match inline_frag.selection_set.type_info.defer_condition() {
+                        Some(defer_cond) => {
+                            format!("_{} = Deferred(_dataDict: _dataDict)", defer_cond.label)
+                        }
+                        None => String::new(),
                     }
-                    None => String::new(),
-                }
-            }),
-            "\n",
-        );
-        let named_statements = for_each_in_joined(
-            direct.named_fragments.values().map(|named_frag| {
+                }),
+                "\n",
+            ));
+            blocks.push(for_each_in_joined(
+                direct.named_fragments.values().map(|named_frag| {
+                    if named_frag.type_info.defer_condition().is_some() {
+                        format!(
+                            "_{} = Deferred(_dataDict: _dataDict)",
+                            first_lowercased(named_frag.fragment.name())
+                        )
+                    } else {
+                        String::new()
+                    }
+                }),
+                "\n",
+            ));
+        }
+        blocks.push(for_each_in_joined(
+            selection_set.merged.named_fragments.values().map(|named_frag| {
                 if named_frag.type_info.defer_condition().is_some() {
                     format!(
                         "_{} = Deferred(_dataDict: _dataDict)",
@@ -1011,11 +1028,8 @@ impl<'a> SelectionSetTemplate<'a> {
                 }
             }),
             "\n",
-        );
-        let blocks: Vec<String> = [inline_statements, named_statements]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect();
+        ));
+        let blocks: Vec<String> = blocks.into_iter().filter(|s| !s.is_empty()).collect();
 
         self.designated_initializer_template(Some(&blocks.join("\n")))
     }
