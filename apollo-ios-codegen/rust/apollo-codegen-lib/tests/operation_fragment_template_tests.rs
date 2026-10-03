@@ -404,7 +404,7 @@ fn test_fragment_template_renders_without_panic() {
 }
 
 #[test]
-fn test_all_animals_query_renders_class_declaration() {
+fn test_all_animals_query_renders_struct_declaration() {
     let dir = animal_kingdom_graphql_dir();
     let schema_path = dir.join("AnimalSchema.graphqls");
     let op_files = collect_all_graphql_files();
@@ -416,13 +416,13 @@ fn test_all_animals_query_renders_class_declaration() {
     let config = animal_kingdom_config();
     let rendered = render_operation(&builder, op, config);
 
-    assert!(rendered.contains("class AllAnimalsQuery: GraphQLQuery"), "Missing class declaration");
+    assert!(rendered.contains("struct AllAnimalsQuery: GraphQLQuery"), "Missing struct declaration");
     assert!(rendered.contains("static let operationName: String = \"AllAnimalsQuery\""), "Missing operationName");
     assert!(rendered.contains("operationDocument"), "Missing operationDocument");
 }
 
 #[test]
-fn test_dog_query_renders_class_declaration() {
+fn test_dog_query_renders_struct_declaration() {
     let dir = animal_kingdom_graphql_dir();
     let schema_path = dir.join("AnimalSchema.graphqls");
     let op_files = collect_all_graphql_files();
@@ -434,12 +434,12 @@ fn test_dog_query_renders_class_declaration() {
     let config = animal_kingdom_config();
     let rendered = render_operation(&builder, op, config);
 
-    assert!(rendered.contains("class DogQuery: GraphQLQuery"), "Missing class declaration");
+    assert!(rendered.contains("struct DogQuery: GraphQLQuery"), "Missing struct declaration");
     assert!(rendered.contains("static let operationName: String = \"DogQuery\""), "Missing operationName");
 }
 
 #[test]
-fn test_pet_adoption_mutation_renders_class_declaration() {
+fn test_pet_adoption_mutation_renders_struct_declaration() {
     let dir = animal_kingdom_graphql_dir();
     let schema_path = dir.join("AnimalSchema.graphqls");
     let op_files = collect_all_graphql_files();
@@ -451,7 +451,7 @@ fn test_pet_adoption_mutation_renders_class_declaration() {
     let config = animal_kingdom_config();
     let rendered = render_operation(&builder, op, config);
 
-    assert!(rendered.contains("class PetAdoptionMutation: GraphQLMutation"), "Missing class declaration");
+    assert!(rendered.contains("struct PetAdoptionMutation: GraphQLMutation"), "Missing struct declaration");
 }
 
 #[test]
