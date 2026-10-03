@@ -1783,6 +1783,30 @@ fn print_arguments(args: &[apollo_compiler::Node<ast::Argument>], prefix: &str, 
     result
 }
 
+/// Escapes a string value the way graphql-js's `printString` does: `"` and `\\` get a
+/// backslash, `\b \t \n \f \r` use their short escapes, and every other control character
+/// (U+0000-U+001F, U+007F-U+009F) is written as an upper-case `\uXXXX` escape. Everything
+/// else (including non-ASCII text) is emitted verbatim.
+fn print_string_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || (0x7F..=0x9F).contains(&(c as u32)) => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn print_argument(arg: &ast::Argument) -> String {
     format!("{}: {}", arg.name, print_value(&arg.value))
 }
@@ -1814,7 +1838,7 @@ fn print_value(value: &ast::Value) -> String {
         ast::Value::Boolean(b) => if *b { "true" } else { "false" }.to_string(),
         ast::Value::Int(i) => i.to_string(),
         ast::Value::Float(f) => f.to_string(),
-        ast::Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        ast::Value::String(s) => format!("\"{}\"", print_string_escaped(s)),
         ast::Value::Enum(e) => e.to_string(),
         ast::Value::Variable(v) => format!("${}", v),
         ast::Value::List(items) => {
