@@ -14,6 +14,7 @@ pub mod graphql_type_rendered;
 pub mod graphql_input_field_rendered;
 pub mod composite_type_namespace;
 pub mod field_argument_rendering;
+pub mod for_each_in;
 pub mod input_variable_renderable;
 pub mod ir_definition_rendering;
 pub mod operation_template_renderer;

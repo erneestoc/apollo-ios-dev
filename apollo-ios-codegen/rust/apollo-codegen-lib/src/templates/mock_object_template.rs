@@ -19,10 +19,11 @@ use crate::templates::rendering_helpers::graphql_name_rendering::{
     render_enum_value, render_named_type, EnumRenderContext, RenderContext,
 };
 use crate::templates::rendering_helpers::graphql_type_rendered::{rendered, TypeRenderContext};
+use crate::templates::rendering_helpers::for_each_in::for_each_in_joined;
 use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::rendering_helpers::string_swift_name_escaping::{
     as_test_mock_initializer_parameter_name, render_as_test_mock_field_property_name,
-    is_conflicting_test_mock_field_name,
+    escaped_swift_string_special_characters, is_conflicting_test_mock_field_name,
 };
 use crate::templates::{
     ConfigurationContext, NonFatalErrorRecorder, Scope, TemplateRenderer, TemplateTarget,
@@ -118,9 +119,8 @@ impl TemplateRenderer for MockObjectTemplate {
                         &self.config.config,
                     );
                     format!(
-                        "{}    {}@Field<{}>(\"{}\") public var {}",
+                        "{}    @Field<{}>(\"{}\") public var {}",
                         deprecation_line,
-                        if deprecation_line.is_empty() { "" } else { "    " },
                         field_type,
                         f.response_key,
                         f.property_name,
@@ -224,7 +224,12 @@ fn render_deprecation(
 ) -> String {
     match (deprecation_reason, config.options.warnings_on_deprecated_usage) {
         (Some(reason), Composition::Include) => {
-            format!("@available(*, deprecated, message: \"{}\")\n", reason)
+            // `\(deprecationReason:config:)` escapes Swift string special characters and the
+            // annotation line is indented like the field it precedes.
+            format!(
+                "    @available(*, deprecated, message: \"{}\")\n",
+                escaped_swift_string_special_characters(reason)
+            )
         }
         _ => String::new(),
     }
@@ -374,23 +379,39 @@ fn mock_type_name(graphql_type: &GraphQLType, config: &ApolloCodegenConfiguratio
 ///
 /// Mirrors Swift's `MockObjectTemplate.conflictingFieldNameProperties(_:)`.
 fn conflicting_field_name_properties(fields: &[TemplateField]) -> String {
-    let mut result = String::new();
-    for f in fields {
-        if is_conflicting_test_mock_field_name(&f.response_key) {
-            let descriptor = mock_function_descriptor(&f.graphql_type);
-            result.push_str(&format!(
-                "  var {}: {}? {{\n    get {{ _data[\"{}\"] as? {} }}\n    set {{ _set{}(newValue, for: \\.{}) }}\n  }}\n",
-                f.property_name,
-                f.mock_type,
-                f.property_name,
-                f.mock_type,
-                descriptor,
-                f.property_name,
-            ));
-            result.push('\n');
-        }
+    // Swift maps every field to either the property block or an empty template and joins
+    // them with `forEachIn` semantics (see `for_each_in_joined`): nothing is emitted until the
+    // first conflicting field, and every field after it contributes a line break, so trailing
+    // non-conflicting fields produce blank lines. The result is indented by the interpolation
+    // site (2 spaces) and followed by the `"\n"` terminator plus the template's line break.
+    let elements: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            if is_conflicting_test_mock_field_name(&f.response_key) {
+                let descriptor = mock_function_descriptor(&f.graphql_type);
+                format!(
+                    "var {}: {}? {{\n  get {{ _data[\"{}\"] as? {} }}\n  set {{ _set{}(newValue, for: \\.{}) }}\n}}",
+                    f.property_name,
+                    f.mock_type,
+                    f.property_name,
+                    f.mock_type,
+                    descriptor,
+                    f.property_name,
+                )
+            } else {
+                String::new()
+            }
+        })
+        .collect();
+    let joined = for_each_in_joined(&elements, "\n");
+    if joined.is_empty() {
+        return joined;
     }
-    result
+    let indented: Vec<String> = joined
+        .split('\n')
+        .map(|line| if line.is_empty() { String::new() } else { format!("  {}", line) })
+        .collect();
+    format!("{}\n\n", indented.join("\n"))
 }
 
 #[cfg(test)]
