@@ -8,7 +8,9 @@ use graphql_compiler::graphql_value::GraphQLValue;
 
 use crate::config::ApolloCodegenConfiguration;
 use super::graphql_type_rendered::{rendered, TypeRenderContext};
-use super::input_variable_renderable::{render_variable_default_value, InputVariable};
+use super::input_variable_renderable::{
+  render_variable_default_value_resolving, InputObjectResolver, InputVariable,
+};
 use super::string_swift_name_escaping::render_as_field_property_name;
 
 /// A variable definition for rendering in operation templates.
@@ -28,6 +30,16 @@ pub fn render_initializer(
   variables: &[VariableDefinition],
   config: &ApolloCodegenConfiguration,
 ) -> String {
+  render_initializer_resolving(variables, config, &|_| None)
+}
+
+/// Like [`render_initializer`], resolving nested input object types through `resolver` when
+/// rendering variable default values.
+pub fn render_initializer_resolving(
+  variables: &[VariableDefinition],
+  config: &ApolloCodegenConfiguration,
+  resolver: &InputObjectResolver,
+) -> String {
   let init_keyword = "public init";
   if variables.is_empty() {
     return format!("{}() {{}}", init_keyword);
@@ -35,7 +47,7 @@ pub fn render_initializer(
 
   let params: Vec<String> = variables
     .iter()
-    .map(|v| render_variable_parameter(v, config))
+    .map(|v| render_variable_parameter_resolving(v, config, resolver))
     .collect();
 
   let assignments: Vec<String> = variables
@@ -90,6 +102,14 @@ pub fn render_variable_parameter(
   variable: &VariableDefinition,
   config: &ApolloCodegenConfiguration,
 ) -> String {
+  render_variable_parameter_resolving(variable, config, &|_| None)
+}
+
+pub fn render_variable_parameter_resolving(
+  variable: &VariableDefinition,
+  config: &ApolloCodegenConfiguration,
+  resolver: &InputObjectResolver,
+) -> String {
   let name = render_as_field_property_name(&variable.name, config);
   let type_str = rendered(&variable.type_, &TypeRenderContext::InputValue, None, config);
 
@@ -98,7 +118,7 @@ pub fn render_variable_parameter(
       type_: &variable.type_,
       default_value: variable.default_value.as_ref(),
     };
-    let default_val = render_variable_default_value(&input_var, config);
+    let default_val = render_variable_default_value_resolving(&input_var, config, resolver);
     format!("{}: {} = {}", name, type_str, default_val)
   } else {
     format!("{}: {}", name, type_str)
