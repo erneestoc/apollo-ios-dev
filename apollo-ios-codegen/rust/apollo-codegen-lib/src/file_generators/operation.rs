@@ -22,6 +22,8 @@ pub struct OperationFileGenerator {
     pub operation_identifier: Option<String>,
     /// Shared codegen configuration.
     pub config: ConfigurationContext,
+    /// The schema\'s referenced types (resolves nested input object types in defaults).
+    pub referenced_types: Arc<ir::ReferencedTypes>,
 }
 
 impl FileGenerator for OperationFileGenerator {
@@ -39,12 +41,14 @@ impl FileGenerator for OperationFileGenerator {
             Box::new(LocalCacheMutationDefinitionTemplate {
                 operation: self.ir_operation.clone(),
                 config: self.config.clone(),
+                referenced_types: Arc::clone(&self.referenced_types),
             })
         } else {
             Box::new(OperationDefinitionTemplate {
                 operation: self.ir_operation.clone(),
                 operation_identifier: self.operation_identifier.clone(),
                 config: self.config.clone(),
+                referenced_types: Arc::clone(&self.referenced_types),
             })
         }
     }

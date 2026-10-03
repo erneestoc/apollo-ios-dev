@@ -35,6 +35,9 @@ pub struct OperationDefinitionTemplate {
     /// The persisted query identifier for the operation.
     pub operation_identifier: Option<String>,
     pub config: ConfigurationContext,
+    /// The schema's referenced types, used to resolve nested input object types when
+    /// rendering variable default values.
+    pub referenced_types: Arc<ir::ReferencedTypes>,
 }
 
 impl TemplateRenderer for OperationDefinitionTemplate {
@@ -84,9 +87,18 @@ impl TemplateRenderer for OperationDefinitionTemplate {
 
         // Initializer (always preceded by blank line from DocumentType or VariableProperties)
         result.push('\n');
-        let init = operation_template_renderer::render_initializer(
+        let referenced_types = Arc::clone(&self.referenced_types);
+        let resolve_input_object = move |name: &str| {
+            referenced_types
+                .input_objects
+                .iter()
+                .find(|t| t.name.schema_name == name)
+                .cloned()
+        };
+        let init = operation_template_renderer::render_initializer_resolving(
             &variables,
             &self.config,
+            &resolve_input_object,
         );
         result.push_str(&indent(&init, 2));
         result.push('\n');
