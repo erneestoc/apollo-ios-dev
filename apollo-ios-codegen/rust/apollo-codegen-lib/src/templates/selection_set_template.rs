@@ -1007,9 +1007,54 @@ impl<'a> SelectionSetTemplate<'a> {
         result.push_str("\n    ],\n");
         result.push_str("    fulfilledFragments: ");
         result.push_str(&fulfilled);
+        // Swift 1.16.0+: `deferredFragments:` follows when the direct selections declare a
+        // deferred inline or named fragment (InitializerDeferredFragments).
+        if let Some(deferred) = self.initializer_deferred_fragments(selection_set) {
+            result.push_str(",\n    deferredFragments: [\n      ");
+            result.push_str(&deferred);
+            result.push_str("\n    ]");
+        }
         result.push_str("\n  ))\n");
         result.push_str("}");
         result
+    }
+
+    /// Mirrors Swift's `InitializerDeferredFragments(_:)`: the fully qualified names of the
+    /// deferred inline fragments followed by the deferred named fragments of the direct
+    /// selections, or `None` when there are none.
+    fn initializer_deferred_fragments(&self, selection_set: &ComputedSelectionSet) -> Option<String> {
+        let direct = selection_set.direct.as_ref()?;
+        if !(contains_deferred_inline_fragment(&direct.inline_fragments)
+            || contains_deferred_named_fragment(&direct.named_fragments))
+        {
+            return None;
+        }
+        let mut deferred_fragments: IndexSet<String> = IndexSet::new();
+        for inline_frag in direct.inline_fragments.values() {
+            if inline_frag.selection_set.type_info.is_deferred() {
+                deferred_fragments.insert(SelectionSetNameGenerator::generated_selection_set_name(
+                    &inline_frag.selection_set.type_info,
+                    None,
+                    NameFormat::FullyQualified,
+                    &self.config.pluralizer,
+                ));
+            }
+        }
+        for named_frag in direct.named_fragments.values() {
+            if named_frag.type_info.is_deferred() {
+                deferred_fragments.insert(SelectionSetNameGenerator::generated_selection_set_name(
+                    &named_frag.type_info,
+                    None,
+                    NameFormat::FullyQualified,
+                    &self.config.pluralizer,
+                ));
+            }
+        }
+        let items: Vec<String> = deferred_fragments
+            .iter()
+            .map(|name| format!("ObjectIdentifier({}.self)", name))
+            .collect();
+        Some(items.join(",\n      "))
     }
 
     fn initializer_fulfilled_fragments(&self, selection_set: &ComputedSelectionSet) -> String {
