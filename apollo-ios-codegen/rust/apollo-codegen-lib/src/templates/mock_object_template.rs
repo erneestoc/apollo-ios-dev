@@ -411,8 +411,8 @@ mod tests {
     //   1.23.0-2.0.2: non-null custom scalars default to `try! .init(_jsonValue: "")`,
     //   2.0.3+: `.defaultMockValue`
     const CUSTOM_SCALAR_DEFAULT: &str = "try! .init(_jsonValue: \"\")";
-    const CLASS_DECL: &str = "class";
-    const MOCK_FIELDS_DECL: &str = "struct MockFields {";
+    const CLASS_DECL: &str = "final class";
+    const MOCK_FIELDS_DECL: &str = "struct MockFields: Sendable {";
 
     fn class_decl(access: &str, name: &str) -> String {
         format!("{}{} {}: MockObject {{", access, CLASS_DECL, name)

@@ -268,7 +268,7 @@ mod tests {
     use crate::templates::ConfigurationContext;
 
     /// Swift type GraphQL `Int` maps to in this Apollo iOS version (`Int32` from 2.0.0).
-    const INT_SWIFT_TYPE: &str = "Int";
+    const INT_SWIFT_TYPE: &str = "Int32";
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::graphql_value::GraphQLValue;
     use graphql_compiler::schema::{
@@ -821,7 +821,7 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("nonNullableListNullableItemWithDefault: [String?]? = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("\"nonNullableListNullableItemWithDefault\": nonNullableListNullableItemWithDefault\n"), "actual:\n{}", actual);
+        assert!(actual.contains("\"nonNullableListNullableItemWithDefault\": nonNullableListNullableItemWithDefault ?? GraphQLNullable.none\n"), "actual:\n{}", actual);
     }
 
     #[test]
@@ -866,7 +866,8 @@ mod tests {
         };
         let actual = render_body(&template);
         assert!(actual.contains("nonNullableListNonNullableItemWithDefault: [String]? = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("\"nonNullableListNonNullableItemWithDefault\": nonNullableListNonNullableItemWithDefault\n"), "actual:\n{}", actual);
+        // 2.0.0+: optional initializer parameters are null-coalesced into the InputDict
+        assert!(actual.contains("\"nonNullableListNonNullableItemWithDefault\": nonNullableListNonNullableItemWithDefault ?? GraphQLNullable.none\n"), "actual:\n{}", actual);
     }
 
     #[test]
@@ -958,7 +959,8 @@ mod tests {
         // Should have the deprecated annotation on the initializer
         assert!(actual.contains("@available(*, deprecated, message: \"Argument 'fieldOne' is deprecated.\")"), "actual:\n{}", actual);
         // Should have 2 inits: __data init + deprecated all-fields init (both public)
-        let init_count = actual.matches("  public init(").count();
+        // (the `InputDict` initializer carries an `@_spi` attribute from 2.0.0)
+        let init_count = actual.matches("public init(").count();
         assert_eq!(init_count, 2, "Should have exactly 2 public init (data init + all-fields), actual:\n{}", actual);
     }
 
