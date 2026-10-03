@@ -3,6 +3,8 @@
 //! Mirrors Swift's `InputVariableRenderable.swift` from
 //! `Sources/ApolloCodegenLib/Templates/RenderingHelpers/InputVariableRenderable.swift`.
 
+use std::sync::Arc;
+
 use graphql_compiler::graphql_name::GraphQLName;
 use graphql_compiler::graphql_type::GraphQLType;
 use graphql_compiler::graphql_value::GraphQLValue;
@@ -40,17 +42,35 @@ impl<'a> InputVariableRenderable for InputVariable<'a> {
 /// Renders the default value for an input variable.
 ///
 /// Mirrors Swift's `InputVariableRenderable.renderVariableDefaultValue(config:)`.
+/// Resolves an input object type by schema name.
+///
+/// The compiler builds input object types with immutable shared ownership, so the
+/// `GraphQLInputObjectType` reachable through another input object's field may be an
+/// unresolved stub without fields (recursive or forward references). Swift's JavaScript
+/// bridge has reference semantics and always sees the complete type; the resolver gives the
+/// renderer the same view by looking the type up in the schema's referenced types.
+pub type InputObjectResolver<'a> = dyn Fn(&str) -> Option<Arc<GraphQLInputObjectType>> + 'a;
+
 pub fn render_variable_default_value(
   renderable: &dyn InputVariableRenderable,
   config: &ApolloCodegenConfiguration,
 ) -> String {
-  render_variable_default_value_inner(renderable, false, config)
+  render_variable_default_value_resolving(renderable, config, &|_| None)
+}
+
+pub fn render_variable_default_value_resolving(
+  renderable: &dyn InputVariableRenderable,
+  config: &ApolloCodegenConfiguration,
+  resolver: &InputObjectResolver,
+) -> String {
+  render_variable_default_value_inner(renderable, false, config, resolver)
 }
 
 fn render_variable_default_value_inner(
   renderable: &dyn InputVariableRenderable,
   in_list: bool,
   config: &ApolloCodegenConfiguration,
+  resolver: &InputObjectResolver,
 ) -> String {
   match renderable.default_value() {
     None => String::new(),
@@ -89,7 +109,7 @@ fn render_variable_default_value_inner(
             type_: list_inner_type,
             default_value: Some(v),
           };
-          let rendered = render_variable_default_value_inner(&variable, true, config);
+          let rendered = render_variable_default_value_inner(&variable, true, config, resolver);
           if rendered.is_empty() { None } else { Some(rendered) }
         })
         .collect();
@@ -105,7 +125,7 @@ fn render_variable_default_value_inner(
       match renderable.type_() {
         GraphQLType::NonNull(inner) => {
           if let GraphQLType::InputObject(input_obj_type) = inner.as_ref() {
-            render_initializer(input_obj_type, object, config)
+            render_initializer(input_obj_type, object, config, resolver)
           } else {
             panic!("Variable type must be InputObject with value of .object type.")
           }
@@ -114,11 +134,11 @@ fn render_variable_default_value_inner(
           // Swift 2.0.0: inside a list the initializer is rendered directly;
           // otherwise `.init(\n  <initializer>\n)` with continuation indentation.
           if in_list {
-            render_initializer(input_obj_type, object, config)
+            render_initializer(input_obj_type, object, config, resolver)
           } else {
             format!(
               ".init(\n  {}\n)",
-              indent_continuation_lines(&render_initializer(input_obj_type, object, config), "  ")
+              indent_continuation_lines(&render_initializer(input_obj_type, object, config, resolver), "  ")
             )
           }
         }
@@ -138,7 +158,13 @@ fn render_initializer(
   input_type: &GraphQLInputObjectType,
   values: &indexmap::IndexMap<String, GraphQLValue>,
   config: &ApolloCodegenConfiguration,
+  resolver: &InputObjectResolver,
 ) -> String {
+  let resolved = resolver(&input_type.name.schema_name);
+  let input_type: &GraphQLInputObjectType = match resolved.as_deref() {
+    Some(complete) => complete,
+    None => input_type,
+  };
   let entries: Vec<String> = values
     .iter()
     .filter_map(|(key, value)| {
@@ -148,7 +174,7 @@ fn render_initializer(
         default_value: Some(value),
       };
       let rendered_name = render_input_field(field, config);
-      let rendered_value = render_variable_default_value(&variable, config);
+      let rendered_value = render_variable_default_value_resolving(&variable, config, resolver);
       Some(format!("{}: {}", rendered_name, rendered_value))
     })
     .collect();
