@@ -1041,13 +1041,10 @@ impl<'a> SelectionSetTemplate<'a> {
             }
         }
         for named_frag in direct.named_fragments.values() {
+            // Swift 1.17.0+: deferred named fragments are identified by the fragment's
+            // generated definition name.
             if named_frag.type_info.is_deferred() {
-                deferred_fragments.insert(SelectionSetNameGenerator::generated_selection_set_name(
-                    &named_frag.type_info,
-                    None,
-                    NameFormat::FullyQualified,
-                    &self.config.pluralizer,
-                ));
+                deferred_fragments.insert(generated_fragment_definition_name(named_frag.fragment.name()));
             }
         }
         let items: Vec<String> = deferred_fragments
