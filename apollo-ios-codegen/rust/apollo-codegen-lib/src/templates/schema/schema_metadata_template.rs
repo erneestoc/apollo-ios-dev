@@ -474,7 +474,7 @@ mod tests {
 
     /// Whether `objectType(forTypename:)` looks the object up in a `[String: Object]`
     /// dictionary (upstream 1.25.4-1.25.7 and 2.1.0+) instead of a `switch` statement.
-    const OBJECT_TYPE_LOOKUP_IS_DICTIONARY: bool = false;
+    const OBJECT_TYPE_LOOKUP_IS_DICTIONARY: bool = true;
 
     /// Asserts the lookup entry rendered for an object with the given schema name and Swift name.
     fn assert_object_type_entry(body: &str, schema_name: &str, swift_name: &str) {

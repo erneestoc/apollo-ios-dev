@@ -27,7 +27,8 @@ use apollo_codegen_lib::templates::{ConfigurationContext, TemplateRenderer};
 // Swift dialect of the Apollo iOS version this branch targets (`MockObjectTemplate.swift` at the
 // matching upstream tag); the byte-for-byte parity harness is the source of truth.
 // 2.0.0+: "public final class" / "public struct MockFields: Sendable {"
-const MOCK_CLASS_DECL: &str = "public final class";
+// 2.1.0+: `markTypesNonisolated` defaults to true
+const MOCK_CLASS_DECL: &str = "nonisolated public final class";
 const MOCK_FIELDS_DECL: &str = "public struct MockFields: Sendable {";
 // 1.23.0+: convenience-initializer parameters for non-null fields get default values
 const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = true;
