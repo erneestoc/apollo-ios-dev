@@ -35,7 +35,7 @@ fn full_config_round_trip() {
     },
     "options": {
       "additionalInflectionRules": [
-        {"type": "pluralization", "singularRegex": "animal", "replacementRegex": "animals"}
+        {"pluralization": {"singularRegex": "animal", "replacementRegex": "animals"}}
       ],
       "deprecatedEnumCases": "exclude",
       "schemaDocumentation": "exclude",
