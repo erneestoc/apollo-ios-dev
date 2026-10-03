@@ -200,6 +200,10 @@ fn render_input_field_name(
 mod tests {
   use super::*;
   use crate::config::ApolloCodegenConfiguration;
+
+  /// Swift type GraphQL `Int` maps to as an input value in this Apollo iOS version (`Int32`
+  /// from 2.0.0).
+  const INT_INPUT_VALUE_SWIFT_TYPE: &str = "Int";
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::{
     GraphQLEnumType, GraphQLObjectType,
@@ -299,7 +303,7 @@ mod tests {
     let named = make_scalar_type("Int");
     assert_eq!(
       render_named_type(&named, &RenderContext::Typename { is_input_value: true }),
-      "Int32"
+      INT_INPUT_VALUE_SWIFT_TYPE
     );
   }
 

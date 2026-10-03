@@ -266,6 +266,9 @@ mod tests {
     use super::*;
     use crate::config::ApolloCodegenConfiguration;
     use crate::templates::ConfigurationContext;
+
+    /// Swift type GraphQL `Int` maps to in this Apollo iOS version (`Int32` from 2.0.0).
+    const INT_SWIFT_TYPE: &str = "Int";
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::graphql_value::GraphQLValue;
     use graphql_compiler::schema::{
@@ -682,8 +685,8 @@ mod tests {
             config: spm_config(),
         };
         let actual = render_body(&template);
-        assert!(actual.contains("nullable: GraphQLNullable<Int32> = nil"), "actual:\n{}", actual);
-        assert!(actual.contains("public var nullable: GraphQLNullable<Int32> {"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("nullable: GraphQLNullable<{}> = nil", INT_SWIFT_TYPE)), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("public var nullable: GraphQLNullable<{}> {{", INT_SWIFT_TYPE)), "actual:\n{}", actual);
     }
 
     #[test]
@@ -701,7 +704,7 @@ mod tests {
             config: spm_config(),
         };
         let actual = render_body(&template);
-        assert!(actual.contains("nullableWithDefault: GraphQLNullable<Int32> = nil"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("nullableWithDefault: GraphQLNullable<{}> = nil", INT_SWIFT_TYPE)), "actual:\n{}", actual);
     }
 
     #[test]
@@ -712,8 +715,8 @@ mod tests {
             config: spm_config(),
         };
         let actual = render_body(&template);
-        assert!(actual.contains("nonNullable: Int32\n  )"), "actual:\n{}", actual);
-        assert!(actual.contains("public var nonNullable: Int32 {"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("nonNullable: {}\n  )", INT_SWIFT_TYPE)), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("public var nonNullable: {} {{", INT_SWIFT_TYPE)), "actual:\n{}", actual);
     }
 
     #[test]
@@ -731,9 +734,9 @@ mod tests {
             config: spm_config(),
         };
         let actual = render_body(&template);
-        assert!(actual.contains("nonNullableWithDefault: Int32? = nil"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("nonNullableWithDefault: {}? = nil", INT_SWIFT_TYPE)), "actual:\n{}", actual);
         assert!(actual.contains("\"nonNullableWithDefault\": nonNullableWithDefault"), "actual:\n{}", actual);
-        assert!(actual.contains("public var nonNullableWithDefault: Int32? {"), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("public var nonNullableWithDefault: {}? {{", INT_SWIFT_TYPE)), "actual:\n{}", actual);
     }
 
     #[test]
