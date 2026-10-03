@@ -261,7 +261,7 @@ fn build_pipeline(
 
     let fragment_defs_vec: Vec<FragmentDefinition> =
         fragment_defs.values().map(|f| (**f).clone()).collect();
-    let all_types = collect_referenced_types(&registry, &operations, &fragment_defs_vec);
+    let all_types = collect_referenced_types(&registry, &operations, &fragment_defs_vec, false);
 
     let compilation_result = Arc::new(CompilationResult {
         schema_root_types,
