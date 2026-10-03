@@ -113,7 +113,7 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
         // Selection set (Data struct) - uses MutableSelectionSet
         let selection_set_type = rendered_selection_set_type(&self.config, true);
         let generate_initializers = should_generate_selection_set_initializers(
-            &self.config.config.options.selection_set_initializers,
+            &self.config.config,
             self.operation.as_ref(),
             false,
         );
