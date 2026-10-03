@@ -225,10 +225,10 @@ mod tests {
             "body:\n{}",
             result.body
         );
-        // 1.15.1: no @_spi annotations on schema type imports
+        // 2.0.0+: custom scalar files import ApolloAPI with the Internal and Execution SPIs
         assert!(
-            !result.body.contains("@_spi"),
-            "body should not contain @_spi:\n{}",
+            result.body.contains("@_spi(Internal) @_spi(Execution) import ApolloAPI"),
+            "body:\n{}",
             result.body
         );
     }
