@@ -28,7 +28,9 @@ use std::path::PathBuf;
 // Build the CLI binary once for all tests.
 // assert_cmd::Command::cargo_bin only works when the binary is in the same
 // crate or is a dev-dependency's binary. Since apollo-ios-cli is a separate
-// workspace member, we build it via cargo and locate the binary in the target dir.
+// workspace member, we build it via cargo and locate the binary in the target
+// profile directory this test binary was built into (so CARGO_TARGET_DIR and
+// --target-dir are honored).
 static BUILD_ONCE: Once = Once::new();
 
 fn workspace_root() -> PathBuf {
@@ -37,23 +39,38 @@ fn workspace_root() -> PathBuf {
     path
 }
 
+/// `<target-dir>/<profile>` for the running test binary (cargo puts tests in `<profile>/deps`).
+fn target_profile_dir() -> PathBuf {
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut dir = exe.parent().expect("test binary directory").to_path_buf();
+    if dir.file_name().map(|n| n == "deps").unwrap_or(false) {
+        dir.pop();
+    }
+    dir
+}
+
 fn cli_bin() -> Command {
+    let profile_dir = target_profile_dir();
+    let bin = profile_dir.join(format!("apollo-ios-cli{}", std::env::consts::EXE_SUFFIX));
+
     BUILD_ONCE.call_once(|| {
-        let status = std::process::Command::new("cargo")
-            .args(["build", "--bin", "apollo-ios-cli"])
+        let target_dir = profile_dir.parent().expect("target directory").to_path_buf();
+        let mut args = vec!["build", "--bin", "apollo-ios-cli"];
+        if profile_dir.file_name().map(|n| n == "release").unwrap_or(false) {
+            args.push("--release");
+        }
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(&args)
+            .arg("--target-dir")
+            .arg(&target_dir)
             .current_dir(workspace_root())
             .status()
             .expect("failed to build apollo-ios-cli");
         assert!(status.success(), "cargo build --bin apollo-ios-cli failed");
+        assert!(bin.is_file(), "apollo-ios-cli not found at {}", bin.display());
     });
 
-    // Find the binary in the target directory
-    let mut path = workspace_root();
-    path.push("target");
-    path.push("debug");
-    path.push("apollo-ios-cli");
-
-    Command::new(path)
+    Command::new(bin)
 }
 
 // ============================================================================
