@@ -11,7 +11,6 @@ use graphql_compiler::compilation_result;
 
 use crate::config::operation_document_format::OperationDocumentFormat;
 use crate::templates::rendering_helpers::ir_definition_rendering::rendered_selection_set_type;
-use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::rendering_helpers::string_single_line::converted_to_single_line;
 use crate::templates::rendering_helpers::string_swift_name_escaping::as_fragment_name;
 use crate::templates::{
@@ -62,7 +61,7 @@ impl TemplateRenderer for FragmentTemplate {
         let mut result = String::new();
 
         // Struct declaration; `Identifiable` conformance mirrors Swift 1.18.0.
-        let fragment_name = as_fragment_name(&first_uppercased(&self.fragment.definition.name));
+        let fragment_name = as_fragment_name(&self.fragment.definition.name, &self.config.capitalizer);
         let is_mutable = self.fragment.definition.is_local_cache_mutation();
         let selection_set_type = rendered_selection_set_type(&self.config, is_mutable);
         let identifiable = if self.fragment.is_identifiable() { ", Identifiable" } else { "" };

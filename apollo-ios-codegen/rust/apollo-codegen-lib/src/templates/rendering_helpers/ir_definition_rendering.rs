@@ -4,6 +4,8 @@
 //! `Sources/ApolloCodegenLib/Templates/RenderingHelpers/IRDefinition+RenderingHelpers.swift`.
 
 use super::string_casing::first_uppercased;
+use super::string_swift_name_escaping::{as_fragment_name, as_normalized_fragment_name};
+use crate::capitalizer::Capitalizer;
 use crate::templates::ConfigurationContext;
 
 /// Returns the rendered selection set type for a definition.
@@ -55,6 +57,40 @@ pub fn generated_definition_name(
 /// Mirrors Swift's `CompilationResult.FragmentDefinition.generatedDefinitionName`.
 pub fn generated_fragment_definition_name(name: &str) -> String {
   first_uppercased(name)
+}
+
+/// The generated operation type name with any configured capitalization rules applied.
+/// The result always begins with a capital letter. Only the generated Swift type name is
+/// affected; the operation's `name` (the `operationName` literal) is never changed.
+///
+/// Mirrors Swift's `CompilationResult.OperationDefinition.generatedDefinitionName(capitalizer:)` (2.4.0).
+pub fn generated_definition_name_capitalized(
+  name: &str,
+  operation_type: &str,
+  is_local_cache_mutation: bool,
+  capitalizer: &Capitalizer,
+) -> String {
+  first_uppercased(&capitalizer.apply(&generated_definition_name(
+    name,
+    operation_type,
+    is_local_cache_mutation,
+  )))
+}
+
+/// The generated fragment type name with any configured capitalization rules applied; names
+/// that collide with reserved type names are suffixed with `_Fragment`.
+///
+/// Mirrors Swift's `CompilationResult.FragmentDefinition.generatedDefinitionName(capitalizer:)` (2.4.0).
+pub fn generated_fragment_definition_name_capitalized(name: &str, capitalizer: &Capitalizer) -> String {
+  as_fragment_name(name, capitalizer)
+}
+
+/// The name of the generated file for a fragment: the capitalized name without the reserved
+/// type name `_Fragment` suffix.
+///
+/// Mirrors Swift's `CompilationResult.FragmentDefinition.generatedFileName(capitalizer:)` (2.4.0).
+pub fn generated_fragment_file_name(name: &str, capitalizer: &Capitalizer) -> String {
+  as_normalized_fragment_name(name, capitalizer)
 }
 
 #[cfg(test)]

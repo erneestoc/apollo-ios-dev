@@ -5,6 +5,7 @@
 
 use crate::config::swift_keywords::{is_in, SwiftKeywords};
 use crate::config::conversion_strategies::FieldAccessors;
+use crate::capitalizer::Capitalizer;
 use crate::templates::ConfigurationContext;
 use super::string_casing::{first_lowercased, first_uppercased, is_all_uppercased};
 
@@ -22,14 +23,28 @@ pub fn as_selection_set_name(s: &str) -> String {
   }
 }
 
-/// Returns the string as a fragment name (first uppercased), suffixing if it conflicts.
-pub fn as_fragment_name(s: &str) -> String {
-  let uppercased_name = first_uppercased(s);
-  if is_in(SwiftKeywords::TYPE_NAMES_TO_SUFFIX, &uppercased_name) {
-    format!("{}_Fragment", uppercased_name)
+/// Renders the string as a generated fragment type name with any configured capitalization
+/// rules applied. Names that collide with reserved type names are suffixed with `_Fragment`.
+///
+/// Mirrors Swift's `String.asFragmentName(capitalizer:)` (2.4.0).
+pub fn as_fragment_name(s: &str, capitalizer: &Capitalizer) -> String {
+  let name = as_normalized_fragment_name(s, capitalizer);
+  if is_in(SwiftKeywords::TYPE_NAMES_TO_SUFFIX, &name) {
+    format!("{}_Fragment", name)
   } else {
-    uppercased_name
+    name
   }
+}
+
+/// Normalizes the string as a generated fragment name, without reserved type name escaping.
+/// Shared by the generated fragment type name and file name so the two cannot drift apart.
+///
+/// The name is `firstUppercased` both before the rules run (so rules match the type-name form
+/// of each word segment) and after (so the name always begins with a capital letter).
+///
+/// Mirrors Swift's `String.asNormalizedFragmentName(capitalizer:)` (2.4.0).
+pub fn as_normalized_fragment_name(s: &str, capitalizer: &Capitalizer) -> String {
+  first_uppercased(&capitalizer.apply(&first_uppercased(s)))
 }
 
 /// Returns the string as a test mock field property name, escaping if it conflicts.
@@ -324,13 +339,13 @@ mod tests {
 
   #[test]
   fn test_as_fragment_name_conflict() {
-    assert_eq!(as_fragment_name("string"), "String_Fragment");
-    assert_eq!(as_fragment_name("protocol"), "Protocol_Fragment");
+    assert_eq!(as_fragment_name("string", &Capitalizer::default()), "String_Fragment");
+    assert_eq!(as_fragment_name("protocol", &Capitalizer::default()), "Protocol_Fragment");
   }
 
   #[test]
   fn test_as_fragment_name_no_conflict() {
-    assert_eq!(as_fragment_name("user"), "User");
+    assert_eq!(as_fragment_name("user", &Capitalizer::default()), "User");
   }
 
   #[test]

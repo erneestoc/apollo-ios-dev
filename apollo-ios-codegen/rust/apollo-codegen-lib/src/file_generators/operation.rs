@@ -9,7 +9,7 @@ use ir;
 
 use crate::templates::local_cache_mutation_definition_template::LocalCacheMutationDefinitionTemplate;
 use crate::templates::operation_definition_template::OperationDefinitionTemplate;
-use crate::templates::rendering_helpers::ir_definition_rendering::generated_definition_name;
+use crate::templates::rendering_helpers::ir_definition_rendering::generated_definition_name_capitalized;
 use crate::templates::{ConfigurationContext, TemplateRenderer};
 
 use super::{FileGenerator, FileTarget};
@@ -26,10 +26,11 @@ pub struct OperationFileGenerator {
 
 impl FileGenerator for OperationFileGenerator {
     fn file_name(&self) -> String {
-        generated_definition_name(
+        generated_definition_name_capitalized(
             &self.ir_operation.definition.name,
             &self.ir_operation.definition.operation_type.to_string(),
             self.ir_operation.definition.is_local_cache_mutation(),
+            &self.config.capitalizer,
         )
     }
 

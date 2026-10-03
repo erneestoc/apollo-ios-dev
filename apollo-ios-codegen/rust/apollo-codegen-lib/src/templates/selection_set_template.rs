@@ -27,7 +27,6 @@ use utilities::linked_list::LinkedList;
 use crate::templates::SPI;
 use crate::config::composition::Composition;
 use crate::config::field_merging::FieldMerging;
-use crate::pluralizer::Pluralizer;
 use crate::templates::rendering_helpers::composite_type_namespace::schema_types_namespace;
 use crate::templates::rendering_helpers::field_argument_rendering::render_input_value_literal;
 use crate::templates::rendering_helpers::graphql_name_rendering::{
@@ -36,7 +35,7 @@ use crate::templates::rendering_helpers::graphql_name_rendering::{
 use crate::templates::rendering_helpers::graphql_type_rendered::{
     rendered as render_graphql_type, TypeRenderContext,
 };
-use crate::templates::rendering_helpers::ir_definition_rendering::generated_fragment_definition_name;
+use crate::templates::rendering_helpers::ir_definition_rendering::generated_fragment_definition_name_capitalized;
 use crate::templates::rendering_helpers::selection_set_name_generator::{
     self, NameFormat, SelectionSetNameCache, SelectionSetNameGenerator,
 };
@@ -223,7 +222,7 @@ impl<'a> SelectionSetTemplate<'a> {
             &selection_set.type_info,
             None,
             NameFormat::OmittingRoot,
-            &self.config.pluralizer,
+            &self.config,
         );
 
         let mut result = format!("/// {}\n", name);
@@ -395,7 +394,7 @@ impl<'a> SelectionSetTemplate<'a> {
                     .head_node(),
             ),
             NameFormat::FullyQualified,
-            &self.config.pluralizer,
+            &self.config,
         );
         format!(
             "{}typealias RootEntityType = {}",
@@ -431,7 +430,7 @@ impl<'a> SelectionSetTemplate<'a> {
                     source,
                     None,
                     NameFormat::FullyQualified,
-                    &self.config.pluralizer,
+                    &self.config,
                 );
                 format!("  {}.self", name)
             })
@@ -462,7 +461,7 @@ impl<'a> SelectionSetTemplate<'a> {
                 selection_set,
                 Some(node),
                 NameFormat::FullyQualified,
-                &self.config.pluralizer,
+                &self.config,
             );
             fulfilled_fragments.insert(name);
             current_node = node.next();
@@ -471,7 +470,7 @@ impl<'a> SelectionSetTemplate<'a> {
         for source in &selection_set.merged.merged_sources {
             let names = generated_selection_set_names_of_fulfilled_fragments(
                 source,
-                &self.config.pluralizer,
+                &self.config,
             );
             for name in names {
                 fulfilled_fragments.insert(name);
@@ -508,7 +507,7 @@ impl<'a> SelectionSetTemplate<'a> {
                     &inline_frag.selection_set.type_info,
                     None,
                     NameFormat::FullyQualified,
-                    &self.config.pluralizer,
+                    &self.config,
                 );
                 deferred_fragments.insert(name);
             }
@@ -517,7 +516,7 @@ impl<'a> SelectionSetTemplate<'a> {
         for named_frag in direct_selections.named_fragments.values() {
             if named_frag.type_info.defer_condition().is_some() {
                 deferred_fragments.insert(
-                    generated_fragment_definition_name(named_frag.fragment.name()),
+                    generated_fragment_definition_name_capitalized(named_frag.fragment.name(), &self.config.capitalizer),
                 );
             }
         }
@@ -768,7 +767,7 @@ impl<'a> SelectionSetTemplate<'a> {
         if let Some(defer_condition) = fragment.type_info.defer_condition() {
             return self.deferred_named_fragment_selection_template(defer_condition, fragment);
         }
-        let name = as_fragment_name(&fragment.fragment.name());
+        let name = as_fragment_name(&fragment.fragment.name(), &self.config.capitalizer);
         format!(".fragment({}.self)", name)
     }
 
@@ -799,7 +798,7 @@ impl<'a> SelectionSetTemplate<'a> {
             .as_ref()
             .map(|v| format!("if: \"{}\", ", v))
             .unwrap_or_default();
-        let name = as_fragment_name(&fragment.fragment.name());
+        let name = as_fragment_name(&fragment.fragment.name(), &self.config.capitalizer);
         format!(
             ".deferred({}{}.self, label: \"{}\")",
             var_part, name, defer_condition.label
@@ -1023,7 +1022,7 @@ impl<'a> SelectionSetTemplate<'a> {
     ) -> String {
         let name = fragment.fragment.name();
         let property_name = first_lowercased(name);
-        let type_name = as_fragment_name(name);
+        let type_name = as_fragment_name(name, &self.config.capitalizer);
         let is_optional = fragment.inclusion_conditions.is_some()
             && !scope.matches_any_of(fragment.inclusion_conditions.as_ref().unwrap());
         let is_deferred = fragment.type_info.defer_condition().is_some();
@@ -1031,7 +1030,7 @@ impl<'a> SelectionSetTemplate<'a> {
         if is_deferred {
             return self.deferred_fragment_accessor_template(
                 &first_lowercased(name),
-                &as_fragment_name(name),
+                &as_fragment_name(name, &self.config.capitalizer),
             );
         }
 
@@ -1255,7 +1254,7 @@ pub fn name_for_referenced_selection_set(
     Some(generated_selection_set_name_path(
         source,
         &sel.type_info,
-        &config.pluralizer,
+        config,
     ))
 }
 
@@ -1274,11 +1273,11 @@ pub fn rendered_type_name(type_info: &TypeInfo) -> String {
 pub fn generated_selection_set_name_path(
     source: &MergedSource,
     target_type_info: &TypeInfo,
-    pluralizer: &Pluralizer,
+    config: &ConfigurationContext,
 ) -> String {
     if let Some(ref fragment) = source.fragment {
         return generated_selection_set_name_for_merged_entity_in_fragment(
-            source, fragment, pluralizer,
+            source, fragment, config,
         );
     }
 
@@ -1307,7 +1306,7 @@ pub fn generated_selection_set_name_path(
             source,
             None,
             NameFormat::FullyQualified,
-            pluralizer,
+            config,
         );
     }
 
@@ -1343,14 +1342,14 @@ pub fn generated_selection_set_name_path(
             None,
             Some(fp_node),
             remove_first_component,
-            pluralizer,
+            config,
         )
     } else {
         SelectionSetNameGenerator::generated_selection_set_name_for_merged_source(
             source,
             None,
             NameFormat::FullyQualified,
-            pluralizer,
+            config,
         )
     }
 }
@@ -1392,11 +1391,12 @@ fn represents_same_scope(target: &ScopeDescriptor, source: &ScopeDescriptor) -> 
 fn generated_selection_set_name_for_merged_entity_in_fragment(
     source: &MergedSource,
     fragment: &ir::NamedFragment,
-    pluralizer: &Pluralizer,
+    config: &ConfigurationContext,
 ) -> String {
-    use crate::templates::rendering_helpers::ir_definition_rendering::generated_fragment_definition_name;
-
-    let mut components: Vec<String> = vec![generated_fragment_definition_name(fragment.name())];
+    let mut components: Vec<String> = vec![generated_fragment_definition_name_capitalized(
+        fragment.name(),
+        &config.capitalizer,
+    )];
 
     let root_entity_scope_path = source.type_info.scope_path.head_node();
     if let Some(root_cond_next) = root_entity_scope_path
@@ -1423,7 +1423,7 @@ fn generated_selection_set_name_for_merged_entity_in_fragment(
             None,
             Some(field_node),
             false,
-            pluralizer,
+            config,
         ));
     }
 
@@ -1435,13 +1435,13 @@ fn generated_selection_set_name_for_merged_entity_in_fragment(
 /// Mirrors Swift's `MergedSource.generatedSelectionSetNamesOfFullfilledFragments(pluralizer:)`.
 pub fn generated_selection_set_names_of_fulfilled_fragments(
     source: &MergedSource,
-    pluralizer: &Pluralizer,
+    config: &ConfigurationContext,
 ) -> Vec<String> {
     let entity_root_name = SelectionSetNameGenerator::generated_selection_set_name_for_merged_source(
         source,
         Some(source.type_info.scope_path.last().scope_path.head_node()),
         NameFormat::FullyQualified,
-        pluralizer,
+        config,
     );
 
     let mut fulfilled: Vec<String> = vec![entity_root_name.clone()];

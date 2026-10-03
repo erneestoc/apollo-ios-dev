@@ -11,7 +11,7 @@ use graphql_compiler::compilation_result::OperationType;
 
 use crate::config::operation_document_format::OperationDocumentFormat;
 use crate::templates::rendering_helpers::ir_definition_rendering::{
-    generated_definition_name, rendered_selection_set_type,
+    generated_definition_name_capitalized, rendered_selection_set_type,
 };
 use crate::templates::rendering_helpers::operation_template_renderer::{
     self, VariableDefinition,
@@ -158,10 +158,11 @@ impl OperationDefinitionTemplate {
         parent_access: &AccessControlRenderer,
         member_access: &AccessControlRenderer,
     ) -> String {
-        let definition_name = generated_definition_name(
+        let definition_name = generated_definition_name_capitalized(
             &self.operation.definition.name,
             &self.operation.definition.operation_type.to_string(),
             self.operation.definition.is_local_cache_mutation(),
+            &self.config.capitalizer,
         );
         let protocol_name = rendered_protocol_name(&self.operation.definition.operation_type);
 
@@ -224,7 +225,7 @@ impl OperationDefinitionTemplate {
                     .operation
                     .referenced_fragments
                     .iter()
-                    .map(|f| format!("{}.self", as_fragment_name(&f.name())))
+                    .map(|f| format!("{}.self", as_fragment_name(&f.name(), &self.config.capitalizer)))
                     .collect();
                 result.push_str(&fragment_refs.join(", "));
                 result.push(']');

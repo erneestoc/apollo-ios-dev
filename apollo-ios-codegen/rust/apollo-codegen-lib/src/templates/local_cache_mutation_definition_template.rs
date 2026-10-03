@@ -18,7 +18,7 @@ use crate::templates::{
     TemplateRenderer, TemplateTarget,
 };
 
-use super::rendering_helpers::ir_definition_rendering::generated_definition_name;
+use super::rendering_helpers::ir_definition_rendering::generated_definition_name_capitalized;
 use super::rendering_helpers::selection_set_initializer_check::should_generate_selection_set_initializers;
 use super::selection_set_template::SelectionSetTemplate;
 
@@ -58,10 +58,11 @@ impl TemplateRenderer for LocalCacheMutationDefinitionTemplate {
         let mut result = String::new();
 
         // Class declaration with LocalCacheMutation conformance
-        let definition_name = generated_definition_name(
+        let definition_name = generated_definition_name_capitalized(
             &self.operation.definition.name,
             &self.operation.definition.operation_type.to_string(),
             true, // is_local_cache_mutation
+            &self.config.capitalizer,
         );
         result.push_str(&format!(
             "{}{}struct {}: LocalCacheMutation {{\n",

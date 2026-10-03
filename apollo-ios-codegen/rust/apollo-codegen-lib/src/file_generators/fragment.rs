@@ -8,6 +8,7 @@ use std::sync::Arc;
 use ir;
 
 use crate::templates::fragment_template::FragmentTemplate;
+use crate::templates::rendering_helpers::ir_definition_rendering::generated_fragment_file_name;
 use crate::templates::{ConfigurationContext, TemplateRenderer};
 
 use super::{FileGenerator, FileTarget};
@@ -22,7 +23,7 @@ pub struct FragmentFileGenerator {
 
 impl FileGenerator for FragmentFileGenerator {
     fn file_name(&self) -> String {
-        self.ir_fragment.definition.name.clone()
+        generated_fragment_file_name(&self.ir_fragment.definition.name, &self.config.capitalizer)
     }
 
     fn template(&self) -> Box<dyn TemplateRenderer + '_> {

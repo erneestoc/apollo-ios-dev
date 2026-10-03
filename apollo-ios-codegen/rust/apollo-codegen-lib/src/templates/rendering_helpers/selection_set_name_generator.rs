@@ -9,10 +9,10 @@ use ir::scope_descriptor::ScopeCondition;
 use ir::selection_set::TypeInfo;
 use ir::ComputedSelectionSet;
 
-use crate::pluralizer::Pluralizer;
+use crate::capitalizer::Capitalizer;
 use crate::templates::ConfigurationContext;
 use crate::templates::rendering_helpers::ir_definition_rendering::{
-    generated_definition_name, generated_fragment_definition_name,
+    generated_definition_name_capitalized, generated_fragment_definition_name_capitalized,
 };
 use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::rendering_helpers::string_swift_name_escaping::as_selection_set_name;
@@ -49,7 +49,7 @@ impl SelectionSetNameCache {
         // temporary ComputedSelectionSets can be freed during recursive rendering, causing
         // pointer reuse. We skip caching and always compute — the computation is cheap
         // (just uppercasing + optional singularization of a field name).
-        compute_generated_selection_set_name(type_info, self.pluralizer())
+        compute_generated_selection_set_name(type_info, self.context())
     }
 
     /// Returns the rendered type for an entity field, wrapping the name in the field's
@@ -69,9 +69,9 @@ impl SelectionSetNameCache {
         )
     }
 
-    fn pluralizer(&self) -> &Pluralizer {
+    fn context(&self) -> &ConfigurationContext {
         // SAFETY: The pointer is valid for the lifetime of template rendering.
-        unsafe { &(*self.config).pluralizer }
+        unsafe { &*self.config }
     }
 
     fn config_ref(&self) -> &crate::config::ApolloCodegenConfiguration {
@@ -87,13 +87,13 @@ impl SelectionSetNameCache {
 /// Mirrors Swift's `SelectionSetNameCache.computeGeneratedSelectionSetName(for:)`.
 pub fn compute_generated_selection_set_name(
     type_info: &TypeInfo,
-    pluralizer: &Pluralizer,
+    config: &ConfigurationContext,
 ) -> String {
     let location = &type_info.entity.location;
     if let Some(ref field_path) = location.field_path {
-        formatted_selection_set_name_for_field_component(field_path.last(), pluralizer)
+        formatted_selection_set_name_for_field_component(field_path.last(), config)
     } else {
-        formatted_selection_set_name_for_source(&location.source)
+        formatted_selection_set_name_for_source(&location.source, &config.capitalizer)
     }
 }
 
@@ -123,13 +123,13 @@ impl SelectionSetNameGenerator {
         selection_set: &ComputedSelectionSet,
         to_node: Option<NodeRef<'_, ScopeCondition>>,
         format: NameFormat,
-        pluralizer: &Pluralizer,
+        config: &ConfigurationContext,
     ) -> String {
         Self::generated_selection_set_name(
             &selection_set.type_info,
             to_node,
             format,
-            pluralizer,
+            config,
         )
     }
 
@@ -138,13 +138,13 @@ impl SelectionSetNameGenerator {
         source: &MergedSource,
         to_node: Option<NodeRef<'_, ScopeCondition>>,
         format: NameFormat,
-        pluralizer: &Pluralizer,
+        config: &ConfigurationContext,
     ) -> String {
         Self::generated_selection_set_name(
             &source.type_info,
             to_node,
             format,
-            pluralizer,
+            config,
         )
     }
 
@@ -155,7 +155,7 @@ impl SelectionSetNameGenerator {
         type_info: &TypeInfo,
         to_node: Option<NodeRef<'_, ScopeCondition>>,
         format: NameFormat,
-        pluralizer: &Pluralizer,
+        config: &ConfigurationContext,
     ) -> String {
         let mut components: Vec<String> = Vec::new();
 
@@ -171,15 +171,16 @@ impl SelectionSetNameGenerator {
                     };
                     format!(
                         "{}.Data",
-                        generated_definition_name(
+                        generated_definition_name_capitalized(
                             &op.name,
                             op_type,
-                            op.is_local_cache_mutation()
+                            op.is_local_cache_mutation(),
+                            &config.capitalizer,
                         )
                     )
                 }
                 SourceDefinition::NamedFragment(frag) => {
-                    generated_fragment_definition_name(&frag.name)
+                    generated_fragment_definition_name_capitalized(&frag.name, &config.capitalizer)
                 }
             };
             components.push(source_name);
@@ -197,7 +198,7 @@ impl SelectionSetNameGenerator {
             to_node,
             field_path_head,
             false,
-            pluralizer,
+            config,
         );
         if !entity_field_path.is_empty() {
             components.push(entity_field_path);
@@ -214,7 +215,7 @@ impl SelectionSetNameGenerator {
         ending_node: Option<NodeRef<'_, ScopeCondition>>,
         field_path_node: Option<NodeRef<'_, FieldComponent>>,
         removing_first: bool,
-        pluralizer: &Pluralizer,
+        config: &ConfigurationContext,
     ) -> String {
         // Set up starting nodes
         let mut current_type_path_node: Option<NodeRef<'_, ir::ScopeDescriptor>> = Some(type_path_node);
@@ -237,7 +238,7 @@ impl SelectionSetNameGenerator {
             // For the root node of the entity, we use the name of the field in the entity's field path.
             if let Some(field_node) = current_field_path_node {
                 let field_name =
-                    formatted_selection_set_name_for_field_component(field_node.value(), pluralizer);
+                    formatted_selection_set_name_for_field_component(field_node.value(), config);
                 components.push(field_name);
             }
 
@@ -366,11 +367,11 @@ fn render_composite_type_name(type_: &graphql_compiler::GraphQLCompositeType) ->
 /// Mirrors Swift's `IR.Entity.Location.FieldComponent.formattedSelectionSetName(with:)`.
 pub fn formatted_selection_set_name_for_field_component(
     field: &FieldComponent,
-    pluralizer: &Pluralizer,
+    config: &ConfigurationContext,
 ) -> String {
     let mut field_name = first_uppercased(&field.name);
     if field.type_.is_list_type() {
-        field_name = pluralizer.singularize(&field_name);
+        field_name = config.pluralizer.singularize(&field_name);
     }
     as_selection_set_name(&field_name)
 }
@@ -378,10 +379,15 @@ pub fn formatted_selection_set_name_for_field_component(
 /// Formats a SourceDefinition as a selection set name.
 ///
 /// Mirrors Swift's `IR.Entity.Location.SourceDefinition.formattedSelectionSetName()`.
-fn formatted_selection_set_name_for_source(source: &SourceDefinition) -> String {
+fn formatted_selection_set_name_for_source(
+    source: &SourceDefinition,
+    capitalizer: &Capitalizer,
+) -> String {
     match source {
         SourceDefinition::Operation(_) => "Data".to_string(),
-        SourceDefinition::NamedFragment(frag) => generated_fragment_definition_name(&frag.name),
+        SourceDefinition::NamedFragment(frag) => {
+            generated_fragment_definition_name_capitalized(&frag.name, capitalizer)
+        }
     }
 }
 

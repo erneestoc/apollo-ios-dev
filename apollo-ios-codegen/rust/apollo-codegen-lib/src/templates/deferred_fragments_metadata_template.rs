@@ -14,7 +14,6 @@ use graphql_compiler::DeferCondition;
 
 use crate::templates::rendering_helpers::selection_set_name_generator::SelectionSetNameGenerator;
 use crate::templates::rendering_helpers::string_swift_name_escaping::as_fragment_name;
-use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::ConfigurationContext;
 
 use ir::direct_selections::DirectSelections;
@@ -158,7 +157,7 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
                     fragment.type_info(),
                     None,
                     crate::templates::rendering_helpers::selection_set_name_generator::NameFormat::OmittingRoot,
-                    &self.config.pluralizer,
+                    &self.config,
                 );
 
                 infos.push(DeferredPathTypeInfo {
@@ -177,7 +176,7 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
         // Process named fragments
         for fragment in direct_selections.named_fragments.values() {
             if let Some(defer_condition) = fragment.type_info.defer_condition() {
-                let frag_name = as_fragment_name(&first_uppercased(&fragment.fragment.definition.name));
+                let frag_name = as_fragment_name(&fragment.fragment.definition.name, &self.config.capitalizer);
                 infos.push(DeferredPathTypeInfo {
                     path: path.to_vec(),
                     defer_condition: defer_condition.clone(),
