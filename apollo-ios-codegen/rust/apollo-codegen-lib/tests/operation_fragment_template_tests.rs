@@ -308,6 +308,7 @@ fn render_operation(
         let template = LocalCacheMutationDefinitionTemplate {
             operation,
             config,
+            referenced_types: Arc::clone(&ir_builder.schema.referenced_types),
         };
         template.render().body
     } else {
@@ -315,6 +316,7 @@ fn render_operation(
             operation,
             operation_identifier: None,
             config,
+            referenced_types: Arc::clone(&ir_builder.schema.referenced_types),
         };
         template.render().body
     }
