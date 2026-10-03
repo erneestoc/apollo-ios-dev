@@ -278,8 +278,9 @@ impl Serialize for ModuleType {
       }
       ModuleType::SwiftPackage { apollo_sdk_dependency } => {
         #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
         struct Inner<'a> {
+          // Swift's `SwiftPackageCodingKeys.apolloSDKDependency`
+          #[serde(rename = "apolloSDKDependency")]
           apollo_sdk_dependency: &'a ApolloSDKDependency,
         }
         let mut map = serializer.serialize_map(Some(1))?;
