@@ -184,7 +184,15 @@ mod tests {
         assert!(body.contains(".library(name: \"MySchema\", targets: [\"MySchema\"])"));
         assert!(body.contains(".product(name: \"ApolloAPI\", package: \"apollo-ios\")"));
         assert!(body.contains("path: \"./Sources\""));
-        assert!(body.contains(".package(url: \"https://github.com/apollographql/apollo-ios.git\", from: \"1.0.0\")"));
+        // 1.16.0+: the default `apolloSDKDependency` pins the CLI's own version
+        assert!(
+            body.contains(&format!(
+                ".package(url: \"https://github.com/apollographql/apollo-ios\", exact: \"{}\")",
+                CODEGEN_VERSION
+            )),
+            "body:\n{}",
+            body
+        );
         assert!(!body.contains("swiftLanguageModes"));
         // No test mock target
         assert!(!body.contains("ApolloTestSupport"));
