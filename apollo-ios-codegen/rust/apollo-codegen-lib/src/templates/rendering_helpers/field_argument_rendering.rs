@@ -5,6 +5,8 @@
 
 use graphql_compiler::graphql_value::GraphQLValue;
 
+use super::input_variable_renderable::{indent_continuation_lines, swift_double_description};
+
 /// Renders a `GraphQLValue` as a Swift literal for use in field argument default values.
 ///
 /// The `indent_level` parameter controls multiline rendering for nested objects:
@@ -14,10 +16,15 @@ use graphql_compiler::graphql_value::GraphQLValue;
 /// Mirrors Swift's `GraphQLValue.renderInputValueLiteral()` method.
 pub fn render_input_value_literal(value: &GraphQLValue, indent_level: usize) -> String {
   match value {
-    GraphQLValue::String(s) => format!("\"{}\"", s),
+    // A string containing line breaks is interpolated as-is by Swift; `TemplateString`
+    // indents the continuation lines to the entry's indentation.
+    GraphQLValue::String(s) => {
+      indent_continuation_lines(&format!("\"{}\"", s), &" ".repeat(indent_level))
+    }
     GraphQLValue::Boolean(b) => if *b { "true".to_string() } else { "false".to_string() },
     GraphQLValue::Int(i) => i.to_string(),
-    GraphQLValue::Float(f) => f.to_string(),
+    // Swift renders `Double.description` (`2.0`, `1e-05`), not the shortest integer form.
+    GraphQLValue::Float(f) => swift_double_description(*f),
     GraphQLValue::Enum(e) => format!("\"{}\"", e),
     GraphQLValue::Null => ".null".to_string(),
     GraphQLValue::List(list) => {
