@@ -40,8 +40,9 @@ use crate::templates::rendering_helpers::selection_set_name_generator::{
     self, NameFormat, SelectionSetNameCache, SelectionSetNameGenerator,
 };
 use crate::templates::rendering_helpers::string_casing::{first_lowercased, first_uppercased};
+use crate::templates::rendering_helpers::for_each_in::for_each_in_joined;
 use crate::templates::rendering_helpers::string_swift_name_escaping::{
-    as_fragment_name, render_as_field_property_name,
+    as_fragment_name, escaped_swift_string_special_characters, render_as_field_property_name,
     render_as_initializer_parameter_accessor_name, render_as_initializer_parameter_name,
 };
 use crate::templates::rendering_helpers::template_string_deprecation::render_field_argument_warning;
@@ -359,11 +360,16 @@ impl<'a> SelectionSetTemplate<'a> {
 
         if let Some(props) = extra_props {
             if !props.is_empty() {
+                // The interpolated statements are indented by the template (non-empty lines only).
+                let indented: Vec<String> = props
+                    .split('\n')
+                    .map(|line| if line.is_empty() { String::new() } else { format!("  {}", line) })
+                    .collect();
                 return format!(
-                    "{}init(_dataDict: DataDict) {{\n  {}\n  {}\n}}",
+                    "{}init(_dataDict: DataDict) {{\n  {}\n{}\n}}",
                     self.access_control_renderer.render(),
                     data_init,
-                    props
+                    indented.join("\n")
                 );
             }
         }
@@ -833,7 +839,7 @@ impl<'a> SelectionSetTemplate<'a> {
             if let Some(ref reason) = field.underlying_field().deprecation_reason {
                 result.push_str(&format!(
                     "@available(*, deprecated, message: \"{}\")\n",
-                    reason
+                    escaped_swift_string_special_characters(reason)
                 ));
             }
         }
@@ -960,51 +966,49 @@ impl<'a> SelectionSetTemplate<'a> {
     }
 
     fn fragment_initializer_template(&self, selection_set: &ComputedSelectionSet) -> String {
-        let has_deferred = selection_set
-            .direct
-            .as_ref()
-            .map_or(false, |d| {
-                contains_deferred_inline_fragment(&d.inline_fragments)
-                    || contains_deferred_named_fragment(&d.named_fragments)
-            })
-            || contains_deferred_inline_fragment(&selection_set.merged.inline_fragments)
-            || contains_deferred_named_fragment(&selection_set.merged.named_fragments);
-
-        if !has_deferred {
+        // Swift's `FragmentInitializerTemplate` only looks at the *direct* selections: merged
+        // deferred fragments are initialized by the selection set they were declared in.
+        let Some(direct) = selection_set.direct.as_ref() else {
+            return self.designated_initializer_template(None);
+        };
+        if !(contains_deferred_inline_fragment(&direct.inline_fragments)
+            || contains_deferred_named_fragment(&direct.named_fragments))
+        {
             return self.designated_initializer_template(None);
         }
 
-        let mut deferred_inits: Vec<String> = Vec::new();
-
-        if let Some(ref direct) = selection_set.direct {
-            for inline_frag in direct.inline_fragments.values() {
-                if let Some(ref defer_cond) = inline_frag.selection_set.type_info.defer_condition()
-                {
-                    deferred_inits.push(format!(
-                        "_{} = Deferred(_dataDict: _dataDict)",
-                        defer_cond.label
-                    ));
+        // Each `forEachIn` maps non-deferred fragments to an empty template (see
+        // `for_each_in_joined`); an empty block removes its line from the template.
+        let inline_statements = for_each_in_joined(
+            direct.inline_fragments.values().map(|inline_frag| {
+                match inline_frag.selection_set.type_info.defer_condition() {
+                    Some(defer_cond) => {
+                        format!("_{} = Deferred(_dataDict: _dataDict)", defer_cond.label)
+                    }
+                    None => String::new(),
                 }
-            }
-            for named_frag in direct.named_fragments.values() {
+            }),
+            "\n",
+        );
+        let named_statements = for_each_in_joined(
+            direct.named_fragments.values().map(|named_frag| {
                 if named_frag.type_info.defer_condition().is_some() {
-                    deferred_inits.push(format!(
+                    format!(
                         "_{} = Deferred(_dataDict: _dataDict)",
                         first_lowercased(named_frag.fragment.name())
-                    ));
+                    )
+                } else {
+                    String::new()
                 }
-            }
-        }
-        for named_frag in selection_set.merged.named_fragments.values() {
-            if named_frag.type_info.defer_condition().is_some() {
-                deferred_inits.push(format!(
-                    "_{} = Deferred(_dataDict: _dataDict)",
-                    first_lowercased(named_frag.fragment.name())
-                ));
-            }
-        }
+            }),
+            "\n",
+        );
+        let blocks: Vec<String> = [inline_statements, named_statements]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
 
-        self.designated_initializer_template(Some(&deferred_inits.join("\n")))
+        self.designated_initializer_template(Some(&blocks.join("\n")))
     }
 
     fn named_fragment_accessor_template(
