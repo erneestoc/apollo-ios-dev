@@ -3,8 +3,13 @@ use serde::{Deserialize, Serialize};
 /// Mirrors Swift's `InflectionRule` enum from `Sources/ApolloCodegenLib/Pluralizer.swift`.
 ///
 /// The types of inflection rules that can be used to customize pluralization.
+///
+/// Swift's `InflectionRule` relies on the synthesized `Codable` conformance for an enum with
+/// associated values, which is externally tagged by case name:
+/// `{"pluralization": {"singularRegex": "...", "replacementRegex": "..."}}`,
+/// `{"irregular": {"singular": "...", "plural": "..."}}`, `{"uncountable": {"word": "..."}}`.
+/// serde's default enum representation produces exactly that shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum InflectionRule {
   /// A pluralization rule that allows taking a singular word and pluralizing it.
   /// - `singular_regex`: A regular expression representing the single version of the word
