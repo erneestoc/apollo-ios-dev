@@ -23,8 +23,8 @@ use crate::error::CliError;
 pub enum CliModuleType {
     #[value(name = "embeddedInTarget")]
     EmbeddedInTarget,
-    #[value(name = "swiftPackageManager")]
-    SwiftPackageManager,
+    #[value(name = "swiftPackage")]
+    SwiftPackage,
     #[value(name = "other")]
     Other,
 }
@@ -34,7 +34,7 @@ impl CliModuleType {
     pub fn raw_value(&self) -> &'static str {
         match self {
             CliModuleType::EmbeddedInTarget => "embeddedInTarget",
-            CliModuleType::SwiftPackageManager => "swiftPackageManager",
+            CliModuleType::SwiftPackage => "swiftPackage",
             CliModuleType::Other => "other",
         }
     }
@@ -107,7 +107,7 @@ pub struct Initialize {
     pub schema_namespace: String,
 
     /// How to package the schema types for dependency management. Possible types:
-    /// embeddedInTarget, swiftPackageManager, other.
+    /// embeddedInTarget, swiftPackage, other.
     #[arg(long, short = 'm', value_enum)]
     pub module_type: CliModuleType,
 
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn test_cli_module_type_raw_values_match_swift() {
         assert_eq!(CliModuleType::EmbeddedInTarget.raw_value(), "embeddedInTarget");
-        assert_eq!(CliModuleType::SwiftPackageManager.raw_value(), "swiftPackageManager");
+        assert_eq!(CliModuleType::SwiftPackage.raw_value(), "swiftPackage");
         assert_eq!(CliModuleType::Other.raw_value(), "other");
     }
 
@@ -235,8 +235,8 @@ mod tests {
         assert!(json.contains("      \"moduleType\" : {\n        \"other\" : {\n        }\n      }\n"), "{}", json);
         assert!(!json.ends_with('\n'));
         // Swift writes the target name for every module type when one is given.
-        let json = minimal_json("X", &CliModuleType::SwiftPackageManager, Some("T"));
-        assert!(json.contains("        \"swiftPackageManager\" : {\n          \"name\" : \"T\"\n        }\n"), "{}", json);
+        let json = minimal_json("X", &CliModuleType::SwiftPackage, Some("T"));
+        assert!(json.contains("        \"swiftPackage\" : {\n          \"name\" : \"T\"\n        }\n"), "{}", json);
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
         let mut cmd = Initialize {
             schema_name: Some("OldName".to_string()),
             schema_namespace: "NewName".to_string(),
-            module_type: CliModuleType::SwiftPackageManager,
+            module_type: CliModuleType::SwiftPackage,
             target_name: None,
             path: constants::DEFAULT_FILE_PATH.to_string(),
             overwrite: false,
@@ -293,7 +293,7 @@ mod tests {
         let mut cmd = Initialize {
             schema_name: Some("LegacyName".to_string()),
             schema_namespace: "".to_string(),
-            module_type: CliModuleType::SwiftPackageManager,
+            module_type: CliModuleType::SwiftPackage,
             target_name: None,
             path: constants::DEFAULT_FILE_PATH.to_string(),
             overwrite: false,
@@ -309,7 +309,7 @@ mod tests {
         let mut cmd = Initialize {
             schema_name: None,
             schema_namespace: "MySchema".to_string(),
-            module_type: CliModuleType::SwiftPackageManager,
+            module_type: CliModuleType::SwiftPackage,
             target_name: None,
             path: constants::DEFAULT_FILE_PATH.to_string(),
             overwrite: false,
