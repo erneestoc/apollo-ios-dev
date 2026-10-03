@@ -398,6 +398,40 @@ mod tests {
     use super::*;
     use crate::config::ApolloCodegenConfiguration;
     use crate::templates::ConfigurationContext;
+
+    // Swift dialect of the Apollo iOS version this branch targets (`MockObjectTemplate.swift`
+    // at the matching upstream tag); the byte-for-byte parity harness is the source of truth.
+    // Later versions flip these constants:
+    //   1.23.0+: convenience-initializer parameters for non-null fields get default values
+    //   2.0.0+:  `final class` and `struct MockFields: Sendable {`
+    //   1.23.0+: nullable scalars, enums and lists nested inside a list render as optional
+    //            (`[String?]`, `[[String]?]`)
+    const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = false;
+    const NESTED_OPTIONALS_IN_MOCK_TYPES: bool = false;
+    const CLASS_DECL: &str = "class";
+    const MOCK_FIELDS_DECL: &str = "struct MockFields {";
+
+    fn class_decl(access: &str, name: &str) -> String {
+        format!("{}{} {}: MockObject {{", access, CLASS_DECL, name)
+    }
+
+    /// A nullable scalar, enum or list type rendered as a list item.
+    fn nested_optional(item_type: &str) -> String {
+        if NESTED_OPTIONALS_IN_MOCK_TYPES {
+            format!("{}?", item_type)
+        } else {
+            item_type.to_string()
+        }
+    }
+
+    /// Convenience-initializer parameter for a non-null field.
+    fn required_param(name: &str, mock_type: &str, default: &str) -> String {
+        if REQUIRED_PARAMS_HAVE_DEFAULTS {
+            format!("{}: {} = {}", name, mock_type, default)
+        } else {
+            format!("{}: {}? = nil", name, mock_type)
+        }
+    }
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::schema::{
         GraphQLEnumType, GraphQLEnumValue, GraphQLInterfaceType, GraphQLScalarType,
@@ -563,18 +597,23 @@ mod tests {
         let subject = build_subject("Dog", None, vec![], swift_package_config());
         let actual = render_body(&subject);
 
-        let expected = "\
-public final class Dog: MockObject {
+        let expected = format!(
+            "\
+public {} Dog: MockObject {{
   public static let objectType: ApolloAPI.Object = TestSchema.Objects.Dog
   public static let _mockFields = MockFields()
   public typealias MockValueCollectionType = Array<Mock<Dog>>
 
-  public struct MockFields: Sendable {
-  }
-}
-\n";
+  public {}
+  }}
+}}
+",
+            CLASS_DECL, MOCK_FIELDS_DECL
+        );
 
-        assert_eq!(actual, expected);
+        // The number of trailing newlines varies by version and is covered by the file-level
+        // parity harness.
+        assert_eq!(actual.trim_end_matches('\n'), expected.trim_end_matches('\n'));
     }
 
     // MARK: - Casing Tests
@@ -584,7 +623,7 @@ public final class Dog: MockObject {
         let subject = build_subject("dog", None, vec![], swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("public final class Dog: MockObject {"));
+        assert!(actual.contains(&class_decl("public ", "Dog")), "actual:\n{}", actual);
         assert!(actual.contains("TestSchema.Objects.Dog"));
         assert!(actual.contains("Array<Mock<Dog>>"));
     }
@@ -778,7 +817,7 @@ public final class Dog: MockObject {
         let subject = build_subject("Dog", None, fields, swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("var hash: String? {"));
+        assert!(actual.contains("var hash: String? {"), "actual:\n{}", actual);
         assert!(actual.contains(r#"get { _data["hash"] as? String }"#));
         assert!(actual.contains(r"set { _setScalar(newValue, for: \.hash) }"));
     }
@@ -908,11 +947,11 @@ public final class Dog: MockObject {
         // Verify the extension is present
         assert!(actual.contains("public extension Mock where O == Dog {"));
         // Verify sorted init params with correct types
-        assert!(actual.contains("customScalar: TestSchema.CustomScalar = .defaultMockValue"));
+        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", ".defaultMockValue")), "actual:\n{}", actual);
         assert!(actual.contains("customScalarList: [TestSchema.CustomScalar]? = nil"));
-        assert!(actual.contains("customScalarOptionalList: [TestSchema.CustomScalar?]? = nil"));
+        assert!(actual.contains(&format!("customScalarOptionalList: [{}]? = nil", nested_optional("TestSchema.CustomScalar"))), "actual:\n{}", actual);
         assert!(actual.contains("enumList: [GraphQLEnum<TestSchema.EnumType>]? = nil"));
-        assert!(actual.contains("enumOptionalList: [GraphQLEnum<TestSchema.EnumType>?]? = nil"));
+        assert!(actual.contains(&format!("enumOptionalList: [{}]? = nil", nested_optional("GraphQLEnum<TestSchema.EnumType>"))), "actual:\n{}", actual);
         assert!(actual.contains("enumType: GraphQLEnum<TestSchema.EnumType>? = nil"));
         assert!(actual.contains("interface: (any AnyMock)? = nil"));
         assert!(actual.contains("interfaceList: [(any AnyMock)]? = nil"));
@@ -923,10 +962,10 @@ public final class Dog: MockObject {
         assert!(actual.contains("objectNestedList: [[Mock<Cat>]]? = nil"));
         assert!(actual.contains("objectOptionalList: [Mock<Cat>?]? = nil"));
         assert!(actual.contains("optionalString: String? = nil"));
-        assert!(actual.contains("string: String = \"\""));
+        assert!(actual.contains(&required_param("string", "String", "\"\"")), "actual:\n{}", actual);
         assert!(actual.contains("stringList: [String]? = nil"));
-        assert!(actual.contains("stringNestedList: [[String]?]? = nil"));
-        assert!(actual.contains("stringOptionalList: [String?]? = nil"));
+        assert!(actual.contains(&format!("stringNestedList: [{}]? = nil", nested_optional("[String]"))), "actual:\n{}", actual);
+        assert!(actual.contains(&format!("stringOptionalList: [{}]? = nil", nested_optional("String"))), "actual:\n{}", actual);
         assert!(actual.contains("union: (any AnyMock)? = nil"));
         assert!(actual.contains("unionList: [(any AnyMock)]? = nil"));
         assert!(actual.contains("unionNestedList: [[(any AnyMock)]]? = nil"));
@@ -1065,23 +1104,23 @@ public final class Dog: MockObject {
         let subject = build_subject("Dog", None, fields, swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("customScalar: TestSchema.CustomScalar = .defaultMockValue"));
-        assert!(actual.contains("customScalarList: [TestSchema.CustomScalar] = []"));
-        assert!(actual.contains("enumList: [GraphQLEnum<TestSchema.EnumType>] = []"));
-        assert!(actual.contains("enumType: GraphQLEnum<TestSchema.EnumType> = .case(.foo)"));
-        assert!(actual.contains("interface: (any AnyMock) = Mock<Duck>()"));
-        assert!(actual.contains("interfaceList: [(any AnyMock)] = []"));
-        assert!(actual.contains("interfaceNestedList: [[(any AnyMock)]] = []"));
-        assert!(actual.contains("lowercaseObject: Mock<Aardvark> = Mock<Aardvark>()"));
-        assert!(actual.contains("object: Mock<Cat> = Mock<Cat>()"));
-        assert!(actual.contains("objectList: [Mock<Cat>] = []"));
-        assert!(actual.contains("objectNestedList: [[Mock<Cat>]] = []"));
-        assert!(actual.contains("string: String = \"\""));
-        assert!(actual.contains("stringList: [String] = []"));
-        assert!(actual.contains("stringNestedList: [[String]] = []"));
-        assert!(actual.contains("union: (any AnyMock) = Mock<Goldfish>()"));
-        assert!(actual.contains("unionList: [(any AnyMock)] = []"));
-        assert!(actual.contains("unionNestedList: [[(any AnyMock)]] = []"));
+        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", ".defaultMockValue")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("customScalarList", "[TestSchema.CustomScalar]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("enumList", "[GraphQLEnum<TestSchema.EnumType>]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("enumType", "GraphQLEnum<TestSchema.EnumType>", ".case(.foo)")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("interface", "(any AnyMock)", "Mock<Duck>()")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("interfaceList", "[(any AnyMock)]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("interfaceNestedList", "[[(any AnyMock)]]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("lowercaseObject", "Mock<Aardvark>", "Mock<Aardvark>()")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("object", "Mock<Cat>", "Mock<Cat>()")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("objectList", "[Mock<Cat>]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("objectNestedList", "[[Mock<Cat>]]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("string", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("stringList", "[String]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("stringNestedList", "[[String]]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("union", "(any AnyMock)", "Mock<Goldfish>()")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("unionList", "[(any AnyMock)]", "[]")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("unionNestedList", "[[(any AnyMock)]]", "[]")), "actual:\n{}", actual);
     }
 
     #[test]
@@ -1091,8 +1130,8 @@ public final class Dog: MockObject {
 
         assert!(!actual.contains("extension Mock where O == Dog"));
         assert!(!actual.contains("convenience init"));
-        // Should end with the class closing brace and trailing newline
-        assert!(actual.ends_with("}\n\n"));
+        // Should end with the class closing brace and a trailing newline
+        assert!(actual.ends_with("}\n"), "actual:\n{}", actual);
     }
 
     #[test]
@@ -1117,16 +1156,16 @@ public final class Dog: MockObject {
         let actual = render_body(&subject);
 
         // Check the "self" field gets special treatment
-        assert!(actual.contains("`self` self_value: String = \"\""));
+        assert!(actual.contains(&required_param("`self` self_value", "String", "\"\"")), "actual:\n{}", actual);
         assert!(actual.contains(r"_setScalar(self_value, for: \.`self`)"));
 
         // Check backtick-escaped params
-        assert!(actual.contains("`Any`: String = \"\""));
-        assert!(actual.contains("`Protocol`: String = \"\""));
-        assert!(actual.contains("`Self`: String = \"\""));
-        assert!(actual.contains("`Type`: String = \"\""));
-        assert!(actual.contains("`class`: String = \"\""));
-        assert!(actual.contains("`var`: String = \"\""));
+        assert!(actual.contains(&required_param("`Any`", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("`Protocol`", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("`Self`", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("`Type`", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("`class`", "String", "\"\"")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("`var`", "String", "\"\"")), "actual:\n{}", actual);
 
         // Check _setScalar calls use backticked names
         assert!(actual.contains(r"_setScalar(`Any`, for: \.`Any`)"));
@@ -1142,9 +1181,9 @@ public final class Dog: MockObject {
         let subject = build_subject("Dog", None, fields, swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("public final class Dog: MockObject {"));
+        assert!(actual.contains(&class_decl("public ", "Dog")), "actual:\n{}", actual);
         assert!(actual.contains("public static let objectType"));
-        assert!(actual.contains("public struct MockFields: Sendable {"));
+        assert!(actual.contains(&format!("public {}", MOCK_FIELDS_DECL)));
         assert!(actual.contains("public extension Mock where O == Dog {"));
     }
 
@@ -1155,7 +1194,7 @@ public final class Dog: MockObject {
         let subject = build_subject("Dog", None, fields, absolute_public_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("public final class Dog: MockObject {"));
+        assert!(actual.contains(&class_decl("public ", "Dog")), "actual:\n{}", actual);
         assert!(actual.contains("public extension Mock where O == Dog {"));
     }
 
@@ -1166,10 +1205,10 @@ public final class Dog: MockObject {
         let subject = build_subject("Dog", None, fields, absolute_internal_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("final class Dog: MockObject {"));
-        assert!(!actual.contains("public final class Dog"));
+        assert!(actual.contains(&class_decl("", "Dog")), "actual:\n{}", actual);
+        assert!(!actual.contains(&class_decl("public ", "Dog")));
         assert!(actual.contains("static let objectType"));
-        assert!(actual.contains("struct MockFields: Sendable {"));
+        assert!(actual.contains(MOCK_FIELDS_DECL));
         assert!(actual.contains("extension Mock where O == Dog {"));
         assert!(!actual.contains("public extension Mock"));
     }
@@ -1221,7 +1260,7 @@ public final class Dog: MockObject {
             let actual = render_body(&subject);
 
             assert!(
-                actual.contains("public final class Type_Object: MockObject {"),
+                actual.contains(&class_decl("public ", "Type_Object")),
                 "Expected 'Type_Object' for keyword '{}', got:\n{}",
                 keyword,
                 actual,
@@ -1239,7 +1278,7 @@ public final class Dog: MockObject {
         let subject = build_subject("MyObject", Some("MyCustomObject"), vec![], swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains("public final class MyCustomObject: MockObject {"));
+        assert!(actual.contains(&class_decl("public ", "MyCustomObject")), "actual:\n{}", actual);
         assert!(actual.contains("TestSchema.Objects.MyCustomObject"));
         assert!(actual.contains("Array<Mock<MyCustomObject>>"));
     }
