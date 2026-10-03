@@ -21,7 +21,7 @@ use crate::templates::rendering_helpers::graphql_name_rendering::{
 use crate::templates::rendering_helpers::graphql_type_rendered::{rendered, TypeRenderContext};
 use crate::templates::rendering_helpers::string_casing::first_uppercased;
 use crate::templates::rendering_helpers::string_swift_name_escaping::{
-    as_test_mock_field_property_name, as_test_mock_initializer_parameter_name,
+    as_test_mock_initializer_parameter_name, render_as_test_mock_field_property_name,
     is_conflicting_test_mock_field_name,
 };
 use crate::templates::{
@@ -48,7 +48,7 @@ struct TemplateField {
 }
 
 impl TemplateField {
-    fn default_initializer(&self, config: &ApolloCodegenConfiguration) -> String {
+    fn default_initializer(&self, config: &ConfigurationContext) -> String {
         if self.graphql_type.is_nullable() {
             " = nil".to_string()
         } else {
@@ -81,7 +81,7 @@ impl TemplateRenderer for MockObjectTemplate {
         let template_fields: Vec<TemplateField> = sorted_fields
             .iter()
             .map(|(key, gql_type, deprecation)| {
-                let property_name = as_test_mock_field_property_name(key);
+                let property_name = render_as_test_mock_field_property_name(key, &self.config);
                 let init_param = as_test_mock_initializer_parameter_name(key);
                 let mock_type = mock_type_name(gql_type, &self.config.config);
                 TemplateField {
@@ -187,7 +187,7 @@ impl TemplateRenderer for MockObjectTemplate {
                     } else {
                         f.property_name.clone()
                     };
-                    let default_init = f.default_initializer(&self.config.config);
+                    let default_init = f.default_initializer(&self.config);
                     format!("    {}: {}{}", param_name, f.mock_type, default_init)
                 })
                 .collect();
@@ -234,7 +234,7 @@ fn render_deprecation(
 ///
 /// Mirrors Swift's `GraphQLType.defaultMockValue(config:)` from
 /// `DefaultMockValueProviding.swift`.
-fn default_mock_value(graphql_type: &GraphQLType, config: &ApolloCodegenConfiguration) -> String {
+fn default_mock_value(graphql_type: &GraphQLType, config: &ConfigurationContext) -> String {
     match graphql_type {
         GraphQLType::List(_) => "[]".to_string(),
         GraphQLType::NonNull(inner) => default_mock_value(inner, config),

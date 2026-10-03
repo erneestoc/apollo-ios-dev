@@ -5,7 +5,7 @@
 
 use crate::config::swift_keywords::{is_in, SwiftKeywords};
 use crate::config::conversion_strategies::FieldAccessors;
-use crate::config::ApolloCodegenConfiguration;
+use crate::templates::ConfigurationContext;
 use super::string_casing::{first_lowercased, first_uppercased, is_all_uppercased};
 
 /// Returns the string as an enum case name, escaping if it conflicts with Swift keywords.
@@ -80,15 +80,21 @@ fn escape_with_alias_if(s: &str, set: &[&str]) -> String {
 }
 
 /// Common logic for rendering a property name with config-driven casing.
-fn rendered_as_property_name(s: &str, config: &ApolloCodegenConfiguration) -> String {
+///
+/// Mirrors the Swift `ConfigurationContext` overload of `renderedAsPropertyName(config:)`:
+/// the field accessor conversion strategy is applied first, then the configured
+/// capitalization rules, and finally the first-lowercasing.
+fn rendered_as_property_name(s: &str, config: &ConfigurationContext) -> String {
   let mut property_name = s.to_string();
 
-  match config.options.conversion_strategies.field_accessors {
+  match config.config.options.conversion_strategies.field_accessors {
     FieldAccessors::CamelCase => {
       property_name = convert_to_camel_case(&property_name);
     }
     FieldAccessors::Idiomatic => {}
   }
+
+  property_name = config.capitalizer.apply(&property_name);
 
   if is_all_uppercased(&property_name) {
     property_name.to_lowercase()
@@ -99,23 +105,35 @@ fn rendered_as_property_name(s: &str, config: &ApolloCodegenConfiguration) -> St
 
 /// Renders the string as the property name for a field accessor on a generated `SelectionSet`.
 /// Escapes names that would conflict with Swift reserved keywords.
-pub fn render_as_field_property_name(s: &str, config: &ApolloCodegenConfiguration) -> String {
+pub fn render_as_field_property_name(s: &str, config: &ConfigurationContext) -> String {
   let property_name = rendered_as_property_name(s, config);
   escape_if(&property_name, SwiftKeywords::FIELD_ACCESSOR_NAMES_TO_ESCAPE)
 }
 
 /// Renders the string as the parameter name for an initializer on a generated `SelectionSet`.
 /// Escapes and aliases names that would conflict with Swift reserved keywords.
-pub fn render_as_initializer_parameter_name(s: &str, config: &ApolloCodegenConfiguration) -> String {
+pub fn render_as_initializer_parameter_name(s: &str, config: &ConfigurationContext) -> String {
   let property_name = rendered_as_property_name(s, config);
   escape_with_alias_if(&property_name, SwiftKeywords::FIELD_ACCESSOR_NAMES_TO_ESCAPE)
 }
 
 /// Renders the string as the parameter accessor name for an initializer on a generated `SelectionSet`.
 /// Aliases names that would conflict with Swift reserved keywords.
-pub fn render_as_initializer_parameter_accessor_name(s: &str, config: &ApolloCodegenConfiguration) -> String {
+pub fn render_as_initializer_parameter_accessor_name(s: &str, config: &ConfigurationContext) -> String {
   let property_name = rendered_as_property_name(s, config);
   alias_if(&property_name, SwiftKeywords::FIELD_ACCESSOR_NAMES_TO_ESCAPE)
+}
+
+/// Renders the string as a test mock field property name, applying any configured
+/// capitalization rules so the mock property matches the corresponding generated model
+/// property. With no rules configured this is identical to `as_test_mock_field_property_name`.
+///
+/// Mirrors Swift's `String.renderAsTestMockFieldPropertyName(config:)`.
+pub fn render_as_test_mock_field_property_name(s: &str, config: &ConfigurationContext) -> String {
+  escape_if(
+    &config.capitalizer.apply(s),
+    SwiftKeywords::TEST_MOCK_FIELD_NAMES_TO_ESCAPE,
+  )
 }
 
 /// Converts a string to `camelCase` from `snake_case`, `UpperCamelCase`, or `UPPERCASE`.

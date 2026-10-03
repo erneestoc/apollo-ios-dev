@@ -75,7 +75,7 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         if !variables.is_empty() {
             let var_props = operation_template_renderer::render_variable_properties(
                 &variables,
-                &self.config.config,
+                &self.config,
             );
             result.push('\n');
             result.push_str(&indent(&var_props, 2));
@@ -86,7 +86,7 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         result.push('\n');
         let init = operation_template_renderer::render_initializer(
             &variables,
-            &self.config.config,
+            &self.config,
         );
         result.push_str(&indent(&init, 2));
         result.push('\n');
@@ -94,7 +94,7 @@ impl TemplateRenderer for OperationDefinitionTemplate {
         // Variable accessors
         let var_accessors = operation_template_renderer::render_variable_accessors(
             &variables,
-            &self.config.config,
+            &self.config,
             true,
         );
         if !var_accessors.is_empty() {

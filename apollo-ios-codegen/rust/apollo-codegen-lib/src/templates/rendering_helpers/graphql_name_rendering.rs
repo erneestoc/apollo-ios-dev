@@ -9,7 +9,7 @@ use graphql_compiler::schema::{
 
 use crate::config::conversion_strategies::{EnumCases, InputObjects};
 use crate::config::swift_keywords::{is_in, SwiftKeywords};
-use crate::config::ApolloCodegenConfiguration;
+use crate::templates::ConfigurationContext;
 use super::string_casing::first_uppercased;
 use super::string_swift_name_escaping::{as_enum_case_name, convert_to_camel_case, escape_if};
 
@@ -130,7 +130,7 @@ pub enum EnumRenderContext {
 pub fn render_enum_value(
   value: &GraphQLEnumValue,
   context: EnumRenderContext,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   // If the name has been customized and it's not for .enumRawValue, return it unchanged
   if let Some(custom_name) = &value.name.custom_name {
@@ -146,13 +146,15 @@ pub fn render_enum_value(
 }
 
 /// Renders an enum value as a Swift enum case name.
-fn render_enum_case(value: &GraphQLEnumValue, config: &ApolloCodegenConfiguration) -> String {
-  match config.options.conversion_strategies.enum_cases {
-    EnumCases::None => as_enum_case_name(&value.name.schema_name),
-    EnumCases::CamelCase => {
-      as_enum_case_name(&convert_to_camel_case(&value.name.schema_name))
-    }
-  }
+/// Mirrors the Swift `ConfigurationContext` overload of `renderEnumCase`: the enum case
+/// conversion strategy is applied first, then the configured capitalization rules, then
+/// keyword escaping.
+fn render_enum_case(value: &GraphQLEnumValue, config: &ConfigurationContext) -> String {
+  let case_name = match config.config.options.conversion_strategies.enum_cases {
+    EnumCases::None => value.name.schema_name.clone(),
+    EnumCases::CamelCase => convert_to_camel_case(&value.name.schema_name),
+  };
+  as_enum_case_name(&config.capitalizer.apply(&case_name))
 }
 
 // MARK: - GraphQLInputField rendering
@@ -162,7 +164,7 @@ fn render_enum_case(value: &GraphQLEnumValue, config: &ApolloCodegenConfiguratio
 /// Mirrors Swift's `GraphQLInputField.render(config:)` method.
 pub fn render_input_field(
   field: &GraphQLInputField,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   // If the name has been customized, return it unchanged
   if let Some(custom_name) = &field.name.custom_name {
@@ -173,18 +175,23 @@ pub fn render_input_field(
 }
 
 /// Renders the input field name with conversion strategy applied.
+/// Mirrors the Swift `ConfigurationContext` overload of `renderInputField`: the input object
+/// conversion strategy is applied first, then the configured capitalization rules, then
+/// keyword escaping.
 fn render_input_field_name(
   field: &GraphQLInputField,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   let mut typename = field.name.schema_name.clone();
 
-  match config.options.conversion_strategies.input_objects {
+  match config.config.options.conversion_strategies.input_objects {
     InputObjects::None => {}
     InputObjects::CamelCase => {
       typename = convert_to_camel_case(&typename);
     }
   }
+
+  typename = config.capitalizer.apply(&typename);
 
   escape_if(&typename, SwiftKeywords::FIELD_ACCESSOR_NAMES_TO_ESCAPE)
 }
@@ -192,6 +199,7 @@ fn render_input_field_name(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::ApolloCodegenConfiguration;
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::{
     GraphQLEnumType, GraphQLObjectType,
@@ -225,8 +233,8 @@ mod tests {
     }))
   }
 
-  fn default_config() -> ApolloCodegenConfiguration {
-    serde_json::from_str(r#"{
+  fn default_config() -> ConfigurationContext {
+    let config: ApolloCodegenConfiguration = serde_json::from_str(r#"{
       "schemaNamespace": "TestSchema",
       "input": {},
       "output": {
@@ -234,7 +242,8 @@ mod tests {
         "operations": {"inSchemaModule": {}},
         "testMocks": {"none": {}}
       }
-    }"#).unwrap()
+    }"#).unwrap();
+    ConfigurationContext::new(config, None)
   }
 
   #[test]

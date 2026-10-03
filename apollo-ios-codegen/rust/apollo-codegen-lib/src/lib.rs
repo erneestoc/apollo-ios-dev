@@ -1,3 +1,5 @@
+pub mod capitalization_rule;
+pub mod capitalizer;
 pub mod codegen;
 pub mod codegen_logger;
 pub mod config;

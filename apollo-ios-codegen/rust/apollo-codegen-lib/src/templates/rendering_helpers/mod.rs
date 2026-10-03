@@ -30,6 +30,7 @@ pub use string_swift_name_escaping::{
   convert_to_camel_case, escape_if, escaped_swift_string_special_characters,
   is_conflicting_test_mock_field_name, render_as_field_property_name,
   render_as_initializer_parameter_accessor_name, render_as_initializer_parameter_name,
+  render_as_test_mock_field_property_name,
 };
 pub use template_constants::APOLLO_API_TARGET_NAME;
 pub use template_string_documentation::render_documentation;

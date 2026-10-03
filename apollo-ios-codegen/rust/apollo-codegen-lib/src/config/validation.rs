@@ -12,6 +12,7 @@ use super::selection_set_initializers::SelectionSetInitializers;
 use super::swift_keywords::SwiftKeywords;
 use super::test_mock_file_output::TestMockFileOutput;
 use super::ApolloCodegenConfiguration;
+use crate::capitalization_rule::Term;
 
 /// Errors that can occur during configuration validation.
 ///
@@ -106,6 +107,7 @@ impl std::error::Error for ConfigError {}
 /// 5. CocoaPods import + SPM incompatibility
 /// 6. Embedded target name not disallowed (case-insensitive)
 /// 7. Input search paths must contain a file extension
+/// 8. Every regex term in `additionalCapitalizationRules` must compile
 pub fn validate_config_values(
   config: &ApolloCodegenConfiguration,
 ) -> Result<(), ConfigError> {
@@ -174,6 +176,19 @@ pub fn validate_config_values(
   }
   for search_path in &config.input.operation_search_paths {
     validate_input_search_path(search_path)?;
+  }
+
+  // 8. Every regex term in additionalCapitalizationRules must compile
+  for rule in &config.options.additional_capitalization_rules {
+    let Term::Regex(pattern) = &rule.term else { continue };
+    if let Err(error) = regex::Regex::new(pattern) {
+      return Err(ConfigError::InvalidConfiguration {
+        message: format!(
+          "Invalid regular expression '{}' in additionalCapitalizationRules: {}",
+          pattern, error
+        ),
+      });
+    }
   }
 
   Ok(())

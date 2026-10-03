@@ -23,6 +23,7 @@ use crate::config::module_type::ModuleType;
 use crate::config::output_options::OutputOptions;
 use crate::config::file_output::FileOutput;
 use crate::config::ApolloCodegenConfiguration;
+use crate::capitalizer::Capitalizer;
 use crate::pluralizer::Pluralizer;
 use rendering_helpers::string_casing::first_uppercased;
 
@@ -30,13 +31,15 @@ pub use access_control_renderer::{AccessControlRenderer, Scope, SPI};
 
 // MARK: - ConfigurationContext
 
-/// Wraps `ApolloCodegenConfiguration` with a `Pluralizer` for template rendering.
+/// Wraps `ApolloCodegenConfiguration` with a `Pluralizer` and a `Capitalizer` for template
+/// rendering.
 ///
 /// Mirrors Swift's `ApolloCodegen.ConfigurationContext` struct.
 #[derive(Clone)]
 pub struct ConfigurationContext {
   pub config: ApolloCodegenConfiguration,
   pub pluralizer: Pluralizer,
+  pub capitalizer: Capitalizer,
   pub root_url: Option<PathBuf>,
   /// When set, all file generation output is redirected under this directory.
   /// Used in Bazel mode to write directly to a declared tree artifact,
@@ -48,7 +51,8 @@ impl ConfigurationContext {
   /// Creates a new `ConfigurationContext` from the given configuration.
   pub fn new(config: ApolloCodegenConfiguration, root_url: Option<PathBuf>) -> Self {
     let pluralizer = Pluralizer::new(config.options.additional_inflection_rules.clone());
-    Self { config, pluralizer, root_url, output_root: None }
+    let capitalizer = Capitalizer::new(config.options.additional_capitalization_rules.clone());
+    Self { config, pluralizer, capitalizer, root_url, output_root: None }
   }
 
   /// Returns the root URL for path resolution, if set.
