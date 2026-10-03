@@ -144,6 +144,18 @@ mod tests {
     use super::*;
     use crate::config::ApolloCodegenConfiguration;
     use crate::templates::ConfigurationContext;
+
+    /// Whether this Apollo iOS version renders `@typePolicy` key fields into
+    /// `ApolloAPI.Object(keyFields:)` (1.17.0+). The parity harness is the source of truth.
+    const RENDERS_KEY_FIELDS: bool = false;
+
+    fn assert_key_fields(actual: &str, expected: &str) {
+        if RENDERS_KEY_FIELDS {
+            assert!(actual.contains(expected), "actual:\n{}", actual);
+        } else {
+            assert!(!actual.contains("keyFields"), "actual:\n{}", actual);
+        }
+    }
     use graphql_compiler::graphql_name::GraphQLName;
     use graphql_compiler::schema::GraphQLInterfaceType;
     use indexmap::IndexMap;
@@ -357,11 +369,7 @@ mod tests {
             config: default_config(),
         };
         let actual = render_body(&template);
-        assert!(
-            actual.contains("keyFields: [\"id\"]"),
-            "actual:\n{}",
-            actual
-        );
+        assert_key_fields(&actual, "keyFields: [\"id\"]");
     }
 
     #[test]
@@ -378,21 +386,11 @@ mod tests {
             config: default_config(),
         };
         let actual = render_body(&template);
-        assert!(
-            actual.contains("keyFields: [\n"),
-            "actual:\n{}",
-            actual
-        );
-        assert!(
-            actual.contains("\"id\""),
-            "actual:\n{}",
-            actual
-        );
-        assert!(
-            actual.contains("\"species\""),
-            "actual:\n{}",
-            actual
-        );
+        assert_key_fields(&actual, "keyFields: [\n");
+        if RENDERS_KEY_FIELDS {
+            assert!(actual.contains("\"id\""), "actual:\n{}", actual);
+            assert!(actual.contains("\"species\""), "actual:\n{}", actual);
+        }
     }
 
     // MARK: - Documentation Tests
@@ -513,11 +511,7 @@ mod tests {
             "actual:\n{}",
             actual
         );
-        assert!(
-            actual.contains("keyFields: nil"),
-            "actual:\n{}",
-            actual
-        );
+        assert_key_fields(&actual, "keyFields: nil");
     }
 
     #[test]
@@ -528,10 +522,6 @@ mod tests {
             config: default_config(),
         };
         let actual = render_body(&template);
-        assert!(
-            actual.contains("keyFields: nil"),
-            "actual:\n{}",
-            actual
-        );
+        assert_key_fields(&actual, "keyFields: nil");
     }
 }
