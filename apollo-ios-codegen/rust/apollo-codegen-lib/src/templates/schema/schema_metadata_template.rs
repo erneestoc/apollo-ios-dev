@@ -467,6 +467,20 @@ mod tests {
 
     // MARK: - Object Type Function Tests
 
+    /// Whether `objectType(forTypename:)` looks the object up in a `[String: Object]`
+    /// dictionary (upstream 1.25.4-1.25.7 and 2.1.0+) instead of a `switch` statement.
+    const OBJECT_TYPE_LOOKUP_IS_DICTIONARY: bool = false;
+
+    /// Asserts the lookup entry rendered for an object with the given schema name and Swift name.
+    fn assert_object_type_entry(body: &str, schema_name: &str, swift_name: &str) {
+        let expected = if OBJECT_TYPE_LOOKUP_IS_DICTIONARY {
+            format!("\"{}\": ObjectSchema.Objects.{}", schema_name, swift_name)
+        } else {
+            format!("case \"{}\": return ObjectSchema.Objects.{}", schema_name, swift_name)
+        };
+        assert!(body.contains(&expected), "body:\n{}", body);
+    }
+
     #[test]
     fn test_render_with_referenced_objects_correctly_cased() {
         let schema = make_schema(
@@ -477,25 +491,32 @@ mod tests {
 
         let body = render_body(&template);
 
-        assert!(body.contains("objectTypeMap: [String: ApolloAPI.Object]"), "body:\n{}", body);
-        assert!(body.contains("\"objA\": ObjectSchema.Objects.ObjA"), "body:\n{}", body);
-        assert!(body.contains("\"objB\": ObjectSchema.Objects.ObjB"), "body:\n{}", body);
-        assert!(body.contains("\"objC\": ObjectSchema.Objects.ObjC"), "body:\n{}", body);
-        assert!(body.contains("objectTypeMap[typename]"), "body:\n{}", body);
+        if OBJECT_TYPE_LOOKUP_IS_DICTIONARY {
+            assert!(body.contains("objectTypeMap: [String: ApolloAPI.Object]"), "body:\n{}", body);
+            assert!(body.contains("objectTypeMap[typename]"), "body:\n{}", body);
+            assert!(!body.contains("switch typename {"), "body:\n{}", body);
+        } else {
+            assert!(body.contains("switch typename {"), "body:\n{}", body);
+            assert!(body.contains("default: return nil"), "body:\n{}", body);
+            assert!(!body.contains("objectTypeMap"), "body:\n{}", body);
+        }
+        assert_object_type_entry(&body, "objA", "ObjA");
+        assert_object_type_entry(&body, "objB", "ObjB");
+        assert_object_type_entry(&body, "objC", "ObjC");
         assert!(body.contains("static func objectType(forTypename typename: String) -> ApolloAPI.Object?"));
     }
 
     #[test]
     fn test_render_with_referenced_other_types_only_includes_objects() {
-        // Only GraphQLObjectType should appear in the switch cases
+        // Only GraphQLObjectType should appear in the lookup entries
         let obj = make_object("ObjectA");
         let schema = make_schema(vec![obj], None);
         let template = make_template(schema, spm_config_with_namespace("ObjectSchema"));
 
         let body = render_body(&template);
 
-        assert!(body.contains("\"ObjectA\": ObjectSchema.Objects.ObjectA"));
-        // Should NOT contain non-object types (interfaces, unions, etc. are not in dictionary)
+        assert_object_type_entry(&body, "ObjectA", "ObjectA");
+        // Should NOT contain non-object types (interfaces, unions, etc. are not in the lookup)
         assert!(!body.contains("InterfaceB"));
         assert!(!body.contains("UnionC"));
     }
