@@ -62,42 +62,16 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
             return String::new();
         }
 
-        let definition_name = crate::templates::rendering_helpers::ir_definition_rendering::generated_definition_name(
-            &self.operation.definition.name,
-            &self.operation.definition.operation_type.to_string(),
-            self.operation.definition.is_local_cache_mutation(),
-        );
-
-        let mut inner = String::new();
-
-        // DeferredFragmentIdentifiers enum
-        inner.push_str(&self.render_deferred_fragment_identifiers(&path_type_info));
-        inner.push('\n');
-
-        // deferredFragments property
-        inner.push_str(&self.render_deferred_fragments_property(&path_type_info));
-
-        // Indent inner content
-        let indented: Vec<String> = inner
-            .lines()
-            .map(|line| {
-                if line.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("  {}", line)
-                }
-            })
-            .collect();
-
+        // Swift 1.17.0+: rendered inside the operation struct (the operation template nests
+        // and indents it), introduced by a blank line and a "- " MARK, no extension wrapper.
+        let identifiers = self.render_deferred_fragment_identifiers(&path_type_info);
+        let property = self.render_deferred_fragments_property(&path_type_info);
         format!(
-            "\n// MARK: Deferred Fragment Metadata\n\n{}extension {} {{\n{}\n}}",
-            self.render_access_control,
-            definition_name,
-            indented.join("\n"),
+            "\n// MARK: - Deferred Fragment Metadata\n\n{}\n{}",
+            identifiers,
+            property.trim_end(),
         )
     }
-
-    /// Renders the DeferredFragmentIdentifiers enum.
     fn render_deferred_fragment_identifiers(&self, infos: &[DeferredPathTypeInfo]) -> String {
         let mut result = String::new();
         result.push_str("enum DeferredFragmentIdentifiers {\n");
@@ -131,7 +105,7 @@ impl<'a> DeferredFragmentsMetadataTemplate<'a> {
     fn render_deferred_fragments_property(&self, infos: &[DeferredPathTypeInfo]) -> String {
         let mut result = String::new();
         result.push_str(&format!(
-            "static var deferredFragments: [DeferredFragmentIdentifier: any {}.SelectionSet.Type]? {{[\n",
+            "public static var deferredFragments: [DeferredFragmentIdentifier: any {}.SelectionSet.Type]? {{[\n",
             self.config.apollo_api_target_name(),
         ));
 
