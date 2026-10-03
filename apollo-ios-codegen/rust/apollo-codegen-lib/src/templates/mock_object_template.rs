@@ -1,6 +1,6 @@
 //! Mock object template for Apollo iOS code generation.
 //!
-//! Renders a `final class` with MockFields struct, @Field properties,
+//! Renders a mock class (`final` from Apollo iOS 2.0.0) with MockFields struct, @Field properties,
 //! and convenience initializer matching Swift byte-for-byte.
 //!
 //! Mirrors Swift's `MockObjectTemplate.swift` from
@@ -183,7 +183,8 @@ impl TemplateRenderer for MockObjectTemplate {
                         f.property_name.clone()
                     };
                     let default_init = f.default_initializer(&self.config.config);
-                    format!("    {}: {}{}", param_name, f.mock_type, default_init)
+                    // Swift 1.15.x-1.22.x: `\(mockType)? = nil`, mockType is never optional itself
+                    format!("    {}: {}?{}", param_name, f.mock_type, default_init)
                 })
                 .collect();
 
@@ -338,37 +339,28 @@ fn mock_type_name(graphql_type: &GraphQLType, config: &ApolloCodegenConfiguratio
                 }
             }
             GraphQLType::Scalar(_) | GraphQLType::Enum(_) | GraphQLType::InputObject(_) => {
-                let type_str = rendered(
+                // Swift 1.15.x-1.22.x ignores `forceNonNull` here: scalars and enums are never
+                // rendered as optional, even as list items (`[String]`, not `[String?]`).
+                rendered(
                     graphql_type,
                     &TypeRenderContext::TestMockField { force_non_null: true },
                     None,
                     config,
-                );
-                if force_non_null {
-                    type_str
-                } else {
-                    format!("{}?", type_str)
-                }
+                )
             }
             GraphQLType::NonNull(inner) => name_replacement(inner, true, config),
             GraphQLType::List(inner) => {
-                let inner_name = name_replacement(inner, false, config);
-                if force_non_null {
-                    format!("[{}]", inner_name)
-                } else {
-                    format!("[{}]?", inner_name)
-                }
+                // Swift 1.15.x-1.22.x never renders a list itself as optional, even when it is
+                // a nullable item of an outer list (`[[String]]`, not `[[String]?]`).
+                format!("[{}]", name_replacement(inner, false, config))
             }
         }
     }
 
-    let result = name_replacement(graphql_type, false, config);
-    // In 1.15.1, all mock init params are optional regardless of nullability
-    if result.ends_with('?') {
-        result
-    } else {
-        format!("{}?", result)
-    }
+    // Swift 1.15.x-1.22.x: `nameReplacement(for: type, forceNonNull: true)`; the `?` for the
+    // (always optional) initializer parameter is added by the template, which lets the
+    // conflicting-name property render `var hash: String? { get { _data["hash"] as? String } }`.
+    name_replacement(graphql_type, true, config)
 }
 
 /// Renders explicit property declarations for fields that conflict with `Mock` properties.
