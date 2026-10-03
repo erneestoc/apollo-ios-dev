@@ -24,6 +24,26 @@ use apollo_codegen_lib::templates::mock_object_template::MockObjectTemplate;
 use apollo_codegen_lib::templates::mock_unions_template::MockUnionsTemplate;
 use apollo_codegen_lib::templates::{ConfigurationContext, TemplateRenderer};
 
+// Swift dialect of the Apollo iOS version this branch targets (`MockObjectTemplate.swift` at the
+// matching upstream tag); the byte-for-byte parity harness is the source of truth.
+// 2.0.0+: "public final class" / "public struct MockFields: Sendable {"
+const MOCK_CLASS_DECL: &str = "public class";
+const MOCK_FIELDS_DECL: &str = "public struct MockFields {";
+// 1.23.0+: convenience-initializer parameters for non-null fields get default values
+const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = false;
+
+/// Convenience-initializer parameter for a non-null field.
+fn required_param(name: &str, mock_type: &str, default: &str) -> String {
+    if REQUIRED_PARAMS_HAVE_DEFAULTS {
+        format!("{}: {} = {}", name, mock_type, default)
+    } else {
+        format!("{}: {}? = nil", name, mock_type)
+    }
+}
+
+// The schema under test is the repository's AnimalKingdomAPI snapshot (upstream 1.15.1), which
+// predates the `Query.findPet` and `adoptionDate` fields added to the upstream schema later.
+
 // MARK: - Test Configuration
 
 /// SPM config with testMocks enabled (swiftPackage) matching AnimalKingdomAPI test mock generation.
@@ -193,10 +213,11 @@ fn assert_mock_object_structure(rendered: &str, type_name: &str) {
         type_name,
     );
 
-    // Class structure -- must use `final class` and `MockFields: Sendable`
+    // Class structure -- version-specific class and MockFields declarations
     assert!(
-        rendered.contains(&format!("public final class {}: MockObject {{", type_name)),
-        "Missing 'final class {}' declaration in:\n{}",
+        rendered.contains(&format!("{} {}: MockObject {{", MOCK_CLASS_DECL, type_name)),
+        "Missing '{} {}' declaration in:\n{}",
+        MOCK_CLASS_DECL,
         type_name,
         rendered,
     );
@@ -222,8 +243,9 @@ fn assert_mock_object_structure(rendered: &str, type_name: &str) {
         type_name,
     );
     assert!(
-        rendered.contains("public struct MockFields: Sendable {"),
-        "Missing 'struct MockFields: Sendable' for {}\nRendered:\n{}",
+        rendered.contains(&format!("  {}\n", MOCK_FIELDS_DECL)),
+        "Missing '{}' for {}\nRendered:\n{}",
+        MOCK_FIELDS_DECL,
         type_name,
         rendered,
     );
@@ -308,7 +330,6 @@ fn test_dog_mock() {
 
     // Custom scalars
     assert!(rendered.contains(r#"@Field<AnimalKingdomAPI.CustomDate>("birthdate") public var birthdate"#));
-    assert!(rendered.contains(r#"@Field<AnimalKingdomAPI.CustomDate>("adoptionDate") public var adoptionDate"#));
 
     // houseDetails is custom scalar "Object"
     assert!(rendered.contains(r#"@Field<AnimalKingdomAPI.Object>("houseDetails") public var houseDetails"#));
@@ -318,7 +339,7 @@ fn test_dog_mock() {
 
     // Verify entity mock types in convenience init
     // height is Height! (non-null) -> default value Mock<Height>()
-    assert!(rendered.contains("height: Mock<Height> = Mock<Height>()"));
+    assert!(rendered.contains(&required_param("height", "Mock<Height>", "Mock<Height>()")), "actual:\n{}", rendered);
     // owner is Human (nullable) -> optional
     assert!(rendered.contains("owner: Mock<Human>? = nil"));
     // bestFriend is HousePet (interface, nullable) -> (any AnyMock)?
@@ -396,7 +417,6 @@ fn test_pet_rock_mock() {
     assert!(rendered.contains(r#"@Field<String>("humanName") public var humanName"#));
     assert!(rendered.contains(r#"@Field<String>("favoriteToy") public var favoriteToy"#));
     assert!(rendered.contains(r#"@Field<Human>("owner") public var owner"#));
-    assert!(rendered.contains(r#"@Field<AnimalKingdomAPI.CustomDate>("adoptionDate") public var adoptionDate"#));
 
     assert!(rendered.contains("public extension Mock where O == PetRock {"));
 }
@@ -438,11 +458,11 @@ fn test_height_mock() {
     assert!(rendered.contains("public extension Mock where O == Height {"));
 
     // Verify default values for non-null fields in convenience init
-    assert!(rendered.contains("centimeters: Double = 0.0"));
-    assert!(rendered.contains("feet: Int = 0"));
-    assert!(rendered.contains("meters: Int = 0"));
-    assert!(rendered.contains("yards: Int = 0"));
-    assert!(rendered.contains("relativeSize: GraphQLEnum<AnimalKingdomAPI.RelativeSize> = .case(.large)"));
+    assert!(rendered.contains(&required_param("centimeters", "Double", "0.0")), "actual:\n{}", rendered);
+    assert!(rendered.contains(&required_param("feet", "Int", "0")), "actual:\n{}", rendered);
+    assert!(rendered.contains(&required_param("meters", "Int", "0")), "actual:\n{}", rendered);
+    assert!(rendered.contains(&required_param("yards", "Int", "0")), "actual:\n{}", rendered);
+    assert!(rendered.contains(&required_param("relativeSize", "GraphQLEnum<AnimalKingdomAPI.RelativeSize>", ".case(.large)")), "actual:\n{}", rendered);
     assert!(rendered.contains("inches: Int? = nil")); // nullable
 }
 
@@ -453,11 +473,10 @@ fn test_query_mock() {
 
     assert_mock_object_structure(&rendered, "Query");
 
-    // Query has: allAnimals, classroomPets, pets, findPet
+    // Query has: allAnimals, classroomPets, pets
     assert!(rendered.contains(r#""allAnimals"#));
     assert!(rendered.contains(r#""classroomPets"#));
     assert!(rendered.contains(r#""pets"#));
-    assert!(rendered.contains(r#""findPet"#));
 
     assert!(rendered.contains("public extension Mock where O == Query {"));
 }
@@ -531,7 +550,7 @@ fn test_mock_interfaces() {
 // MARK: - Cross-cutting validation tests
 
 #[test]
-fn test_all_object_mocks_use_final_class() {
+fn test_all_object_mocks_use_expected_class_declaration() {
     let parsed = parse_animal_kingdom_schema();
     let type_names = [
         "Bird", "Cat", "Dog", "Human", "Fish", "Rat", "PetRock", "Crocodile", "Height", "Query",
@@ -540,22 +559,16 @@ fn test_all_object_mocks_use_final_class() {
 
     for name in &type_names {
         let rendered = render_mock_object(name, &parsed.registry);
-        assert!(
-            rendered.contains("final class"),
-            "{} mock does not contain 'final class'",
-            name,
-        );
-        // Must NOT contain non-final class
-        assert!(
-            !rendered.contains(&format!("public class {}: MockObject", name)),
-            "{} mock incorrectly uses 'class' without 'final'",
-            name,
-        );
+        let decl = rendered
+            .lines()
+            .find(|line| line.contains(&format!("class {}: MockObject", name)))
+            .unwrap_or_else(|| panic!("{} mock has no class declaration:\n{}", name, rendered));
+        assert_eq!(decl, format!("{} {}: MockObject {{", MOCK_CLASS_DECL, name));
     }
 }
 
 #[test]
-fn test_all_object_mocks_use_sendable_mock_fields() {
+fn test_all_object_mocks_use_expected_mock_fields_declaration() {
     let parsed = parse_animal_kingdom_schema();
     let type_names = [
         "Bird", "Cat", "Dog", "Human", "Fish", "Rat", "PetRock", "Crocodile", "Height", "Query",
@@ -564,11 +577,11 @@ fn test_all_object_mocks_use_sendable_mock_fields() {
 
     for name in &type_names {
         let rendered = render_mock_object(name, &parsed.registry);
-        assert!(
-            rendered.contains("struct MockFields: Sendable {"),
-            "{} mock does not contain 'struct MockFields: Sendable'",
-            name,
-        );
+        let decl = rendered
+            .lines()
+            .find(|line| line.contains("struct MockFields"))
+            .unwrap_or_else(|| panic!("{} mock has no MockFields declaration:\n{}", name, rendered));
+        assert_eq!(decl.trim_start(), MOCK_FIELDS_DECL);
     }
 }
 
