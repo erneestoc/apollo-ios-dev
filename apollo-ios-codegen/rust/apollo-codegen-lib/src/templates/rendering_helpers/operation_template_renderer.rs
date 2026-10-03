@@ -6,7 +6,7 @@
 use graphql_compiler::graphql_type::GraphQLType;
 use graphql_compiler::graphql_value::GraphQLValue;
 
-use crate::config::ApolloCodegenConfiguration;
+use crate::templates::ConfigurationContext;
 use super::graphql_type_rendered::{rendered, TypeRenderContext};
 use super::input_variable_renderable::{render_variable_default_value, InputVariable};
 use super::string_swift_name_escaping::render_as_field_property_name;
@@ -26,7 +26,7 @@ pub struct VariableDefinition {
 /// Mirrors Swift's `OperationTemplateRenderer.Initializer(_:)` method.
 pub fn render_initializer(
   variables: &[VariableDefinition],
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   let init_keyword = "public init";
   if variables.is_empty() {
@@ -70,13 +70,13 @@ pub fn render_initializer(
 /// Mirrors Swift's `OperationTemplateRenderer.VariableProperties(_:)` method.
 pub fn render_variable_properties(
   variables: &[VariableDefinition],
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   variables
     .iter()
     .map(|v| {
       let name = render_as_field_property_name(&v.name, config);
-      let type_str = rendered(&v.type_, &TypeRenderContext::InputValue, None, config);
+      let type_str = rendered(&v.type_, &TypeRenderContext::InputValue, None, &config.config);
       format!("public var {}: {}", name, type_str)
     })
     .collect::<Vec<_>>()
@@ -88,10 +88,10 @@ pub fn render_variable_properties(
 /// Mirrors Swift's `OperationTemplateRenderer.VariableParameter(_:)` method.
 pub fn render_variable_parameter(
   variable: &VariableDefinition,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   let name = render_as_field_property_name(&variable.name, config);
-  let type_str = rendered(&variable.type_, &TypeRenderContext::InputValue, None, config);
+  let type_str = rendered(&variable.type_, &TypeRenderContext::InputValue, None, &config.config);
 
   if variable.default_value.is_some() {
     let input_var = InputVariable {
@@ -110,7 +110,7 @@ pub fn render_variable_parameter(
 /// Mirrors Swift's `OperationTemplateRenderer.VariableAccessors(_:graphQLOperation:)` method.
 pub fn render_variable_accessors(
   variables: &[VariableDefinition],
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
   graphql_operation: bool,
 ) -> String {
   if variables.is_empty() {
@@ -150,12 +150,13 @@ pub fn render_variable_accessors(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::ApolloCodegenConfiguration;
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::GraphQLScalarType;
   use std::sync::Arc;
 
-  fn default_config() -> ApolloCodegenConfiguration {
-    serde_json::from_str(r#"{
+  fn default_config() -> ConfigurationContext {
+    let config: ApolloCodegenConfiguration = serde_json::from_str(r#"{
       "schemaNamespace": "TestSchema",
       "input": {},
       "output": {
@@ -163,7 +164,8 @@ mod tests {
         "operations": {"inSchemaModule": {}},
         "testMocks": {"none": {}}
       }
-    }"#).unwrap()
+    }"#).unwrap();
+    ConfigurationContext::new(config, None)
   }
 
   fn make_string_type() -> GraphQLType {

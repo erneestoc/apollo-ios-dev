@@ -136,14 +136,14 @@ impl EnumTemplate {
         let case_name = render_enum_value(
             value,
             EnumRenderContext::EnumCase,
-            &self.config.config,
+            &self.config,
         );
 
         if self.config.options().conversion_strategies.enum_cases != EnumCases::None {
             let raw_value = render_enum_value(
                 value,
                 EnumRenderContext::EnumRawValue,
-                &self.config.config,
+                &self.config,
             );
             format!("  case {} = \"{}\"", case_name, raw_value)
         } else {

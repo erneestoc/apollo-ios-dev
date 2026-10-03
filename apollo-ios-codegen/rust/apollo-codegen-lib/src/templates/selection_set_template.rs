@@ -850,7 +850,7 @@ impl<'a> SelectionSetTemplate<'a> {
         let is_conditionally_included = is_field_conditionally_included(field, scope);
         let type_name = self.type_name_for_field(field, is_conditionally_included);
         let property_name =
-            render_as_field_property_name(field.response_key(), &self.config.config);
+            render_as_field_property_name(field.response_key(), &self.config);
 
         if self.is_mutable() {
             result.push_str(&format!(
@@ -1139,7 +1139,7 @@ impl<'a> SelectionSetTemplate<'a> {
             field.type_().is_nullable() || is_field_conditionally_included(field, scope);
         let type_name = self.type_name_for_field(field, is_optional);
         let param_name =
-            render_as_initializer_parameter_name(field.response_key(), &self.config.config);
+            render_as_initializer_parameter_name(field.response_key(), &self.config);
         let default = if is_optional { " = nil" } else { "" };
         format!("{}: {}{}", param_name, type_name, default)
     }
@@ -1172,7 +1172,7 @@ impl<'a> SelectionSetTemplate<'a> {
         let is_entity_field = matches!(field.type_().inner_type(), GraphQLType::Entity(_));
         let accessor_name = render_as_initializer_parameter_accessor_name(
             field.response_key(),
-            &self.config.config,
+            &self.config,
         );
         let field_data = if is_entity_field { "._fieldData" } else { "" };
         format!("\"{}\": {}{},", field.response_key(), accessor_name, field_data)

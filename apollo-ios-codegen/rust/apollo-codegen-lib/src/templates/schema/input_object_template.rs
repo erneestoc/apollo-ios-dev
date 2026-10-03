@@ -150,7 +150,7 @@ impl InputObjectTemplate {
 
         let names: Vec<String> = fields
             .values()
-            .map(|f| render_input_field(f, &self.config.config))
+            .map(|f| render_input_field(f, &self.config))
             .collect();
         let names_str = names.join(", ");
 
@@ -168,7 +168,7 @@ impl InputObjectTemplate {
         let params: Vec<String> = fields
             .values()
             .map(|field| {
-                let field_name = render_input_field(field, &self.config.config);
+                let field_name = render_input_field(field, &self.config);
                 let type_str =
                     render_input_value_type(field, true, &self.config.config);
                 format!("    {}: {}", field_name, type_str)
@@ -184,7 +184,7 @@ impl InputObjectTemplate {
         let entries: Vec<String> = fields
             .values()
             .map(|field| {
-                let field_name = render_input_field(field, &self.config.config);
+                let field_name = render_input_field(field, &self.config);
                 let schema_name = &field.name.schema_name;
                 let null_coalescing =
                     if !is_nullable(field) && has_default_value(field) {
@@ -203,7 +203,7 @@ impl InputObjectTemplate {
 
     fn field_property_template(&self, field: &GraphQLInputField) -> String {
         let member_str = self.access_control_renderer(Scope::Member).render();
-        let field_name = render_input_field(field, &self.config.config);
+        let field_name = render_input_field(field, &self.config);
         let type_str = render_input_value_type(field, false, &self.config.config);
         let schema_name = &field.name.schema_name;
 

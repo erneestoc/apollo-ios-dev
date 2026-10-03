@@ -2,6 +2,7 @@ use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::capitalization_rule::CapitalizationRule;
 use crate::inflection_rule::InflectionRule;
 
 use super::composition::Composition;
@@ -16,6 +17,12 @@ use super::selection_set_initializers::SelectionSetInitializers;
 /// Mirrors Swift's `ApolloCodegenConfiguration.OutputOptions` struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputOptions {
+  /// Any non-default rules for capitalization you wish to include.
+  ///
+  /// Rules are applied to the names of generated field accessors, initializer parameters,
+  /// enum cases, input object fields, and test mock fields. Schema and selection set *type*
+  /// names are not affected.
+  pub additional_capitalization_rules: Vec<CapitalizationRule>,
   /// Any non-default rules for pluralization or singularization you wish to include.
   pub additional_inflection_rules: Vec<InflectionRule>,
   /// How deprecated enum cases from the schema should be handled.
@@ -56,6 +63,7 @@ pub struct OutputOptions {
 impl Default for OutputOptions {
   fn default() -> Self {
     Self {
+      additional_capitalization_rules: vec![],
       additional_inflection_rules: vec![],
       deprecated_enum_cases: Composition::Include,
       schema_documentation: Composition::Include,
@@ -76,6 +84,7 @@ impl Default for OutputOptions {
 
 // Valid keys for OutputOptions (current + legacy).
 const VALID_OUTPUT_OPTIONS_KEYS: &[&str] = &[
+  "additionalCapitalizationRules",
   "additionalInflectionRules",
   "queryStringLiteralFormat",
   "deprecatedEnumCases",
@@ -108,6 +117,7 @@ impl<'de> Deserialize<'de> for OutputOptions {
       fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let defaults = OutputOptions::default();
 
+        let mut additional_capitalization_rules: Option<Vec<CapitalizationRule>> = None;
         let mut additional_inflection_rules: Option<Vec<InflectionRule>> = None;
         let mut deprecated_enum_cases: Option<Composition> = None;
         let mut schema_documentation: Option<Composition> = None;
@@ -132,6 +142,9 @@ impl<'de> Deserialize<'de> for OutputOptions {
           }
 
           match key.as_str() {
+            "additionalCapitalizationRules" => {
+              additional_capitalization_rules = Some(map.next_value()?);
+            }
             "additionalInflectionRules" => {
               additional_inflection_rules = Some(map.next_value()?);
             }
@@ -193,6 +206,8 @@ impl<'de> Deserialize<'de> for OutputOptions {
         });
 
         Ok(OutputOptions {
+          additional_capitalization_rules: additional_capitalization_rules
+            .unwrap_or(defaults.additional_capitalization_rules),
           additional_inflection_rules: additional_inflection_rules
             .unwrap_or(defaults.additional_inflection_rules),
           deprecated_enum_cases: deprecated_enum_cases
@@ -230,7 +245,11 @@ impl<'de> Deserialize<'de> for OutputOptions {
 
 impl Serialize for OutputOptions {
   fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut map = serializer.serialize_map(Some(13))?;
+    let mut map = serializer.serialize_map(Some(14))?;
+    map.serialize_entry(
+      "additionalCapitalizationRules",
+      &self.additional_capitalization_rules,
+    )?;
     map.serialize_entry(
       "additionalInflectionRules",
       &self.additional_inflection_rules,

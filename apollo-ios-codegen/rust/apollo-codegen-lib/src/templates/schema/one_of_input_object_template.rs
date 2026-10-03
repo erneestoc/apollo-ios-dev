@@ -130,7 +130,7 @@ impl OneOfInputObjectTemplate {
             case_parts.push(format!("  {}", type_doc));
         }
 
-        let field_name = render_input_field(field, &self.config.config);
+        let field_name = render_input_field(field, &self.config);
         let type_str =
             render_as_input_value(&field.type_, false, &self.config.config);
 
@@ -140,7 +140,7 @@ impl OneOfInputObjectTemplate {
     }
 
     fn field_case_data_template(&self, field: &GraphQLInputField) -> String {
-        let field_name = render_input_field(field, &self.config.config);
+        let field_name = render_input_field(field, &self.config);
         let schema_name = &field.name.schema_name;
 
         format!(

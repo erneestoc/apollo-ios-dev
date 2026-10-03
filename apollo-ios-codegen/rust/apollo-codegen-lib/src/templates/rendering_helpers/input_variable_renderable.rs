@@ -8,7 +8,7 @@ use graphql_compiler::graphql_type::GraphQLType;
 use graphql_compiler::graphql_value::GraphQLValue;
 use graphql_compiler::schema::{GraphQLEnumValue, GraphQLInputObjectType};
 
-use crate::config::ApolloCodegenConfiguration;
+use crate::templates::ConfigurationContext;
 use super::graphql_name_rendering::{render_enum_value, render_input_field, render_named_type, EnumRenderContext, RenderContext};
 use super::string_casing::first_uppercased;
 
@@ -42,7 +42,7 @@ impl<'a> InputVariableRenderable for InputVariable<'a> {
 /// Mirrors Swift's `InputVariableRenderable.renderVariableDefaultValue(config:)`.
 pub fn render_variable_default_value(
   renderable: &dyn InputVariableRenderable,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   render_variable_default_value_inner(renderable, false, config)
 }
@@ -50,7 +50,7 @@ pub fn render_variable_default_value(
 fn render_variable_default_value_inner(
   renderable: &dyn InputVariableRenderable,
   in_list: bool,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   match renderable.default_value() {
     None => String::new(),
@@ -137,7 +137,7 @@ fn render_variable_default_value_inner(
 fn render_initializer(
   input_type: &GraphQLInputObjectType,
   values: &indexmap::IndexMap<String, GraphQLValue>,
-  config: &ApolloCodegenConfiguration,
+  config: &ConfigurationContext,
 ) -> String {
   let entries: Vec<String> = values
     .iter()
@@ -160,8 +160,8 @@ fn render_initializer(
     &RenderContext::Typename { is_input_value: false },
   );
 
-  let prefix = if !config.output.operations.is_in_module() {
-    format!("{}.", first_uppercased(&config.schema_namespace))
+  let prefix = if !config.config.output.operations.is_in_module() {
+    format!("{}.", first_uppercased(&config.config.schema_namespace))
   } else {
     String::new()
   };
@@ -224,12 +224,13 @@ pub fn swift_double_description(f: f64) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::ApolloCodegenConfiguration;
   use graphql_compiler::graphql_name::GraphQLName;
   use graphql_compiler::schema::GraphQLScalarType;
   use std::sync::Arc;
 
-  fn default_config() -> ApolloCodegenConfiguration {
-    serde_json::from_str(r#"{
+  fn default_config() -> ConfigurationContext {
+    let config: ApolloCodegenConfiguration = serde_json::from_str(r#"{
       "schemaNamespace": "TestSchema",
       "input": {},
       "output": {
@@ -237,7 +238,8 @@ mod tests {
         "operations": {"inSchemaModule": {}},
         "testMocks": {"none": {}}
       }
-    }"#).unwrap()
+    }"#).unwrap();
+    ConfigurationContext::new(config, None)
   }
 
   fn make_string_type() -> GraphQLType {
