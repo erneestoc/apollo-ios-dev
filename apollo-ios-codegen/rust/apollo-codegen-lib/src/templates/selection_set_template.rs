@@ -531,8 +531,10 @@ impl<'a> SelectionSetTemplate<'a> {
             .map(|name| format!("  {}.self", name))
             .collect();
 
+        // Swift 2.0.0 renders the selection set's access control (not a hard-coded `public`).
         format!(
-            "@_spi(Execution) public static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
+            "@_spi(Execution) {}static var __deferredFragments: [any ApolloAPI.Deferrable.Type] {{ [\n{}\n] }}",
+            self.access_control_renderer.render(),
             items.join(",\n")
         )
     }
