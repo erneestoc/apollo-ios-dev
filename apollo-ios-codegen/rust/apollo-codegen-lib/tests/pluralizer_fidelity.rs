@@ -564,9 +564,12 @@ mod case_sensitivity {
     assert_eq!(default_pluralizer().pluralize("Person"), "People");
   }
 
+  // InflectorKit stores irregulars under the given and `capitalizedString` keys only and looks
+  // them up with an exact, case-sensitive match, so fully uppercased words fall through to the
+  // (case-insensitive) regex rules.
   #[test]
   fn pluralize_person_uppercase() {
-    assert_eq!(default_pluralizer().pluralize("PERSON"), "PEOPLE");
+    assert_eq!(default_pluralizer().pluralize("PERSON"), "PERSONs");
   }
 
   #[test]
@@ -581,7 +584,7 @@ mod case_sensitivity {
 
   #[test]
   fn singularize_people_uppercase() {
-    assert_eq!(default_pluralizer().singularize("PEOPLE"), "PERSON");
+    assert_eq!(default_pluralizer().singularize("PEOPLE"), "PEOPLE");
   }
 
   #[test]
@@ -594,14 +597,16 @@ mod case_sensitivity {
     assert_eq!(default_pluralizer().pluralize("Quiz"), "Quizzes");
   }
 
+  // Uncountables are matched exactly (`containsObject:`), so only the lowercase spelling is
+  // left alone.
   #[test]
   fn uncountable_sheep_capitalized() {
-    assert_eq!(default_pluralizer().pluralize("Sheep"), "Sheep");
+    assert_eq!(default_pluralizer().pluralize("Sheep"), "Sheeps");
   }
 
   #[test]
   fn uncountable_sheep_uppercase() {
-    assert_eq!(default_pluralizer().pluralize("SHEEP"), "SHEEP");
+    assert_eq!(default_pluralizer().pluralize("SHEEP"), "SHEEPs");
   }
 
   #[test]
@@ -611,12 +616,12 @@ mod case_sensitivity {
 
   #[test]
   fn pluralize_man_uppercase() {
-    assert_eq!(default_pluralizer().pluralize("MAN"), "MEN");
+    assert_eq!(default_pluralizer().pluralize("MAN"), "MANs");
   }
 
   #[test]
   fn singularize_men_uppercase() {
-    assert_eq!(default_pluralizer().singularize("MEN"), "MAN");
+    assert_eq!(default_pluralizer().singularize("MEN"), "MEN");
   }
 }
 
@@ -801,9 +806,10 @@ mod custom_rules {
 mod edge_cases {
   use super::*;
 
+  // The catch-all `$` -> `s` plural rule matches the empty string too.
   #[test]
   fn empty_string_pluralize() {
-    assert_eq!(default_pluralizer().pluralize(""), "");
+    assert_eq!(default_pluralizer().pluralize(""), "s");
   }
 
   #[test]
