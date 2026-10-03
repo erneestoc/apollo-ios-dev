@@ -30,7 +30,7 @@ use apollo_codegen_lib::templates::{ConfigurationContext, TemplateRenderer};
 const MOCK_CLASS_DECL: &str = "public class";
 const MOCK_FIELDS_DECL: &str = "public struct MockFields {";
 // 1.23.0+: convenience-initializer parameters for non-null fields get default values
-const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = false;
+const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = true;
 
 /// Convenience-initializer parameter for a non-null field.
 fn required_param(name: &str, mock_type: &str, default: &str) -> String {

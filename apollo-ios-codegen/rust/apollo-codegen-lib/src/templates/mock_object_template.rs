@@ -405,8 +405,11 @@ mod tests {
     //   2.0.0+:  `final class` and `struct MockFields: Sendable {`
     //   1.23.0+: nullable scalars, enums and lists nested inside a list render as optional
     //            (`[String?]`, `[[String]?]`)
-    const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = false;
-    const NESTED_OPTIONALS_IN_MOCK_TYPES: bool = false;
+    const REQUIRED_PARAMS_HAVE_DEFAULTS: bool = true;
+    const NESTED_OPTIONALS_IN_MOCK_TYPES: bool = true;
+    //   1.23.0-2.0.2: non-null custom scalars default to `try! .init(_jsonValue: "")`,
+    //   2.0.3+: `.defaultMockValue`
+    const CUSTOM_SCALAR_DEFAULT: &str = "try! .init(_jsonValue: \"\")";
     const CLASS_DECL: &str = "class";
     const MOCK_FIELDS_DECL: &str = "struct MockFields {";
 
@@ -946,7 +949,7 @@ public {} Dog: MockObject {{
         // Verify the extension is present
         assert!(actual.contains("public extension Mock where O == Dog {"));
         // Verify sorted init params with correct types
-        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", ".defaultMockValue")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", CUSTOM_SCALAR_DEFAULT)), "actual:\n{}", actual);
         assert!(actual.contains("customScalarList: [TestSchema.CustomScalar]? = nil"));
         assert!(actual.contains(&format!("customScalarOptionalList: [{}]? = nil", nested_optional("TestSchema.CustomScalar"))), "actual:\n{}", actual);
         assert!(actual.contains("enumList: [GraphQLEnum<TestSchema.EnumType>]? = nil"));
@@ -1103,7 +1106,7 @@ public {} Dog: MockObject {{
         let subject = build_subject("Dog", None, fields, swift_package_config());
         let actual = render_body(&subject);
 
-        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", ".defaultMockValue")), "actual:\n{}", actual);
+        assert!(actual.contains(&required_param("customScalar", "TestSchema.CustomScalar", CUSTOM_SCALAR_DEFAULT)), "actual:\n{}", actual);
         assert!(actual.contains(&required_param("customScalarList", "[TestSchema.CustomScalar]", "[]")), "actual:\n{}", actual);
         assert!(actual.contains(&required_param("enumList", "[GraphQLEnum<TestSchema.EnumType>]", "[]")), "actual:\n{}", actual);
         assert!(actual.contains(&required_param("enumType", "GraphQLEnum<TestSchema.EnumType>", ".case(.foo)")), "actual:\n{}", actual);
