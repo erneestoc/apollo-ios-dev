@@ -50,16 +50,16 @@ fn normalize_replacement(replacement: &str) -> String {
 ///
 /// Mirrors InflectorKit's `TTTStringInflector` behavior:
 /// - Rules added later take precedence (inserted at front of the rules list)
-/// - All regex matching is case-insensitive (`(?i)` flag)
-/// - Irregulars are stored bidirectionally with both lowercase and capitalized variants
-/// - Uncountable check is case-insensitive (lowercased comparison)
+/// - All regex matching is case-insensitive with `^`/`$` matching at line boundaries (`(?mi)`)
+/// - Irregulars are stored as given plus their `NSString.capitalizedString` variants
+/// - Uncountable and irregular lookups are exact, case-sensitive matches (InflectorKit)
 /// - Application order: check uncountable -> check irregular -> iterate rules (first match wins)
 #[derive(Clone)]
 pub struct Inflector {
   plural_rules: Vec<CompiledRule>,
   singular_rules: Vec<CompiledRule>,
-  irregulars_s2p: IndexMap<String, String>,
-  irregulars_p2s: IndexMap<String, String>,
+  /// singular -> plural, in insertion order (`mutableIrregularPluralsBySingular`).
+  irregulars: IndexMap<String, String>,
   uncountables: IndexSet<String>,
 }
 
@@ -75,8 +75,7 @@ impl Inflector {
     Self {
       plural_rules: Vec::new(),
       singular_rules: Vec::new(),
-      irregulars_s2p: IndexMap::new(),
-      irregulars_p2s: IndexMap::new(),
+      irregulars: IndexMap::new(),
       uncountables: IndexSet::new(),
     }
   }
@@ -108,14 +107,14 @@ impl Inflector {
   /// Adds a pluralization rule. The rule is inserted at the front of the rules list
   /// so that later-added rules take precedence over earlier ones.
   ///
-  /// Both the pattern and replacement are removed from uncountables.
-  /// The regex is compiled with case-insensitive matching (`(?i)`).
+  /// Mirrors `TTTStringInflector addPluralRule:withReplacement:`: the pattern and the
+  /// replacement are removed from the uncountables (exact string match) and the regex is
+  /// compiled with `NSRegularExpressionAnchorsMatchLines | CaseInsensitive`.
   pub fn add_plural_rule(&mut self, pattern: &str, replacement: &str) {
-    self.uncountables.shift_remove(&pattern.to_lowercase());
-    self.uncountables.shift_remove(&replacement.to_lowercase());
+    self.uncountables.shift_remove(pattern);
+    self.uncountables.shift_remove(replacement);
 
-    let case_insensitive_pattern = format!("(?i){}", pattern);
-    let regex = Regex::new(&case_insensitive_pattern)
+    let regex = Regex::new(&format!("(?mi){}", pattern))
       .unwrap_or_else(|e| panic!("Invalid plural regex pattern '{}': {}", pattern, e));
 
     self.plural_rules.insert(
@@ -130,14 +129,12 @@ impl Inflector {
   /// Adds a singularization rule. The rule is inserted at the front of the rules list
   /// so that later-added rules take precedence over earlier ones.
   ///
-  /// Both the pattern and replacement are removed from uncountables.
-  /// The regex is compiled with case-insensitive matching (`(?i)`).
+  /// Mirrors `TTTStringInflector addSingularRule:withReplacement:`: only the pattern is
+  /// removed from the uncountables (exact string match).
   pub fn add_singular_rule(&mut self, pattern: &str, replacement: &str) {
-    self.uncountables.shift_remove(&pattern.to_lowercase());
-    self.uncountables.shift_remove(&replacement.to_lowercase());
+    self.uncountables.shift_remove(pattern);
 
-    let case_insensitive_pattern = format!("(?i){}", pattern);
-    let regex = Regex::new(&case_insensitive_pattern)
+    let regex = Regex::new(&format!("(?mi){}", pattern))
       .unwrap_or_else(|e| panic!("Invalid singular regex pattern '{}': {}", pattern, e));
 
     self.singular_rules.insert(
@@ -149,100 +146,104 @@ impl Inflector {
     );
   }
 
-  /// Adds an irregular word pair. Both directions are stored (singular->plural and
-  /// plural->singular), with both lowercase and capitalized variants.
+  /// Adds an irregular word pair.
   ///
-  /// Both words are removed from uncountables.
+  /// Mirrors `TTTStringInflector addIrregularWithSingular:plural:`: the pair is stored as
+  /// given and once more with both words run through `NSString.capitalizedString` (first
+  /// character uppercased, the rest lowercased). Lookups are exact, case-sensitive matches
+  /// against those stored forms.
   pub fn add_irregular(&mut self, singular: &str, plural: &str) {
-    self.uncountables.shift_remove(&singular.to_lowercase());
-    self.uncountables.shift_remove(&plural.to_lowercase());
-
-    let s_lower = singular.to_lowercase();
-    let p_lower = plural.to_lowercase();
-    let s_cap = capitalize(&s_lower);
-    let p_cap = capitalize(&p_lower);
-
-    // Store lowercase variants
-    self.irregulars_s2p.insert(s_lower.clone(), p_lower.clone());
-    self.irregulars_p2s.insert(p_lower.clone(), s_lower.clone());
-
-    // Store capitalized variants
-    self.irregulars_s2p.insert(s_cap.clone(), p_cap.clone());
-    self.irregulars_p2s.insert(p_cap, s_cap);
+    self
+      .irregulars
+      .insert(singular.to_string(), plural.to_string());
+    self
+      .irregulars
+      .insert(ns_capitalized(singular), ns_capitalized(plural));
   }
 
-  /// Adds an uncountable word. The word is stored in lowercase for
-  /// case-insensitive comparison.
+  /// Adds an uncountable word. Stored verbatim; the comparison is an exact, case-sensitive
+  /// match (`NSMutableSet containsObject:`).
   pub fn add_uncountable(&mut self, word: &str) {
-    self.uncountables.insert(word.to_lowercase());
+    self.uncountables.insert(word.to_string());
   }
 
-  /// Pluralizes a word using the configured rules.
+  /// Pluralizes a word using the configured rules (`TTTStringInflector pluralize:`).
   ///
   /// Application order:
-  /// 1. Check if the word is uncountable (return unchanged)
-  /// 2. Check if the word is an irregular singular (return irregular plural with case matching)
-  /// 3. Iterate plural rules in order (first match wins)
-  /// 4. If no match, return word unchanged
+  /// 1. Uncountable (exact match) -> unchanged
+  /// 2. Irregular singular (exact key match) -> stored plural
+  /// 3. Plural rules in order; the first rule that replaces anything wins
+  /// 4. Otherwise unchanged
   pub fn pluralize(&self, word: &str) -> String {
-    if word.is_empty() {
-      return String::new();
-    }
-
-    // Check uncountables (case-insensitive)
-    if self.uncountables.contains(&word.to_lowercase()) {
+    if self.uncountables.contains(word) {
       return word.to_string();
     }
 
-    // Check irregulars (singular -> plural)
-    if let Some(irregular) = self.irregulars_s2p.get(&word.to_lowercase()) {
-      return match_case(word, irregular);
+    if let Some(plural) = self.irregulars.get(word) {
+      return plural.clone();
     }
 
-    // Iterate plural rules (first match wins)
-    for rule in &self.plural_rules {
-      if rule.regex.is_match(word) {
-        return rule.regex.replace(word, &rule.replacement).to_string();
-      }
-    }
-
-    word.to_string()
+    apply_rules(&self.plural_rules, word)
   }
 
-  /// Singularizes a word using the configured rules.
+  /// Singularizes a word using the configured rules (`TTTStringInflector singularize:`).
   ///
   /// Application order:
-  /// 1. Check if the word is uncountable (return unchanged)
-  /// 2. Check if the word is an irregular plural (return irregular singular with case matching)
-  /// 3. Iterate singular rules in order (first match wins)
-  /// 4. If no match, return word unchanged
+  /// 1. Uncountable (exact match) -> unchanged
+  /// 2. Irregular plural (`allKeysForObject:` -> last stored singular whose plural equals
+  ///    the word exactly)
+  /// 3. Singular rules in order; the first rule that replaces anything wins
+  /// 4. Otherwise unchanged
   pub fn singularize(&self, word: &str) -> String {
-    if word.is_empty() {
-      return String::new();
-    }
-
-    // Check uncountables (case-insensitive)
-    if self.uncountables.contains(&word.to_lowercase()) {
+    if self.uncountables.contains(word) {
       return word.to_string();
     }
 
-    // Check irregulars (plural -> singular)
-    if let Some(irregular) = self.irregulars_p2s.get(&word.to_lowercase()) {
-      return match_case(word, irregular);
+    if let Some((singular, _)) = self
+      .irregulars
+      .iter()
+      .filter(|(_, plural)| plural.as_str() == word)
+      .last()
+    {
+      return singular.clone();
     }
 
-    // Iterate singular rules (first match wins)
-    for rule in &self.singular_rules {
-      if rule.regex.is_match(word) {
-        return rule.regex.replace(word, &rule.replacement).to_string();
-      }
-    }
-
-    word.to_string()
+    apply_rules(&self.singular_rules, word)
   }
 }
 
+/// `TTTStringInflectionRule evaluateString:` applied in order: every match of the rule is
+/// replaced (`replaceMatchesInString:`) and iteration stops at the first rule that matched.
+fn apply_rules(rules: &[CompiledRule], word: &str) -> String {
+  for rule in rules {
+    if rule.regex.is_match(word) {
+      return rule.regex.replace_all(word, rule.replacement.as_str()).to_string();
+    }
+  }
+  word.to_string()
+}
+
+/// `NSString.capitalizedString`: the first character of every word is uppercased and the
+/// remaining characters are lowercased; words are delimited by whitespace.
+fn ns_capitalized(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let mut at_word_start = true;
+  for c in s.chars() {
+    if c.is_whitespace() {
+      out.push(c);
+      at_word_start = true;
+    } else if at_word_start {
+      out.extend(c.to_uppercase());
+      at_word_start = false;
+    } else {
+      out.extend(c.to_lowercase());
+    }
+  }
+  out
+}
+
 /// Capitalizes the first character of a string.
+#[allow(dead_code)]
 fn capitalize(s: &str) -> String {
   let mut chars = s.chars();
   match chars.next() {
@@ -259,6 +260,7 @@ fn capitalize(s: &str) -> String {
 /// - If source is all uppercase: return target in all uppercase
 /// - If source starts with uppercase: capitalize target
 /// - Otherwise: return target as-is (lowercase)
+#[allow(dead_code)]
 fn match_case(source: &str, target: &str) -> String {
   if source.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
     target.to_uppercase()
@@ -311,12 +313,13 @@ mod tests {
   }
 
   #[test]
-  fn test_uncountable_case_insensitive() {
+  fn test_uncountable_exact_match() {
     let mut inflector = Inflector::new();
+    inflector.add_plural_rule("$", "s");
     inflector.add_uncountable("sheep");
     assert_eq!(inflector.pluralize("sheep"), "sheep");
-    assert_eq!(inflector.pluralize("Sheep"), "Sheep");
-    assert_eq!(inflector.pluralize("SHEEP"), "SHEEP");
+    // InflectorKit compares uncountables with `containsObject:` (case-sensitive).
+    assert_eq!(inflector.pluralize("Sheep"), "Sheeps");
   }
 
   #[test]
@@ -324,15 +327,15 @@ mod tests {
     let mut inflector = Inflector::new();
     inflector.add_irregular("person", "people");
 
-    // Forward: singular -> plural
+    // Forward: singular -> plural (as given, plus `capitalizedString` variants)
     assert_eq!(inflector.pluralize("person"), "people");
     assert_eq!(inflector.pluralize("Person"), "People");
-    assert_eq!(inflector.pluralize("PERSON"), "PEOPLE");
+    assert_eq!(inflector.pluralize("PERSON"), "PERSON");
 
     // Reverse: plural -> singular
     assert_eq!(inflector.singularize("people"), "person");
     assert_eq!(inflector.singularize("People"), "Person");
-    assert_eq!(inflector.singularize("PEOPLE"), "PERSON");
+    assert_eq!(inflector.singularize("PEOPLE"), "PEOPLE");
   }
 
   #[test]
