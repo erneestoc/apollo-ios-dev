@@ -36,9 +36,15 @@ use crate::file_generators::{
 };
 use crate::templates::{ConfigurationContext, NonFatalError};
 
+use crate::codegen_logger::{CodegenLogger, LogLevel};
+use crate::templates::rendering_helpers::string_casing::first_lowercased;
+
 use graphql_compiler::adapter::{
     self, TypeRegistry, build_network_request_source, collect_referenced_fragments,
-    collect_referenced_types, convert_directives, convert_selection_set,
+    collect_referenced_types, convert_directives, try_convert_selection_set,
+};
+use graphql_compiler::{
+    validate_operations, DisallowedFieldNames, OperationSource, ValidationOptions,
 };
 // Re-export CompilationResult so worker.rs can reference it without
 // depending on graphql-compiler directly.
@@ -48,6 +54,60 @@ use graphql_compiler::compilation_result::{
     RootTypeDefinition,
 };
 use graphql_compiler::{GraphQLCompositeType, GraphQLNamedType};
+
+// MARK: - GenerationFilter
+
+/// Selects which operations and fragments a Bazel `operations` request generates.
+///
+/// Compilation always covers every operation file the config can see (so fragments
+/// resolve); the filter picks the definitions that belong to the requesting target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenerationFilter {
+    /// Definitions whose file path starts with `<prefix>/` (or contains `/<prefix>/` for
+    /// absolute execroot paths). Legacy `--bazel-framework-path` selection: nested or
+    /// same-suffix packages can collide.
+    Prefix(String),
+    /// Definitions whose file path is exactly one of the given files
+    /// (`--bazel-generate-for`). Paths are compared lexically normalized and made absolute
+    /// against the current directory, like discovered files are.
+    Files(Vec<String>),
+}
+
+impl GenerationFilter {
+    /// Whether a definition found in `file_path` is selected.
+    pub fn matches(&self, file_path: &str) -> bool {
+        match self {
+            GenerationFilter::Prefix(prefix) => matches_prefix(file_path, Some(prefix)),
+            GenerationFilter::Files(files) => {
+                let candidate = normalize_file_path(file_path);
+                files.iter().any(|f| normalize_file_path(f) == candidate)
+            }
+        }
+    }
+}
+
+/// Makes a path absolute against the current directory (without touching the file system)
+/// and removes `.` components so that `./a/b.graphql`, `a/b.graphql` and `<cwd>/a/./b.graphql`
+/// compare equal.
+fn normalize_file_path(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
 
 use ir::builder::IRBuilder;
 
@@ -327,24 +387,23 @@ impl ApolloCodegen {
         Ok(())
     }
 
-    /// Like `generate_from_ir_operations_only` but additionally filters
-    /// operations and fragments by file path prefix.
+    /// Like `generate_from_ir_operations_only` but additionally selects the
+    /// operations and fragments to generate with a [`GenerationFilter`].
     ///
-    /// Only operations/fragments whose `file_path` starts with `{prefix}/`
-    /// are generated. Used with compile-all caching: compile all operations
-    /// once, then generate per-target using the framework path as prefix.
+    /// Used with compile-all caching: compile all operations once, then
+    /// generate per-target using the target's framework path or file list.
     pub fn generate_from_ir_filtered(
         compile_result: &CompileResult,
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
-        filter_prefix: &str,
+        filter: &GenerationFilter,
     ) -> Result<(), CodegenError> {
         Self::generate_from_ir_inner(
             compile_result,
             config,
             items_to_generate,
             true,
-            Some(filter_prefix),
+            Some(filter),
         )
     }
 
@@ -353,7 +412,7 @@ impl ApolloCodegen {
         config: &ConfigurationContext,
         items_to_generate: ItemsToGenerate,
         skip_schema_types: bool,
-        filter_prefix: Option<&str>,
+        filter: Option<&GenerationFilter>,
     ) -> Result<(), CodegenError> {
         let file_manager = ApolloFileManager::new();
 
@@ -383,7 +442,7 @@ impl ApolloCodegen {
                     &compile_result.ir,
                     config,
                     &file_manager,
-                    filter_prefix,
+                    filter,
                 )?
             } else {
                 generate_all_files(
@@ -482,14 +541,77 @@ fn parse_schema(
         .unwrap_or("schema.graphql");
 
     schema::Schema::parse_and_validate(&combined_sdl, first_path).map_err(|diag| {
-        let error_lines: Vec<String> = diag
+        // graphql-js wording where apollo-compiler provides it (e.g. `Unknown type "X".`),
+        // otherwise apollo-compiler's own message.
+        let messages: Vec<String> = diag
             .errors
-            .to_string()
-            .lines()
-            .map(|l| l.to_string())
+            .iter()
+            .map(|d| {
+                d.error
+                    .unstable_compat_message()
+                    .unwrap_or_else(|| d.error.to_string())
+            })
             .collect();
-        CodegenError::GraphQLSourceValidationFailure { lines: error_lines }
+        CodegenError::SchemaValidationFailure { messages }
     })
+}
+
+/// Builds the `ValidationOptions` Swift derives from the configuration
+/// (`ValidationOptions+ConfigInitializer.swift`): entity fields must not be named after the
+/// schema namespace (singular for entities, the other number for entity lists) and input
+/// parameters must not be named after Swift keywords or the namespace.
+fn validation_options(config: &ConfigurationContext) -> ValidationOptions {
+    let namespace = config.config.schema_namespace.as_str();
+    let singular = config.pluralizer.singularize(namespace);
+    let plural = config.pluralizer.pluralize(namespace);
+    // Swift traps when the namespace is neither its singular nor its plural form; the
+    // plural is the sensible disallowed list name in that case.
+    let entity_list_name = if namespace == plural && namespace != singular {
+        singular
+    } else {
+        plural
+    };
+    ValidationOptions {
+        schema_namespace: namespace.to_string(),
+        disallowed_field_names: DisallowedFieldNames {
+            all_fields: crate::config::swift_keywords::SwiftKeywords::DISALLOWED_FIELD_NAMES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            entity: std::iter::once(first_lowercased(namespace)).collect(),
+            entity_list: std::iter::once(first_lowercased(&entity_list_name)).collect(),
+        },
+        disallowed_input_parameter_names:
+            crate::config::swift_keywords::SwiftKeywords::DISALLOWED_INPUT_PARAMETER_NAMES
+                .iter()
+                .map(|s| s.to_string())
+                .chain(std::iter::once(first_lowercased(namespace)))
+                .collect(),
+    }
+}
+
+/// Validates the operation documents against the schema before compiling them.
+///
+/// Mirrors Swift's `validateDocument` call in `ApolloCodegen.compileGraphQLResult()`: the
+/// errors are logged as `<path>:<line>:error:<message>` lines and the run fails with
+/// `GraphQLSourceValidationFailure`.
+fn validate_operation_documents(
+    schema: &Valid<schema::Schema>,
+    files: &[(String, String)],
+    config: &ConfigurationContext,
+) -> Result<(), CodegenError> {
+    let sources: Vec<OperationSource<'_>> = files
+        .iter()
+        .map(|(path, text)| OperationSource { path, text })
+        .collect();
+    match validate_operations(schema, &sources, &validation_options(config)) {
+        Ok(()) => Ok(()),
+        Err(errors) => {
+            let lines: Vec<String> = errors.iter().map(|e| e.log_line()).collect();
+            CodegenLogger::log(&lines.join("\n"), LogLevel::Error, "ApolloCodegen.swift", 185);
+            Err(CodegenError::GraphQLSourceValidationFailure { lines })
+        }
+    }
 }
 
 /// Prepends stub definitions for custom directives that Swift's graphql-js
@@ -505,8 +627,17 @@ fn prepend_custom_directive_stubs(schema_sdl: &str) -> String {
     if schema_sdl.contains("@typePolicy") && !schema_sdl.contains("directive @typePolicy") {
         stubs.push("directive @typePolicy(keyFields: String!) on OBJECT | INTERFACE");
     }
-    if schema_sdl.contains("@import") && !schema_sdl.contains("directive @import") {
-        stubs.push("directive @import(module: String!) on QUERY");
+    // Client directives Swift's frontend adds to every schema
+    // (`apolloCodegenSchemaExtension.ts`, `experimentalDeferDirective.ts`); operation
+    // validation needs their definitions.
+    if !schema_sdl.contains("directive @apollo_client_ios_localCacheMutation") {
+        stubs.push("directive @apollo_client_ios_localCacheMutation on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION");
+    }
+    if !schema_sdl.contains("directive @import") {
+        stubs.push("directive @import(module: String!) repeatable on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION");
+    }
+    if !schema_sdl.contains("directive @defer") {
+        stubs.push("directive @defer(label: String, if: Boolean! = true) on FRAGMENT_SPREAD | INLINE_FRAGMENT");
     }
 
     if stubs.is_empty() {
@@ -530,8 +661,8 @@ fn compile_graphql(
         .config
         .experimental_features
         .legacy_safelisting_compatible_operations;
-    // Parse each operation file
-    let parsed_files: Vec<ParsedFile> = operation_matches
+    // Read every operation file
+    let file_contents: Vec<(String, String)> = operation_matches
         .iter()
         .map(|path| {
             let content = std::fs::read_to_string(path).map_err(|e| {
@@ -540,17 +671,21 @@ fn compile_graphql(
                     format!("Failed to read operation file '{}': {}", path, e),
                 ))
             })?;
+            Ok((path.clone(), content))
+        })
+        .collect::<Result<Vec<_>, CodegenError>>()?;
 
-            // Use permissive parsing (matching Swift's GraphQL.js behavior)
-            let doc = executable::ExecutableDocument::parse(schema, &content, path)
-                .map_err(|diag| {
-                    let error_lines: Vec<String> = diag
-                        .errors
-                        .to_string()
-                        .lines()
-                        .map(|l| l.to_string())
-                        .collect();
-                    CodegenError::GraphQLSourceValidationFailure { lines: error_lines }
+    // Validate the merged document first (unknown fragments/types/fields, directive usage,
+    // Apollo's own rules). Everything after this point only sees valid documents.
+    validate_operation_documents(schema, &file_contents, config)?;
+
+    // Parse each operation file on its own (definitions keep their file path)
+    let parsed_files: Vec<ParsedFile> = file_contents
+        .iter()
+        .map(|(path, content)| {
+            let doc = executable::ExecutableDocument::parse(schema, content, path)
+                .map_err(|diag| CodegenError::GraphQLSourceValidationFailure {
+                    lines: diag.errors.iter().map(|d| d.error.to_string()).collect(),
                 })?;
 
             Ok(ParsedFile {
@@ -679,12 +814,13 @@ fn build_fragment_definitions(
             let type_name = frag.type_condition().as_str();
             let parent_type = resolve_composite_type(type_name, registry)?;
 
-            let selection_set = convert_selection_set(
+            let selection_set = try_convert_selection_set(
                 &frag.selection_set.selections,
                 &parent_type,
                 registry,
                 &fragment_defs,
-            );
+            )
+            .map_err(|e| adapter_error(pf.abs_path(), e))?;
 
             let referenced = collect_referenced_fragments(
                 &frag.selection_set.selections,
@@ -796,22 +932,26 @@ fn build_operation_definitions(
 
             let root_type = resolve_composite_type(&root_type_name, registry)?;
 
-            let selection_set = convert_selection_set(
+            let selection_set = try_convert_selection_set(
                 &op.selection_set.selections,
                 &root_type,
                 registry,
                 fragment_defs,
-            );
+            )
+            .map_err(|e| adapter_error(pf.abs_path(), e))?;
 
             let variables = op
                 .variables
                 .iter()
-                .map(|var| graphql_compiler::compilation_result::VariableDefinition {
-                    name: var.name.as_str().to_string(),
-                    type_: adapter::convert_type(&var.ty, registry),
-                    default_value: var.default_value.as_ref().map(|v| adapter::convert_value(v)),
+                .map(|var| {
+                    Ok(graphql_compiler::compilation_result::VariableDefinition {
+                        name: var.name.as_str().to_string(),
+                        type_: adapter::try_convert_type(&var.ty, registry)
+                            .map_err(|e| adapter_error(pf.abs_path(), e))?,
+                        default_value: var.default_value.as_ref().map(|v| adapter::convert_value(v)),
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, CodegenError>>()?;
 
             let referenced =
                 collect_referenced_fragments(&op.selection_set.selections, fragment_defs);
@@ -831,6 +971,14 @@ fn build_operation_definitions(
     }
 
     Ok(operations)
+}
+
+/// Reports a conversion error the way a validation error is reported (the document passed
+/// validation, so this only happens for inputs the validator does not cover).
+fn adapter_error(file_path: &str, error: adapter::AdapterError) -> CodegenError {
+    let line = format!("{}:error:{}", file_path, error.message);
+    CodegenLogger::log(&line, LogLevel::Error, "ApolloCodegen.swift", 185);
+    CodegenError::GraphQLSourceValidationFailure { lines: vec![line] }
 }
 
 /// Trait for abstracting parsed file access (used by fragment/operation builders).
@@ -1114,14 +1262,13 @@ fn matches_prefix(file_path: &str, filter_prefix: Option<&str>) -> bool {
 /// Mirrors Swift's `generateGraphQLDefinitionFiles()`.
 ///
 /// For local cache mutations, uses a cloned config with `field_merging` overridden to `All`.
-/// When `filter_prefix` is `Some`, only operations/fragments whose `file_path`
-/// starts with `{prefix}/` are generated.
+/// When `filter` is `Some`, only the operations/fragments it selects are generated.
 fn generate_graph_ql_definition_files(
     compilation_result: &CompilationResult,
     ir: &IRBuilder,
     config: &ConfigurationContext,
     file_manager: &ApolloFileManager,
-    filter_prefix: Option<&str>,
+    filter: Option<&GenerationFilter>,
 ) -> Result<NonFatalErrors, CodegenError> {
     let t_start = std::time::Instant::now();
 
@@ -1149,7 +1296,7 @@ fn generate_graph_ql_definition_files(
 
     // Build fragment file generators
     for fragment in &compilation_result.fragments {
-        if !matches_prefix(&fragment.file_path, filter_prefix) {
+        if !filter.map_or(true, |f| f.matches(&fragment.file_path)) {
             continue;
         }
 
@@ -1172,7 +1319,7 @@ fn generate_graph_ql_definition_files(
 
     // Build operation file generators
     for operation in &compilation_result.operations {
-        if !matches_prefix(&operation.file_path, filter_prefix) {
+        if !filter.map_or(true, |f| f.matches(&operation.file_path)) {
             continue;
         }
 
@@ -1410,7 +1557,11 @@ fn generate_operation_manifest(
 /// Mirrors Swift's `ApolloCodegen.Error` from `ApolloCodegen+Errors.swift`.
 #[derive(Debug)]
 pub enum CodegenError {
+    /// Operation validation failed; `lines` are Swift's `GraphQLError.logLines`
+    /// (`<path>:<line>:error:<message>`).
     GraphQLSourceValidationFailure { lines: Vec<String> },
+    /// The schema could not be parsed or is invalid (Swift: `GraphQLSchemaValidationError`).
+    SchemaValidationFailure { messages: Vec<String> },
     TestMocksInvalidSwiftPackageConfiguration,
     InputSearchPathInvalid { path: String },
     SchemaNameConflict { name: String },
@@ -1429,10 +1580,19 @@ impl fmt::Display for CodegenError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CodegenError::GraphQLSourceValidationFailure { lines } => {
+                // Swift's `Error.graphQLSourceValidationFailure(atLines:)` description,
+                // including the original misspelling and the `[String]` array rendering.
                 write!(
                     f,
-                    "An error occurred during validation of the GraphQL schema or operations! Check:\n    {}",
-                    lines.join("\n    ")
+                    "An error occured during validation of the GraphQL schema or operations! Check {}",
+                    swift_string_array(lines)
+                )
+            }
+            CodegenError::SchemaValidationFailure { messages } => {
+                write!(
+                    f,
+                    "JavaScriptError: GraphQLSchemaValidationError-{}",
+                    messages.join("\n")
                 )
             }
             CodegenError::TestMocksInvalidSwiftPackageConfiguration => {
@@ -1500,6 +1660,31 @@ impl fmt::Display for CodegenError {
 }
 
 impl std::error::Error for CodegenError {}
+
+/// Renders strings like Swift's `[String]` description: `["a", "b"]` with `\` and `"`
+/// escaped and control characters as `\n`, `\t`, `\r`.
+fn swift_string_array(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push('"');
+        for c in item.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                other => out.push(other),
+            }
+        }
+        out.push('"');
+    }
+    out.push(']');
+    out
+}
 
 impl From<std::io::Error> for CodegenError {
     fn from(e: std::io::Error) -> Self {
@@ -1691,9 +1876,46 @@ mod tests {
             lines: vec!["error1".to_string(), "error2".to_string()],
         };
         let msg = format!("{}", err);
-        assert!(msg.contains("An error occurred during validation"));
-        assert!(msg.contains("error1"));
-        assert!(msg.contains("error2"));
+        assert_eq!(
+            msg,
+            "An error occured during validation of the GraphQL schema or operations! Check [\"error1\", \"error2\"]"
+        );
+    }
+
+    #[test]
+    fn test_swift_string_array_escapes_like_swift() {
+        assert_eq!(swift_string_array(&[]), "[]");
+        assert_eq!(
+            swift_string_array(&["a/b.graphql:1:error:Unknown fragment \"X\".".to_string()]),
+            "[\"a/b.graphql:1:error:Unknown fragment \\\"X\\\".\"]"
+        );
+        assert_eq!(swift_string_array(&["x\\y\n".to_string()]), "[\"x\\\\y\\n\"]");
+    }
+
+    #[test]
+    fn test_generation_filter_files_matches_exact_paths_only() {
+        let cwd = std::env::current_dir().unwrap();
+        let filter = GenerationFilter::Files(vec![
+            "Features/Account/Query.graphql".to_string(),
+            "./Features/Shared/Frag.graphql".to_string(),
+        ]);
+        // relative, absolute and `./`-prefixed spellings of the same file all match
+        assert!(filter.matches("Features/Account/Query.graphql"));
+        assert!(filter.matches(&cwd.join("Features/Account/Query.graphql").to_string_lossy()));
+        assert!(filter.matches(&cwd.join("./Features/Shared/Frag.graphql").to_string_lossy()));
+        assert!(filter.matches("Features/Shared/Frag.graphql"));
+        // prefix and suffix relatives of a selected file do not match
+        assert!(!filter.matches("Features/Account/Other.graphql"));
+        assert!(!filter.matches("Features/Account/Query.graphql.bak"));
+        assert!(!filter.matches("Nested/Features/Account/Query.graphql"));
+        assert!(!filter.matches("Features/Account"));
+    }
+
+    #[test]
+    fn test_generation_filter_prefix_delegates_to_matches_prefix() {
+        let filter = GenerationFilter::Prefix("Features/Account".to_string());
+        assert!(filter.matches("Features/Account/Query.graphql"));
+        assert!(!filter.matches("Features/AccountInfo/Query.graphql"));
     }
 
     #[test]
@@ -1788,10 +2010,19 @@ mod tests {
     }
 
     #[test]
-    fn test_prepend_custom_directive_stubs_no_stubs_needed() {
+    fn test_prepend_custom_directive_stubs_always_adds_client_directives() {
         let sdl = "type Query { id: ID }";
         let result = prepend_custom_directive_stubs(sdl);
-        assert_eq!(result, sdl);
+        assert!(result.ends_with(sdl));
+        assert!(result.contains("directive @apollo_client_ios_localCacheMutation on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION"));
+        assert!(result.contains("directive @import(module: String!) repeatable on QUERY | MUTATION | SUBSCRIPTION | FRAGMENT_DEFINITION"));
+        assert!(result.contains("directive @defer(label: String, if: Boolean! = true) on FRAGMENT_SPREAD | INLINE_FRAGMENT"));
+        // schema-only directives are still conditional
+        assert!(!result.contains("directive @oneOf"));
+        assert!(!result.contains("directive @typePolicy"));
+        // user definitions win
+        let own = "directive @defer(label: String!) on INLINE_FRAGMENT\ntype Query { id: ID }";
+        assert_eq!(prepend_custom_directive_stubs(own).matches("directive @defer").count(), 1);
     }
 
     #[test]
@@ -1815,7 +2046,7 @@ mod tests {
     #[test]
     fn test_matches_prefix_exact_with_slash() {
         assert!(matches_prefix("Features/Account/Query.graphql", Some("Features/Account")));
-        assert!(matches_prefix("V4/Fragments/Foo.graphql", Some("V4/Fragments")));
+        assert!(matches_prefix("Shared/Fragments/Foo.graphql", Some("Shared/Fragments")));
     }
 
     #[test]
@@ -1832,7 +2063,7 @@ mod tests {
 
     #[test]
     fn test_matches_prefix_rejects_different_path() {
-        assert!(!matches_prefix("V4/Fragments/Foo.graphql", Some("Features/Account")));
+        assert!(!matches_prefix("Shared/Fragments/Foo.graphql", Some("Features/Account")));
     }
 
     #[test]
