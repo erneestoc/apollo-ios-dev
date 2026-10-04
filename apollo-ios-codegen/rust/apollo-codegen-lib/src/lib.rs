@@ -9,3 +9,4 @@ pub mod inflection_rule;
 pub mod inflector;
 pub mod pluralizer;
 pub mod templates;
+pub mod test_mock_scope;
