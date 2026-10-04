@@ -254,8 +254,15 @@ fn optimize_schema_metadata_uses_configured_namespace() {
         .success();
 
     let metadata = fs::read_to_string(tmp.path().join("out/SchemaMetadata.graphql.swift")).unwrap();
-    assert!(metadata.contains("fastObjectTypeLookup"), "{}", metadata);
     assert!(metadata.contains("\"Dog\": PetsAPI.Objects.Dog"), "{}", metadata);
+    if metadata.contains("switch typename {") {
+        // switch-based objectType (Apollo iOS < 1.25.4): the lookup table is added
+        assert!(metadata.contains("fastObjectTypeLookup"), "{}", metadata);
+    } else {
+        // Apollo iOS 1.25.4+ already renders a dictionary; nothing to optimize
+        assert!(metadata.contains("objectTypeMap"), "{}", metadata);
+        assert!(!metadata.contains("fastObjectTypeLookup"), "{}", metadata);
+    }
 }
 
 // ---------------------------------------------------------------------------
