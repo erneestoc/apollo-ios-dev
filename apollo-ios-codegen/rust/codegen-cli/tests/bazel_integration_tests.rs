@@ -729,3 +729,243 @@ fn worker_rejects_non_generate_commands_without_dying() {
     let (code, _) = worker.finish();
     assert_eq!(code, 0);
 }
+
+// ---------------------------------------------------------------------------
+// test_mocks mode: scoped test mocks (fork extension)
+// ---------------------------------------------------------------------------
+
+fn absolute_mocks() -> serde_json::Value {
+    serde_json::json!({"absolute": {"path": "/elsewhere/Mocks"}})
+}
+
+fn mock_files(dir: &Path) -> Vec<String> {
+    list_files(dir)
+        .into_iter()
+        .filter(|f| f.starts_with("TestMocks/"))
+        .map(|f| f["TestMocks/".len()..].to_string())
+        .collect()
+}
+
+#[test]
+fn test_mocks_mode_writes_only_mocks_scoped_to_the_selected_operations() {
+    let tmp = TempDir::new().unwrap();
+    write_fixture(tmp.path());
+    let config = config_json(absolute_mocks());
+
+    // Account: pets -> Pet -> Dog, Cat (interface expansion) + Query.
+    cli_bin()
+        .args(generate_args(&config, "account", "test_mocks"))
+        .args(["--bazel-generate-for", "Features/Account/AccountQuery.graphql", "--bazel-mocks-scope", "referenced"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let files = list_files(&tmp.path().join("account"));
+    assert_eq!(
+        files,
+        [
+            "TestMocks/Cat+Mock.graphql.swift",
+            "TestMocks/Dog+Mock.graphql.swift",
+            "TestMocks/MockObject+Interfaces.graphql.swift",
+            "TestMocks/Query+Mock.graphql.swift",
+        ]
+    );
+
+    // AccountInfo: me -> User + Query. Prefix selection works as well.
+    cli_bin()
+        .args(generate_args(&config, "info", "test_mocks"))
+        .args(["--bazel-framework-path", "Features/AccountInfo", "--bazel-mocks-scope", "referenced"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(
+        mock_files(&tmp.path().join("info")),
+        ["MockObject+Interfaces.graphql.swift", "Query+Mock.graphql.swift", "User+Mock.graphql.swift"]
+    );
+
+    // Without a selection, "referenced" covers every operation (same as "all").
+    cli_bin()
+        .args(generate_args(&config, "all", "test_mocks"))
+        .args(["--bazel-mocks-scope", "referenced"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(
+        mock_files(&tmp.path().join("all")),
+        [
+            "Cat+Mock.graphql.swift",
+            "Dog+Mock.graphql.swift",
+            "MockObject+Interfaces.graphql.swift",
+            "Query+Mock.graphql.swift",
+            "User+Mock.graphql.swift",
+        ]
+    );
+}
+
+#[test]
+fn test_mocks_partition_unions_to_the_unscoped_output() {
+    let tmp = TempDir::new().unwrap();
+    write_fixture(tmp.path());
+    let config = config_json(absolute_mocks());
+
+    // Reference: unscoped mocks as schema_types mode writes them today.
+    cli_bin()
+        .args(generate_args(&config, "all", "schema_types"))
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let all_dir = tmp.path().join("all/TestMocks");
+
+    // Base: everything but the feature-exclusive types, with the typealias files.
+    cli_bin()
+        .args(generate_args(&config, "base", "test_mocks"))
+        .args(["--bazel-mocks-exclude", "Dog", "--bazel-mocks-exclude", "Cat", "--bazel-mocks-exclude", "User"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(
+        mock_files(&tmp.path().join("base")),
+        ["MockObject+Interfaces.graphql.swift", "Query+Mock.graphql.swift"]
+    );
+
+    // Feature A: Account's referenced types minus the base's, importing the base.
+    cli_bin()
+        .args(generate_args(&config, "a", "test_mocks"))
+        .args([
+            "--bazel-generate-for", "Features/Account/AccountQuery.graphql",
+            "--bazel-mocks-scope", "referenced",
+            "--bazel-mocks-exclude", "Query",
+            "--bazel-mocks-base-module", "PetsBaseMocks",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(mock_files(&tmp.path().join("a")), ["Cat+Mock.graphql.swift", "Dog+Mock.graphql.swift"]);
+
+    // Feature B: explicit type list (as a rule with a declared ownership would pass).
+    cli_bin()
+        .args(generate_args(&config, "b", "test_mocks"))
+        .args([
+            "--bazel-mocks-scope", "referenced",
+            "--bazel-generate-for", "Features/AccountInfo/InfoQuery.graphql",
+            "--bazel-mocks-exclude", "Query",
+            "--bazel-mocks-base-module", "PetsBaseMocks",
+        ])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(mock_files(&tmp.path().join("b")), ["User+Mock.graphql.swift"]);
+
+    // Union == all, file for file; feature files only add the base-module import.
+    let mut union: Vec<(String, String)> = Vec::new();
+    for (dir, strip_import) in [("base", false), ("a", true), ("b", true)] {
+        let mocks = tmp.path().join(dir).join("TestMocks");
+        for file in mock_files(&tmp.path().join(dir)) {
+            let mut content = fs::read_to_string(mocks.join(&file)).unwrap();
+            if strip_import {
+                assert!(content.contains("import PetsAPI\nimport PetsBaseMocks\n"), "{file}: {content}");
+                content = content.replace("import PetsBaseMocks\n", "");
+            } else {
+                assert!(!content.contains("PetsBaseMocks"), "{file}");
+            }
+            union.push((file, content));
+        }
+    }
+    union.sort();
+    let names: Vec<&str> = union.iter().map(|(f, _)| f.as_str()).collect();
+    assert_eq!(names.len(), union.iter().map(|(f, _)| f).collect::<std::collections::BTreeSet<_>>().len(), "no type generated twice: {names:?}");
+    let all_files = list_files(&all_dir);
+    assert_eq!(names, all_files.iter().map(String::as_str).collect::<Vec<_>>());
+    for (file, content) in &union {
+        assert_eq!(content, &fs::read_to_string(all_dir.join(file)).unwrap(), "{file} differs from the unscoped output");
+    }
+}
+
+#[test]
+fn test_mocks_typealias_files_follow_base_module_and_flag() {
+    let tmp = TempDir::new().unwrap();
+    write_fixture(tmp.path());
+    let config = config_json(absolute_mocks());
+
+    // With a base module the typealias files are the base's: not generated...
+    cli_bin()
+        .args(generate_args(&config, "feature", "test_mocks"))
+        .args(["--bazel-mocks-for", "Dog", "--bazel-mocks-scope", "referenced", "--bazel-generate-for", "nothing.graphql", "--bazel-mocks-base-module", "Base"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(mock_files(&tmp.path().join("feature")), ["Dog+Mock.graphql.swift"]);
+
+    // ...unless asked for explicitly, and never when switched off.
+    cli_bin()
+        .args(generate_args(&config, "with", "test_mocks"))
+        .args(["--bazel-mocks-for", "Dog", "--bazel-mocks-scope", "referenced", "--bazel-generate-for", "nothing.graphql", "--bazel-mocks-base-module", "Base", "--bazel-mocks-typealiases", "true"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(mock_files(&tmp.path().join("with")), ["Dog+Mock.graphql.swift", "MockObject+Interfaces.graphql.swift"]);
+
+    cli_bin()
+        .args(generate_args(&config, "without", "test_mocks"))
+        .args(["--bazel-mocks-typealiases", "false"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert!(!mock_files(&tmp.path().join("without")).iter().any(|f| f.starts_with("MockObject+")));
+
+    // The config keys work the same way (scope + base module from the config).
+    let scoped = serde_json::json!({"absolute": {"path": "Mocks", "scope": "referencedByOperations", "baseModule": "Base", "includeTypes": ["User"]}});
+    cli_bin()
+        .args(generate_args(&config_json(scoped), "cfg", "test_mocks"))
+        .args(["--bazel-generate-for", "Features/Account/AccountQuery.graphql"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(
+        mock_files(&tmp.path().join("cfg")),
+        ["Cat+Mock.graphql.swift", "Dog+Mock.graphql.swift", "Query+Mock.graphql.swift", "User+Mock.graphql.swift"]
+    );
+    let user = fs::read_to_string(tmp.path().join("cfg/TestMocks/User+Mock.graphql.swift")).unwrap();
+    assert!(user.contains("import ApolloTestSupport\n@testable import PetsAPI\nimport Base\n"), "{user}");
+
+    // schema_types mode honours the scoping as well (mocks next to the schema types).
+    cli_bin()
+        .args(generate_args(&config, "st", "schema_types"))
+        .args(["--bazel-mocks-exclude", "Query", "--bazel-mocks-exclude", "User"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    assert_eq!(
+        mock_files(&tmp.path().join("st")),
+        ["Cat+Mock.graphql.swift", "Dog+Mock.graphql.swift", "MockObject+Interfaces.graphql.swift"]
+    );
+    assert!(tmp.path().join("st/Objects/Query.graphql.swift").is_file());
+}
+
+#[test]
+fn test_mocks_mode_errors_are_clear() {
+    let tmp = TempDir::new().unwrap();
+    write_fixture(tmp.path());
+
+    cli_bin()
+        .args(generate_args(&config_json(no_mocks()), "out", "test_mocks"))
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("'output.testMocks'"));
+
+    cli_bin()
+        .args(generate_args(&config_json(absolute_mocks()), "out", "test_mocks"))
+        .args(["--bazel-mocks-for", "Ghost"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("'Ghost'"));
+
+    cli_bin()
+        .args(generate_args(&config_json(absolute_mocks()), "out", "test_mocks"))
+        .args(["--bazel-mocks-scope", "some"])
+        .current_dir(tmp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unknown --bazel-mocks-scope"));
+}
