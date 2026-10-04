@@ -130,11 +130,13 @@ dependencies = [
  "clap",
  "codegen-cli",
  "ctrlc",
+ "indexmap",
  "libc",
  "prost",
  "prost-build",
  "protox",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 
