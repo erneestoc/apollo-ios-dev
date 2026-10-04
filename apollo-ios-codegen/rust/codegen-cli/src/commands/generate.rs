@@ -4,18 +4,22 @@
 //! Loads configuration, determines items to generate, and calls
 //! `ApolloCodegen::build()` via the `CodegenProvider` trait.
 //!
-//! When `--bazel-output-dir` is set, post-generates into a Bazel tree
-//! artifact directory with optional import stripping and SchemaMetadata
-//! optimization. This enables the Rust CLI to serve as a direct Bazel
-//! persistent worker.
+//! When `--bazel-output-dir` is set, generation writes directly into a Bazel
+//! tree artifact directory (`schema_types` or `operations` mode) and
+//! post-processes it in place (hand-written file removal, import stripping,
+//! SchemaMetadata optimization). This enables the Rust CLI to serve as a
+//! direct Bazel persistent worker.
 
 use std::path::Path;
 
 use clap::Args;
 use regex::Regex;
 
-use apollo_codegen_lib::codegen::{ApolloCodegen, CodegenProvider, ItemsToGenerate};
+use apollo_codegen_lib::codegen::{
+    ApolloCodegen, CodegenProvider, CompileResult, GenerationFilter, ItemsToGenerate,
+};
 use apollo_codegen_lib::codegen_logger::CodegenLogger;
+use apollo_codegen_lib::config::ApolloCodegenConfiguration;
 use apollo_codegen_lib::templates::ConfigurationContext;
 
 use crate::error::CliError;
@@ -31,27 +35,47 @@ pub struct Generate {
     #[arg(short, long)]
     pub fetch_schema: bool,
 
-    /// Bazel tree artifact output directory. When set, copies relevant
-    /// generated files into this directory after codegen completes.
-    #[arg(long)]
+    /// Bazel tree artifact output directory. When set, generated files are
+    /// written directly into this directory instead of the configured output
+    /// paths (the config's output paths only select the module layout).
+    #[arg(long, help_heading = "Bazel")]
     pub bazel_output_dir: Option<String>,
 
-    /// Bazel output mode: "schema_types" copies schema type files,
-    /// "operations" copies operation files for a framework.
-    #[arg(long, default_value = "schema_types")]
+    /// Bazel output mode. "schema_types" writes the schema types (plus, when
+    /// `testMocks` is configured, the test mocks under `TestMocks/`); "operations"
+    /// writes operation and fragment files only.
+    #[arg(long, default_value = "schema_types", help_heading = "Bazel")]
     pub bazel_mode: String,
 
-    /// Framework path for operations mode (e.g. "Features/Account").
-    #[arg(long)]
+    /// Operations mode: generate the operations and fragments whose file path
+    /// starts with this prefix (e.g. "Features/Account"). Ignored when
+    /// --bazel-generate-for is given.
+    #[arg(long, help_heading = "Bazel")]
     pub bazel_framework_path: Option<String>,
 
-    /// Strip this module's import from generated files (e.g. "V4").
-    #[arg(long)]
+    /// Operations mode: generate exactly the operations and fragments defined
+    /// in this file (repeat the flag for each file). Paths are compared after
+    /// resolving them against the current directory, so Bazel exec paths work.
+    /// Replaces --bazel-framework-path prefix matching when given.
+    #[arg(long, value_name = "FILE", action = clap::ArgAction::Append, help_heading = "Bazel")]
+    pub bazel_generate_for: Vec<String>,
+
+    /// Strip `import <module>` lines from the generated files (e.g. the schema
+    /// module's name when operations are compiled into the same module).
+    #[arg(long, value_name = "MODULE", help_heading = "Bazel")]
     pub bazel_strip_import: Option<String>,
 
-    /// Add fast dictionary lookup to SchemaMetadata objectType function.
-    #[arg(long)]
+    /// Add a fast dictionary lookup to SchemaMetadata's objectType function,
+    /// gated behind a `fastObjectTypeLookup` flag. Matches the configured
+    /// `schemaNamespace`.
+    #[arg(long, help_heading = "Bazel")]
     pub bazel_optimize_schema_metadata: bool,
+
+    /// Keep `SchemaConfiguration.swift` and the `CustomScalars/` directory in
+    /// the tree artifact. By default they are removed because they are
+    /// user-editable files that a Bazel rule provides itself.
+    #[arg(long, help_heading = "Bazel")]
+    pub bazel_keep_schema_configuration: bool,
 }
 
 impl Generate {
@@ -68,24 +92,13 @@ impl Generate {
         }
 
         let configuration = self.inputs.get_codegen_configuration()?;
-
-        let mut items_to_generate = ItemsToGenerate::CODE;
-
-        if let Some(ref manifest) = configuration.operation_manifest {
-            if manifest.generate_manifest_on_code_generation {
-                items_to_generate |= ItemsToGenerate::OPERATION_MANIFEST;
-            }
-        }
-
+        let items_to_generate = Self::items_to_generate(&configuration);
         let root_url = input_options::root_output_url(&self.inputs);
 
         if let Some(ref output_dir) = self.bazel_output_dir {
             // Direct-write mode: set output_root so generation writes
             // directly to the tree artifact directory.
-            let mut config = ConfigurationContext::new(
-                configuration.clone(),
-                root_url,
-            );
+            let mut config = ConfigurationContext::new(configuration, root_url);
             let output_root = std::path::PathBuf::from(output_dir);
             std::fs::create_dir_all(&output_root).map_err(|e| CliError::Generic {
                 description: format!("Failed to create output dir {}: {}", output_dir, e),
@@ -93,25 +106,7 @@ impl Generate {
             config.set_output_root(Some(output_root));
 
             let compile_result = ApolloCodegen::compile_schema_and_ir(&config)?;
-
-            let is_operations_mode = self.bazel_mode == "operations";
-            if is_operations_mode {
-                if let Some(ref prefix) = self.bazel_framework_path {
-                    ApolloCodegen::generate_from_ir_filtered(
-                        &compile_result, &config, items_to_generate, prefix,
-                    )?;
-                } else {
-                    ApolloCodegen::generate_from_ir_operations_only(
-                        &compile_result, &config, items_to_generate,
-                    )?;
-                }
-            } else {
-                ApolloCodegen::generate_from_ir_schema_only(
-                    &compile_result, &config, items_to_generate,
-                )?;
-            }
-
-            self.postprocess_tree_artifact(output_dir)?;
+            self.generate_bazel(&compile_result, &config, items_to_generate)?;
         } else {
             // Standard mode: no output_root, write to configured paths
             ApolloCodegen::build(&configuration, root_url.as_deref(), items_to_generate)?;
@@ -120,22 +115,102 @@ impl Generate {
         Ok(())
     }
 
-    /// Post-processes files already written directly to a Bazel tree artifact.
-    /// Runs import stripping and SchemaMetadata optimization in-place.
-    /// Used with direct-write mode (output_root set on ConfigurationContext).
-    pub fn postprocess_tree_artifact(&self, output_dir: &str) -> Result<(), CliError> {
-        let out = Path::new(output_dir);
-
-        // Remove hand-written files that shouldn't be in the tree artifact
-        // (SchemaConfiguration gets generated with overwrite:false into empty tree artifacts)
-        let schema_config = out.join("SchemaConfiguration.swift");
-        if schema_config.exists() {
-            std::fs::remove_file(&schema_config).ok();
+    /// The items the configuration asks for: code, plus the operation manifest when
+    /// `generateManifestOnCodeGeneration` is set.
+    pub fn items_to_generate(configuration: &ApolloCodegenConfiguration) -> ItemsToGenerate {
+        let mut items_to_generate = ItemsToGenerate::CODE;
+        if let Some(ref manifest) = configuration.operation_manifest {
+            if manifest.generate_manifest_on_code_generation {
+                items_to_generate |= ItemsToGenerate::OPERATION_MANIFEST;
+            }
         }
-        // Remove CustomScalars directory if present
-        let custom_scalars = out.join("CustomScalars");
-        if custom_scalars.is_dir() {
-            std::fs::remove_dir_all(&custom_scalars).ok();
+        items_to_generate
+    }
+
+    /// Whether `--bazel-mode operations` was requested.
+    pub fn is_operations_mode(&self) -> bool {
+        self.bazel_mode == "operations"
+    }
+
+    /// The operations-mode selection: exact files when `--bazel-generate-for` is
+    /// given, otherwise the `--bazel-framework-path` prefix, otherwise everything.
+    pub fn generation_filter(&self) -> Option<GenerationFilter> {
+        if !self.bazel_generate_for.is_empty() {
+            Some(GenerationFilter::Files(self.bazel_generate_for.clone()))
+        } else {
+            self.bazel_framework_path
+                .as_ref()
+                .map(|prefix| GenerationFilter::Prefix(prefix.clone()))
+        }
+    }
+
+    /// Generates into the tree artifact (`config.output_root()`) according to
+    /// `--bazel-mode` and post-processes it. Shared by the one-shot CLI and the
+    /// persistent worker.
+    pub fn generate_bazel(
+        &self,
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        items_to_generate: ItemsToGenerate,
+    ) -> Result<(), CliError> {
+        match self.bazel_mode.as_str() {
+            "operations" => match self.generation_filter() {
+                Some(filter) => ApolloCodegen::generate_from_ir_filtered(
+                    compile_result,
+                    config,
+                    items_to_generate,
+                    &filter,
+                )?,
+                None => ApolloCodegen::generate_from_ir_operations_only(
+                    compile_result,
+                    config,
+                    items_to_generate,
+                )?,
+            },
+            "schema_types" => ApolloCodegen::generate_from_ir_schema_only(
+                compile_result,
+                config,
+                items_to_generate,
+            )?,
+            other => {
+                return Err(CliError::Generic {
+                    description: format!("Unknown --bazel-mode: {}", other),
+                })
+            }
+        }
+
+        let output_dir = match config.output_root() {
+            Some(root) => root.to_path_buf(),
+            None => {
+                return Err(CliError::Generic {
+                    description: "--bazel-output-dir is required for Bazel generation".to_string(),
+                })
+            }
+        };
+        self.postprocess_tree_artifact(&output_dir, &config.config.schema_namespace)
+    }
+
+    /// Post-processes files already written directly to a Bazel tree artifact.
+    /// Removes the user-editable files (unless `--bazel-keep-schema-configuration`),
+    /// strips imports and optimizes SchemaMetadata in place.
+    pub fn postprocess_tree_artifact(
+        &self,
+        output_dir: &Path,
+        schema_namespace: &str,
+    ) -> Result<(), CliError> {
+        let out = output_dir;
+
+        // SchemaConfiguration.swift and CustomScalars/ are generated with overwrite:false
+        // into the (empty) tree artifact; a rule normally provides them itself.
+        if !self.bazel_keep_schema_configuration {
+            let schema_config = out.join("SchemaConfiguration.swift");
+            if schema_config.exists() {
+                std::fs::remove_file(&schema_config).ok();
+            }
+            let custom_scalars = out.join("CustomScalars");
+            if custom_scalars.is_dir() {
+                std::fs::remove_dir_all(&custom_scalars).ok();
+            }
         }
 
         // Strip imports if requested
@@ -147,187 +222,13 @@ impl Generate {
         if self.bazel_optimize_schema_metadata {
             let metadata_file = out.join("SchemaMetadata.graphql.swift");
             if metadata_file.exists() {
-                optimize_schema_metadata(&metadata_file)?;
+                optimize_schema_metadata(&metadata_file, schema_namespace)?;
             }
         }
 
         eprintln!("Bazel direct-write post-processed: {}", out.display());
         Ok(())
     }
-
-    /// Copies generated files into a Bazel tree artifact directory,
-    /// applying post-processing (import stripping, SchemaMetadata optimization).
-    pub fn populate_bazel_tree_artifact(&self, output_dir: &str) -> Result<(), CliError> {
-        let out = Path::new(output_dir);
-        std::fs::create_dir_all(out).map_err(|e| CliError::Generic {
-            description: format!("Failed to create output dir {}: {}", output_dir, e),
-        })?;
-
-        match self.bazel_mode.as_str() {
-            "schema_types" => self.copy_schema_types(out),
-            "operations" => self.copy_operations(out),
-            other => Err(CliError::Generic {
-                description: format!("Unknown --bazel-mode: {}", other),
-            }),
-        }
-    }
-
-    /// Copies schema type files (Objects, Enums, Unions, etc.) to the tree artifact.
-    /// Excludes hand-written CustomScalars/ and SchemaConfiguration.swift.
-    fn copy_schema_types(&self, out: &Path) -> Result<(), CliError> {
-        let schema_dir = Path::new("V4/ApolloGenerated");
-        if !schema_dir.exists() {
-            return Err(CliError::Generic {
-                description: format!("Schema types directory not found: {}", schema_dir.display()),
-            });
-        }
-
-        let mut count = 0u32;
-        copy_swift_files_recursive(schema_dir, out, &mut count, |rel_path| {
-            // Exclude hand-written files
-            !rel_path.starts_with("CustomScalars/")
-                && rel_path != "SchemaConfiguration.swift"
-        })?;
-
-        // Post-process SchemaMetadata
-        if self.bazel_optimize_schema_metadata {
-            let metadata_file = out.join("SchemaMetadata.graphql.swift");
-            if metadata_file.exists() {
-                optimize_schema_metadata(&metadata_file)?;
-            }
-        }
-
-        eprintln!("Bazel schema_types: {} files -> {}", count, out.display());
-        Ok(())
-    }
-
-    /// Copies operation files for a specific framework to the tree artifact.
-    fn copy_operations(&self, out: &Path) -> Result<(), CliError> {
-        let framework_path = self.bazel_framework_path.as_deref().ok_or_else(|| {
-            CliError::Generic {
-                description: "--bazel-framework-path is required for operations mode".to_string(),
-            }
-        })?;
-
-        let fw = Path::new(framework_path);
-        if !fw.exists() {
-            return Err(CliError::Generic {
-                description: format!("Framework path not found: {}", fw.display()),
-            });
-        }
-
-        // Find all ApolloGenerated directories under the framework path
-        let mut count = 0u32;
-        collect_apollo_generated_files(fw, out, &mut count)?;
-
-        // Strip import if requested
-        if let Some(ref module) = self.bazel_strip_import {
-            strip_import_from_dir(out, module)?;
-        }
-
-        eprintln!(
-            "Bazel operations ({}): {} files -> {}",
-            framework_path,
-            count,
-            out.display()
-        );
-        Ok(())
-    }
-}
-
-/// Recursively copies .graphql.swift files from `src` to `dest`, preserving
-/// subdirectory structure. The `filter` closure receives the relative path
-/// and returns false to skip a file.
-fn copy_swift_files_recursive(
-    src: &Path,
-    dest: &Path,
-    count: &mut u32,
-    filter: impl Fn(&str) -> bool,
-) -> Result<(), CliError> {
-    walk_dir_recursive(src, &mut |entry_path| {
-        let ext = entry_path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("");
-        if !ext.ends_with(".graphql.swift") {
-            return Ok(());
-        }
-        let rel = entry_path
-            .strip_prefix(src)
-            .unwrap_or(entry_path)
-            .to_string_lossy();
-        if !filter(&rel) {
-            return Ok(());
-        }
-        let dest_path = dest.join(&*rel);
-        if let Some(parent) = dest_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| CliError::Generic {
-                description: format!("mkdir {}: {}", parent.display(), e),
-            })?;
-        }
-        std::fs::copy(entry_path, &dest_path).map_err(|e| CliError::Generic {
-            description: format!(
-                "copy {} -> {}: {}",
-                entry_path.display(),
-                dest_path.display(),
-                e
-            ),
-        })?;
-        *count += 1;
-        Ok(())
-    })
-}
-
-/// Finds all ApolloGenerated/ directories under `root` and copies their
-/// .graphql.swift files (flattened) to `dest`.
-///
-/// When `<root>/ApolloGenerated/` contains schema type subdirectories
-/// (Objects/, Enums/, etc.) from non-Bazel codegen runs, those are skipped
-/// to avoid filename collisions with the schema_types tree artifact.
-/// In Bazel operations mode, schema types go to `_schema_types_unused/`,
-/// so only the operation files should be copied.
-fn collect_apollo_generated_files(
-    root: &Path,
-    dest: &Path,
-    count: &mut u32,
-) -> Result<(), CliError> {
-    // Detect if <root>/ApolloGenerated/ contains schema type files from
-    // non-Bazel codegen runs. If it has Objects/ or Enums/ subdirs, it's
-    // a schema types directory and should be skipped entirely.
-    let root_apollo_gen = root.join("ApolloGenerated");
-    let has_schema_types = root_apollo_gen.join("Objects").is_dir()
-        || root_apollo_gen.join("Enums").is_dir();
-
-    walk_dir_recursive(root, &mut |entry_path| {
-        // Skip files under <root>/ApolloGenerated/ if it contains schema types
-        if has_schema_types && entry_path.starts_with(&root_apollo_gen) {
-            return Ok(());
-        }
-
-        // We're looking for files inside ApolloGenerated/ directories
-        let path_str = entry_path.to_string_lossy();
-        if !path_str.contains("/ApolloGenerated/") && !path_str.contains("\\ApolloGenerated\\") {
-            return Ok(());
-        }
-        let name = entry_path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("");
-        if !name.ends_with(".graphql.swift") {
-            return Ok(());
-        }
-        let dest_path = dest.join(name);
-        std::fs::copy(entry_path, &dest_path).map_err(|e| CliError::Generic {
-            description: format!(
-                "copy {} -> {}: {}",
-                entry_path.display(),
-                dest_path.display(),
-                e
-            ),
-        })?;
-        *count += 1;
-        Ok(())
-    })
 }
 
 /// Recursively walks a directory, calling `visitor` for each file.
@@ -355,40 +256,7 @@ fn walk_dir_recursive(
     Ok(())
 }
 
-/// Strips `import <module>\n` from all .graphql.swift files in a directory.
-fn strip_import_from_dir(dir: &Path, module: &str) -> Result<(), CliError> {
-    let import_line = format!("import {}", module);
-    let entries = std::fs::read_dir(dir).map_err(|e| CliError::Generic {
-        description: format!("read_dir {}: {}", dir.display(), e),
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|e| CliError::Generic {
-            description: format!("dir entry error: {}", e),
-        })?;
-        let path = entry.path();
-        if !path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .map_or(false, |n| n.ends_with(".graphql.swift"))
-        {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path).map_err(|e| CliError::Generic {
-            description: format!("read {}: {}", path.display(), e),
-        })?;
-        // Remove the import line (with trailing newline)
-        let new_content = content.replace(&format!("{}\n", import_line), "");
-        if new_content != content {
-            std::fs::write(&path, new_content).map_err(|e| CliError::Generic {
-                description: format!("write {}: {}", path.display(), e),
-            })?;
-        }
-    }
-    Ok(())
-}
-
 /// Recursively strips `import <module>\n` from all .graphql.swift files in a directory tree.
-/// Used by direct-write mode where operations may be in nested subdirectories.
 fn strip_import_from_dir_recursive(dir: &Path, module: &str) -> Result<(), CliError> {
     let import_line = format!("import {}", module);
     walk_dir_recursive(dir, &mut |entry_path| {
@@ -414,7 +282,12 @@ fn strip_import_from_dir_recursive(dir: &Path, module: &str) -> Result<(), CliEr
 
 /// Adds a fast O(1) dictionary lookup to SchemaMetadata's objectType function,
 /// gated behind a `fastObjectTypeLookup` flag.
-fn optimize_schema_metadata(path: &Path) -> Result<(), CliError> {
+///
+/// The switch cases are `case "Name": return <Namespace>.Objects.Name` when the
+/// schema types live in their own module and `case "Name": return Objects.Name`
+/// when they are embedded, so both spellings are matched for the configured
+/// `schema_namespace`.
+fn optimize_schema_metadata(path: &Path, schema_namespace: &str) -> Result<(), CliError> {
     let content = std::fs::read_to_string(path).map_err(|e| CliError::Generic {
         description: format!("read {}: {}", path.display(), e),
     })?;
@@ -430,7 +303,13 @@ fn optimize_schema_metadata(path: &Path) -> Result<(), CliError> {
     };
 
     let cases_block = &caps[3];
-    let case_re = Regex::new(r#"^ {4}case (".*?"): return (V4\.Objects\.\w+)$"#).unwrap();
+    let case_re = Regex::new(&format!(
+        r#"^ {{4}}case (".*?"): return ((?:{}\.)?Objects\.\w+)$"#,
+        regex::escape(schema_namespace)
+    ))
+    .map_err(|e| CliError::Generic {
+        description: format!("invalid schema namespace '{}': {}", schema_namespace, e),
+    })?;
 
     let entries: Vec<(String, String)> = cases_block
         .lines()
@@ -492,6 +371,24 @@ mod tests {
         cmd: Generate,
     }
 
+    fn generate(bazel_mode: &str) -> Generate {
+        Generate {
+            inputs: InputOptions {
+                path: "./config.json".to_string(),
+                string: None,
+                verbose: false,
+            },
+            fetch_schema: false,
+            bazel_output_dir: None,
+            bazel_mode: bazel_mode.to_string(),
+            bazel_framework_path: None,
+            bazel_generate_for: vec![],
+            bazel_strip_import: None,
+            bazel_optimize_schema_metadata: false,
+            bazel_keep_schema_configuration: false,
+        }
+    }
+
     #[test]
     fn test_generate_parses_fetch_schema_flag() {
         let cli = TestCli::try_parse_from(["test", "--fetch-schema"]).unwrap();
@@ -512,19 +409,8 @@ mod tests {
 
     #[test]
     fn test_generate_fetch_schema_returns_stub_error() {
-        let cmd = Generate {
-            inputs: InputOptions {
-                path: "./config.json".to_string(),
-                string: None,
-                verbose: false,
-            },
-            fetch_schema: true,
-            bazel_output_dir: None,
-            bazel_mode: "schema_types".to_string(),
-            bazel_framework_path: None,
-            bazel_strip_import: None,
-            bazel_optimize_schema_metadata: false,
-        };
+        let mut cmd = generate("schema_types");
+        cmd.fetch_schema = true;
         let result = cmd.run();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -543,8 +429,13 @@ mod tests {
             "--bazel-framework-path",
             "Features/Account",
             "--bazel-strip-import",
-            "V4",
+            "MySchemaAPI",
             "--bazel-optimize-schema-metadata",
+            "--bazel-keep-schema-configuration",
+            "--bazel-generate-for",
+            "Features/Account/A.graphql",
+            "--bazel-generate-for",
+            "Features/Account/B.graphql",
         ])
         .unwrap();
         assert_eq!(cli.cmd.bazel_output_dir.as_deref(), Some("/tmp/out"));
@@ -553,8 +444,13 @@ mod tests {
             cli.cmd.bazel_framework_path.as_deref(),
             Some("Features/Account")
         );
-        assert_eq!(cli.cmd.bazel_strip_import.as_deref(), Some("V4"));
+        assert_eq!(cli.cmd.bazel_strip_import.as_deref(), Some("MySchemaAPI"));
         assert!(cli.cmd.bazel_optimize_schema_metadata);
+        assert!(cli.cmd.bazel_keep_schema_configuration);
+        assert_eq!(
+            cli.cmd.bazel_generate_for,
+            vec!["Features/Account/A.graphql", "Features/Account/B.graphql"]
+        );
     }
 
     #[test]
@@ -563,17 +459,36 @@ mod tests {
         assert_eq!(cli.cmd.bazel_mode, "schema_types");
         assert!(cli.cmd.bazel_output_dir.is_none());
         assert!(!cli.cmd.bazel_optimize_schema_metadata);
+        assert!(!cli.cmd.bazel_keep_schema_configuration);
+        assert!(cli.cmd.bazel_generate_for.is_empty());
     }
 
     #[test]
-    fn test_strip_import_from_dir() {
+    fn test_generation_filter_prefers_exact_files_over_prefix() {
+        let mut cmd = generate("operations");
+        assert_eq!(cmd.generation_filter(), None);
+        cmd.bazel_framework_path = Some("Features/Account".to_string());
+        assert_eq!(
+            cmd.generation_filter(),
+            Some(GenerationFilter::Prefix("Features/Account".to_string()))
+        );
+        cmd.bazel_generate_for = vec!["Features/Account/A.graphql".to_string()];
+        assert_eq!(
+            cmd.generation_filter(),
+            Some(GenerationFilter::Files(vec!["Features/Account/A.graphql".to_string()]))
+        );
+    }
+
+    #[test]
+    fn test_strip_import_from_dir_recursive() {
         let dir = tempfile::tempdir().unwrap();
-        let file1 = dir.path().join("Query.graphql.swift");
+        std::fs::create_dir_all(dir.path().join("Operations")).unwrap();
+        let file1 = dir.path().join("Operations/Query.graphql.swift");
         let file2 = dir.path().join("Fragment.graphql.swift");
         let file3 = dir.path().join("Other.txt");
         std::fs::write(
             &file1,
-            "import ApolloAPI\nimport V4\n\npublic struct Query {}\n",
+            "import ApolloAPI\nimport MySchemaAPI\n\npublic struct Query {}\n",
         )
         .unwrap();
         std::fs::write(
@@ -581,55 +496,56 @@ mod tests {
             "import ApolloAPI\n\npublic struct Fragment {}\n",
         )
         .unwrap();
-        std::fs::write(&file3, "import V4\nshould not be touched\n").unwrap();
+        std::fs::write(&file3, "import MySchemaAPI\nshould not be touched\n").unwrap();
 
-        strip_import_from_dir(dir.path(), "V4").unwrap();
+        strip_import_from_dir_recursive(dir.path(), "MySchemaAPI").unwrap();
 
         let content1 = std::fs::read_to_string(&file1).unwrap();
-        assert!(!content1.contains("import V4"));
+        assert!(!content1.contains("import MySchemaAPI"));
         assert!(content1.contains("import ApolloAPI"));
         assert!(content1.contains("public struct Query"));
 
-        // file2 had no "import V4" — should be unchanged
+        // file2 had no "import MySchemaAPI" -- should be unchanged
         let content2 = std::fs::read_to_string(&file2).unwrap();
         assert!(content2.contains("import ApolloAPI"));
 
-        // file3 is not .graphql.swift — should be untouched
+        // file3 is not .graphql.swift -- should be untouched
         let content3 = std::fs::read_to_string(&file3).unwrap();
-        assert!(content3.contains("import V4"));
+        assert!(content3.contains("import MySchemaAPI"));
     }
 
-    #[test]
-    fn test_optimize_schema_metadata() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("SchemaMetadata.graphql.swift");
-        let input = r#"import ApolloAPI
+    const METADATA: &str = r#"import ApolloAPI
 
 public enum SchemaMetadata: ApolloAPI.SchemaMetadata {
   public static let configuration: any ApolloAPI.SchemaConfiguration.Type = SchemaConfiguration.self
 
   public static func objectType(forTypename typename: String) -> ApolloAPI.Object? {
     switch typename {
-    case "Cat": return V4.Objects.Cat
-    case "Dog": return V4.Objects.Dog
-    case "Bird": return V4.Objects.Bird
+    case "Cat": return MySchemaAPI.Objects.Cat
+    case "Dog": return MySchemaAPI.Objects.Dog
+    case "Bird": return MySchemaAPI.Objects.Bird
     default: return nil
     }
   }
 }
 "#;
-        std::fs::write(&file, input).unwrap();
 
-        optimize_schema_metadata(&file).unwrap();
+    #[test]
+    fn test_optimize_schema_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SchemaMetadata.graphql.swift");
+        std::fs::write(&file, METADATA).unwrap();
+
+        optimize_schema_metadata(&file, "MySchemaAPI").unwrap();
 
         let result = std::fs::read_to_string(&file).unwrap();
         // Check 2-space indentation for declarations (matching enum body)
         assert!(result.contains("  public static var fastObjectTypeLookup = false"));
         assert!(result.contains("  static let objectTypeMap: [String: ApolloAPI.Object] = ["));
         // Check 4-space indentation for dictionary entries
-        assert!(result.contains(r#"    "Cat": V4.Objects.Cat"#));
-        assert!(result.contains(r#"    "Dog": V4.Objects.Dog"#));
-        assert!(result.contains(r#"    "Bird": V4.Objects.Bird"#));
+        assert!(result.contains(r#"    "Cat": MySchemaAPI.Objects.Cat"#));
+        assert!(result.contains(r#"    "Dog": MySchemaAPI.Objects.Dog"#));
+        assert!(result.contains(r#"    "Bird": MySchemaAPI.Objects.Bird"#));
         // Check if-guard with correct indentation
         assert!(result.contains("    if fastObjectTypeLookup {"));
         assert!(result.contains("      return objectTypeMap[typename]"));
@@ -639,77 +555,75 @@ public enum SchemaMetadata: ApolloAPI.SchemaMetadata {
     }
 
     #[test]
+    fn test_optimize_schema_metadata_requires_configured_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SchemaMetadata.graphql.swift");
+        std::fs::write(&file, METADATA).unwrap();
+
+        // Another namespace matches no case: the file is left as is.
+        optimize_schema_metadata(&file, "OtherAPI").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), METADATA);
+    }
+
+    #[test]
+    fn test_optimize_schema_metadata_embedded_objects_without_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SchemaMetadata.graphql.swift");
+        std::fs::write(&file, METADATA.replace("MySchemaAPI.Objects", "Objects")).unwrap();
+
+        optimize_schema_metadata(&file, "MySchemaAPI").unwrap();
+        let result = std::fs::read_to_string(&file).unwrap();
+        assert!(result.contains(r#"    "Cat": Objects.Cat"#), "{}", result);
+        assert!(result.contains("fastObjectTypeLookup"));
+    }
+
+    #[test]
     fn test_optimize_schema_metadata_no_match() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("SchemaMetadata.graphql.swift");
         let input = "// No objectType function here\npublic enum SchemaMetadata {}\n";
         std::fs::write(&file, input).unwrap();
 
-        optimize_schema_metadata(&file).unwrap();
+        optimize_schema_metadata(&file, "MySchemaAPI").unwrap();
 
         let result = std::fs::read_to_string(&file).unwrap();
         assert_eq!(result, input); // unchanged
     }
 
     #[test]
-    fn test_copy_swift_files_recursive() {
-        let src = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
+    fn test_postprocess_removes_hand_written_files_unless_kept() {
+        for keep in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("CustomScalars")).unwrap();
+            std::fs::create_dir_all(dir.path().join("Objects")).unwrap();
+            std::fs::write(dir.path().join("SchemaConfiguration.swift"), "config").unwrap();
+            std::fs::write(dir.path().join("CustomScalars/Date.swift"), "date").unwrap();
+            std::fs::write(dir.path().join("Objects/Cat.graphql.swift"), "cat").unwrap();
 
-        // Create directory structure
-        std::fs::create_dir_all(src.path().join("Objects")).unwrap();
-        std::fs::create_dir_all(src.path().join("CustomScalars")).unwrap();
-        std::fs::write(
-            src.path().join("Objects/Cat.graphql.swift"),
-            "cat content",
-        )
-        .unwrap();
-        std::fs::write(
-            src.path().join("SchemaConfiguration.swift"),
-            "config content",
-        )
-        .unwrap();
-        std::fs::write(
-            src.path().join("CustomScalars/Date.graphql.swift"),
-            "date content",
-        )
-        .unwrap();
-        std::fs::write(
-            src.path().join("SchemaMetadata.graphql.swift"),
-            "metadata content",
-        )
-        .unwrap();
+            let mut cmd = generate("schema_types");
+            cmd.bazel_keep_schema_configuration = keep;
+            cmd.postprocess_tree_artifact(dir.path(), "MySchemaAPI").unwrap();
 
-        let mut count = 0u32;
-        copy_swift_files_recursive(src.path(), dest.path(), &mut count, |rel_path| {
-            !rel_path.starts_with("CustomScalars/") && rel_path != "SchemaConfiguration.swift"
-        })
-        .unwrap();
-
-        assert_eq!(count, 2); // Cat + SchemaMetadata
-        assert!(dest.path().join("Objects/Cat.graphql.swift").exists());
-        assert!(dest.path().join("SchemaMetadata.graphql.swift").exists());
-        assert!(!dest.path().join("CustomScalars/Date.graphql.swift").exists());
-        assert!(!dest.path().join("SchemaConfiguration.swift").exists());
+            assert_eq!(dir.path().join("SchemaConfiguration.swift").exists(), keep);
+            assert_eq!(dir.path().join("CustomScalars").is_dir(), keep);
+            assert!(dir.path().join("Objects/Cat.graphql.swift").exists());
+        }
     }
 
     #[test]
     fn test_unknown_bazel_mode_errors() {
         let dir = tempfile::tempdir().unwrap();
-        let gen = Generate {
-            inputs: InputOptions {
-                path: "./config.json".to_string(),
-                string: None,
-                verbose: false,
-            },
-            fetch_schema: false,
-            bazel_output_dir: None,
-            bazel_mode: "invalid".to_string(),
-            bazel_framework_path: None,
-            bazel_strip_import: None,
-            bazel_optimize_schema_metadata: false,
-        };
-        let result = gen.populate_bazel_tree_artifact(dir.path().to_str().unwrap());
+        std::fs::write(dir.path().join("schema.graphqls"), "type Query { a: Int }").unwrap();
+        std::fs::write(dir.path().join("Q.graphql"), "query Q { a }").unwrap();
+        let config_json = format!(
+            r#"{{"schemaNamespace":"Inv","input":{{"schemaSearchPaths":["{d}/schema.graphqls"],"operationSearchPaths":["{d}/*.graphql"]}},"output":{{"schemaTypes":{{"path":"Out","moduleType":{{"other":{{}}}}}},"operations":{{"inSchemaModule":{{}}}},"testMocks":{{"none":{{}}}}}}}}"#,
+            d = dir.path().display()
+        );
+        let configuration: ApolloCodegenConfiguration = serde_json::from_str(&config_json).unwrap();
+        let mut config = ConfigurationContext::new(configuration, None);
+        config.set_output_root(Some(dir.path().join("out")));
+        let compile_result = ApolloCodegen::compile_schema_and_ir(&config).unwrap();
+        let result = generate("invalid").generate_bazel(&compile_result, &config, ItemsToGenerate::CODE);
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("Unknown --bazel-mode: invalid"));
     }
