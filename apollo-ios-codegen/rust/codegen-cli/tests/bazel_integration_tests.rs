@@ -469,9 +469,11 @@ fn version_flag_prints_the_apollo_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            apollo_codegen_lib::templates::swift_package_manager_module_template::CODEGEN_VERSION,
-        ));
+        .stdout(predicate::str::is_match(format!(
+            r"^apollo-ios-cli {}\n$",
+            regex::escape(codegen_cli::constants::CLI_VERSION)
+        ))
+        .unwrap());
 }
 
 // ---------------------------------------------------------------------------
