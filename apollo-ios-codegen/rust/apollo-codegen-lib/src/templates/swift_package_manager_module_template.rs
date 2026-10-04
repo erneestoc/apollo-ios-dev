@@ -50,7 +50,7 @@ impl SwiftPackageManagerModuleTemplate {
     fn test_mock_target(&self) -> Option<(String, String)> {
         match &self.test_mock_config {
             TestMockFileOutput::None | TestMockFileOutput::Absolute { .. } => None,
-            TestMockFileOutput::SwiftPackage { target_name } => {
+            TestMockFileOutput::SwiftPackage { target_name, .. } => {
                 if let Some(name) = target_name {
                     let cased = first_uppercased(name);
                     Some((cased.clone(), format!("./{}", cased)))
@@ -205,6 +205,7 @@ mod tests {
         );
         let test_mocks = TestMockFileOutput::SwiftPackage {
             target_name: None,
+            scoping: Default::default(),
         };
         let template = SwiftPackageManagerModuleTemplate::new(test_mocks, config);
         let result = template.render();
@@ -230,6 +231,7 @@ mod tests {
         );
         let test_mocks = TestMockFileOutput::SwiftPackage {
             target_name: Some("customMocks".to_string()),
+            scoping: Default::default(),
         };
         let template = SwiftPackageManagerModuleTemplate::new(test_mocks, config);
         let result = template.render();

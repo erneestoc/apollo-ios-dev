@@ -478,6 +478,7 @@ fn test_mock_file_output_absolute_round_trip() {
     TestMockFileOutput::Absolute {
       path: "x".to_string(),
       access_modifier: AccessModifier::Internal,
+      scoping: Default::default(),
     }
   );
   let serialized = serde_json::to_string(&parsed).unwrap();
@@ -493,6 +494,7 @@ fn test_mock_file_output_absolute_default_access_modifier() {
     TestMockFileOutput::Absolute {
       path: "y".to_string(),
       access_modifier: AccessModifier::Public,
+      scoping: Default::default(),
     }
   );
 }
@@ -505,6 +507,7 @@ fn test_mock_file_output_swift_package_round_trip() {
     parsed,
     TestMockFileOutput::SwiftPackage {
       target_name: Some("SchemaTestMocks".to_string()),
+      scoping: Default::default(),
     }
   );
   let serialized = serde_json::to_string(&parsed).unwrap();

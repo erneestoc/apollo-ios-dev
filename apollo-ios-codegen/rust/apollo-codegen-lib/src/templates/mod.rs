@@ -331,9 +331,22 @@ impl ImportStatementTemplate {
   ///
   /// Mirrors Swift's `ImportStatementTemplate.TestMock.template(config:)`.
   /// In 1.15.1, test mock files use plain `import` (not `@testable import`).
+  ///
+  /// Fork extension: when `output.testMocks` names a `baseModule` (the module that
+  /// holds the shared mocks and the `MockObject` typealiases), it is imported too so
+  /// that `@Field<OtherType>` references resolve across mock modules.
   pub fn test_mock(config: &ConfigurationContext) -> String {
     let schema_module = config.schema_module_name();
-    format!("import ApolloTestSupport\nimport {}", schema_module)
+    let mut imports = format!("import ApolloTestSupport\nimport {}", schema_module);
+    if let Some(base_module) = config
+      .output()
+      .test_mocks
+      .scoping()
+      .and_then(|s| s.base_module.as_deref())
+    {
+      imports.push_str(&format!("\nimport {}", base_module));
+    }
+    imports
   }
 }
 
@@ -745,6 +758,23 @@ mod tests {
     assert!(import.contains("import ApolloTestSupport"));
     assert!(import.contains("import MySchema"));
     assert!(!import.contains("@testable"));
+  }
+
+  #[test]
+  fn test_import_statement_test_mock_with_base_module() {
+    let config = make_config(r#"{
+      "schemaNamespace": "mySchema",
+      "input": {},
+      "output": {
+        "schemaTypes": { "path": "./gen", "moduleType": {"swiftPackageManager": {}} },
+        "operations": {"inSchemaModule": {}},
+        "testMocks": {"swiftPackage": {"targetName": "AccountMocks", "baseModule": "BaseMocks"}}
+      }
+    }"#);
+    assert_eq!(
+      ImportStatementTemplate::test_mock(&config),
+      "import ApolloTestSupport\nimport MySchema\nimport BaseMocks"
+    );
   }
 
   #[test]
