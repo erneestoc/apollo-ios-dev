@@ -281,7 +281,10 @@ impl FileTarget {
     /// Resolves the output path for test mock files.
     ///
     /// Mirrors Swift's `resolveTestMockPath(forConfig:)` (lines 217-229).
-    /// When `output_root` is set, redirects test mocks under the tree artifact directory.
+    /// When `output_root` is set (Bazel mode), test mocks are written to their own
+    /// subdirectory of the tree artifact: `<output_root>/<targetName>` for a `swiftPackage`
+    /// output (default `TestMocks`) and `<output_root>/TestMocks` for an `absolute` one, so
+    /// a Bazel rule can split them from the schema types.
     fn resolve_test_mock_path(&self, config: &ConfigurationContext) -> PathBuf {
         if let Some(output_root) = config.output_root() {
             match &config.output().test_mocks {
@@ -290,7 +293,7 @@ impl FileTarget {
                     let name = target_name.as_deref().unwrap_or("TestMocks");
                     output_root.join(name)
                 }
-                TestMockFileOutput::Absolute { .. } => output_root.to_path_buf(),
+                TestMockFileOutput::Absolute { .. } => output_root.join("TestMocks"),
             }
         } else {
             match &config.output().test_mocks {
