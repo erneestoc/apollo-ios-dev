@@ -47,6 +47,17 @@ pub fn match_search_paths(
             pattern.clone()
         };
 
+        // A literal path (no glob characters) is checked directly, like glob(3) does: it
+        // matches when the path names a file, following symlinks (Bazel sandboxes and
+        // `ctx.actions.symlink` present inputs as file symlinks). No directory walk.
+        if !has_glob_characters(&full_pattern) {
+            let literal = Path::new(&full_pattern);
+            if literal.is_file() {
+                results.insert(make_absolute(literal));
+            }
+            continue;
+        }
+
         // Extract the base directory from the pattern (everything before first wildcard)
         let base_dir = extract_base_dir(&full_pattern);
 
@@ -76,7 +87,10 @@ pub fn match_search_paths(
         let mut dir_order: Vec<std::path::PathBuf> = Vec::new();
         let mut by_dir: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
             std::collections::HashMap::new();
+        // Links are followed so that symlinked files and directories (how Bazel sandboxes
+        // and `ctx.actions.symlink` present inputs) are discovered like regular ones.
         for entry in WalkDir::new(base)
+            .follow_links(true)
             .into_iter()
             .filter_entry(|e| !is_excluded_directory(e))
             .filter_map(|e| e.ok())
@@ -89,7 +103,7 @@ pub fn match_search_paths(
                 }
                 continue;
             }
-            if entry.file_type().is_file() {
+            if path.is_file() {
                 let path_str = path.to_string_lossy();
                 if glob.is_match(candidate_path(&path_str, strip_dot_slash)) {
                     let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -148,6 +162,11 @@ fn make_absolute(path: &Path) -> String {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         cwd.join(path).to_string_lossy().to_string()
     }
+}
+
+/// Whether the pattern contains glob metacharacters (`*`, `?` or `[`).
+fn has_glob_characters(pattern: &str) -> bool {
+    pattern.contains(|c: char| c == '*' || c == '?' || c == '[')
 }
 
 /// Extracts the base directory from a glob pattern.
@@ -329,5 +348,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.len(), 1);
+    }
+    /// Bazel sandboxes and `ctx.actions.symlink` present inputs as symlinks: a literal
+    /// search path that is a file symlink, a symlinked file inside a walked directory and a
+    /// symlinked directory must all be discovered.
+    #[cfg(unix)]
+    #[test]
+    fn test_match_search_paths_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let real = tempdir().unwrap();
+        std::fs::write(real.path().join("schema.graphqls"), "type Query { a: Int }").unwrap();
+        std::fs::create_dir_all(real.path().join("ops")).unwrap();
+        std::fs::write(real.path().join("ops/Q.graphql"), "query Q { a }").unwrap();
+
+        let staged = tempdir().unwrap();
+        // literal path -> file symlink
+        symlink(real.path().join("schema.graphqls"), staged.path().join("schema.graphqls")).unwrap();
+        // file symlink inside a walked directory
+        std::fs::create_dir_all(staged.path().join("linked-files")).unwrap();
+        symlink(real.path().join("ops/Q.graphql"), staged.path().join("linked-files/Q.graphql")).unwrap();
+        // directory symlink
+        symlink(real.path().join("ops"), staged.path().join("linked-dir")).unwrap();
+
+        let schema = match_search_paths(
+            &[staged.path().join("schema.graphqls").to_string_lossy().to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(schema.len(), 1, "{:?}", schema);
+        assert!(schema.iter().next().unwrap().ends_with("/schema.graphqls"));
+
+        let ops = match_search_paths(
+            &[format!("{}/**/*.graphql", staged.path().display())],
+            None,
+        )
+        .unwrap();
+        assert_eq!(ops.len(), 2, "{:?}", ops);
+        assert!(ops.iter().any(|p| p.ends_with("/linked-files/Q.graphql")), "{:?}", ops);
+        assert!(ops.iter().any(|p| p.ends_with("/linked-dir/Q.graphql")), "{:?}", ops);
+    }
+
+    #[test]
+    fn test_literal_search_path_is_checked_directly() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("schema.graphqls"), "type Query { a: Int }").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/other.graphqls"), "type Query { b: Int }").unwrap();
+
+        // Exact file: found without walking the directory (the sibling is not matched).
+        let found = match_search_paths(
+            &[dir.path().join("schema.graphqls").to_string_lossy().to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1, "{:?}", found);
+        assert!(found.iter().next().unwrap().ends_with("/schema.graphqls"));
+
+        // Missing file: no match, no error.
+        let missing = match_search_paths(
+            &[dir.path().join("missing.graphqls").to_string_lossy().to_string()],
+            None,
+        )
+        .unwrap();
+        assert!(missing.is_empty());
+
+        // A directory is not a file match.
+        let directory = match_search_paths(
+            &[dir.path().join("sub").to_string_lossy().to_string()],
+            None,
+        )
+        .unwrap();
+        assert!(directory.is_empty());
+
+        // Relative literal resolved against `relative_to`.
+        let relative = match_search_paths(&["schema.graphqls".to_string()], Some(dir.path())).unwrap();
+        assert_eq!(relative.len(), 1, "{:?}", relative);
     }
 }
