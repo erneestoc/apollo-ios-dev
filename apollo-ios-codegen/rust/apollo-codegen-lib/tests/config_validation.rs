@@ -132,6 +132,7 @@ fn rejects_test_mocks_swift_package_with_non_spm_module() {
   let mut config = make_valid_config();
   config.output.test_mocks = TestMockFileOutput::SwiftPackage {
     target_name: Some("TestMocks".to_string()),
+    scoping: Default::default(),
   };
   config.output.schema_types.module_type = ModuleType::Other;
   let result = validate_config_values(&config);
@@ -150,6 +151,7 @@ fn allows_test_mocks_swift_package_with_spm_module() {
   let mut config = make_valid_config();
   config.output.test_mocks = TestMockFileOutput::SwiftPackage {
     target_name: Some("TestMocks".to_string()),
+    scoping: Default::default(),
   };
   config.output.schema_types.module_type = ModuleType::SwiftPackage { apollo_sdk_dependency: apollo_codegen_lib::config::module_type::ApolloSDKDependency::default() };
   let result = validate_config_values(&config);
