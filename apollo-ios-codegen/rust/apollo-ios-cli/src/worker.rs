@@ -323,6 +323,10 @@ fn handle_request(request: &WorkRequest, cache: &Mutex<WorkerCache>) -> WorkResp
         Err(e) => return failure(request, format!("Failed to load configuration: {}", e)),
     };
 
+    if let Err(e) = generate_cmd.apply_bazel_mock_overrides(&mut configuration) {
+        return failure(request, e.to_string());
+    }
+
     let root_url = input_options::root_output_url(&generate_cmd.inputs);
 
     // Disable pruning in worker mode (D-92): several workers share the execroot
