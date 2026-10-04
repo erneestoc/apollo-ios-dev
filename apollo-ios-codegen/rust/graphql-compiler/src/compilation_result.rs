@@ -562,9 +562,24 @@ impl ImportDirective {
 
 /// Extracts a DeferCondition from a list of directives.
 /// Mirrors Swift's `Deferrable.getDeferCondition(from:)` protocol extension.
+///
+/// Panics on a `@defer` whose `label` is missing or not a static string (Swift traps on the
+/// same input); the codegen pipeline uses [`try_get_defer_condition`] and reports it.
 pub fn get_defer_condition(directives: &Option<Vec<Directive>>) -> Option<DeferCondition> {
-    let dirs = directives.as_ref()?;
-    let defer_directive = dirs.iter().find(|d| d.name == directive_names::DEFER)?;
+    try_get_defer_condition(directives).unwrap_or_else(|e| panic!("{}", e))
+}
+
+/// Fallible [`get_defer_condition`]: a malformed `@defer` becomes an error message with
+/// graphql-js wording.
+pub fn try_get_defer_condition(
+    directives: &Option<Vec<Directive>>,
+) -> Result<Option<DeferCondition>, String> {
+    let Some(dirs) = directives.as_ref() else {
+        return Ok(None);
+    };
+    let Some(defer_directive) = dirs.iter().find(|d| d.name == directive_names::DEFER) else {
+        return Ok(None);
+    };
 
     // Extract label argument (required)
     let label = defer_directive
@@ -575,7 +590,9 @@ pub fn get_defer_condition(directives: &Option<Vec<Directive>>) -> Option<DeferC
             GraphQLValue::String(s) => Some(s.clone()),
             _ => None,
         })
-        .expect("Incorrect `label` argument. Either missing or value is not a String.");
+        .ok_or_else(|| {
+            "Directive \"defer\"'s label argument must be a static string.".to_string()
+        })?;
 
     // Extract `if` argument (optional)
     let if_arg = defer_directive
@@ -584,24 +601,24 @@ pub fn get_defer_condition(directives: &Option<Vec<Directive>>) -> Option<DeferC
         .and_then(|args| args.iter().find(|a| a.name == "if"));
 
     match if_arg {
-        None => Some(DeferCondition {
+        None => Ok(Some(DeferCondition {
             label,
             variable: None,
-        }),
+        })),
         Some(arg) => match &arg.value {
-            GraphQLValue::Boolean(true) => Some(DeferCondition {
+            GraphQLValue::Boolean(true) => Ok(Some(DeferCondition {
                 label,
                 variable: None,
-            }),
-            GraphQLValue::Boolean(false) => None,
-            GraphQLValue::String(v) | GraphQLValue::Variable(v) => Some(DeferCondition {
+            })),
+            GraphQLValue::Boolean(false) => Ok(None),
+            GraphQLValue::String(v) | GraphQLValue::Variable(v) => Ok(Some(DeferCondition {
                 label,
                 variable: Some(v.clone()),
-            }),
-            _ => panic!(
-                "Incompatible variable value. Expected Boolean, String or Variable, got {:?}.",
-                arg.value
-            ),
+            })),
+            other => Err(format!(
+                "Boolean cannot represent a non boolean value: {:?}",
+                other
+            )),
         },
     }
 }
