@@ -19,6 +19,7 @@ use apollo_codegen_lib::codegen::{
     ApolloCodegen, CodegenProvider, CompileResult, GenerationFilter, ItemsToGenerate,
 };
 use apollo_codegen_lib::codegen_logger::CodegenLogger;
+use apollo_codegen_lib::config::test_mock_file_output::TestMockScope;
 use apollo_codegen_lib::config::ApolloCodegenConfiguration;
 use apollo_codegen_lib::templates::ConfigurationContext;
 
@@ -43,7 +44,10 @@ pub struct Generate {
 
     /// Bazel output mode. "schema_types" writes the schema types (plus, when
     /// `testMocks` is configured, the test mocks under `TestMocks/`); "operations"
-    /// writes operation and fragment files only.
+    /// writes operation and fragment files only; "test_mocks" writes only the test
+    /// mocks under `TestMocks/` (scoped by the --bazel-mocks-* flags; the
+    /// `referenced` scope uses the --bazel-generate-for / --bazel-framework-path
+    /// selection).
     #[arg(long, default_value = "schema_types", help_heading = "Bazel")]
     pub bazel_mode: String,
 
@@ -76,6 +80,39 @@ pub struct Generate {
     /// user-editable files that a Bazel rule provides itself.
     #[arg(long, help_heading = "Bazel")]
     pub bazel_keep_schema_configuration: bool,
+
+    /// Test mocks: which object types get a `<Type>+Mock.swift` file. "all" (the
+    /// config's default) mocks every type referenced by any operation; "referenced"
+    /// mocks only the types referenced by the selected operations and fragments
+    /// (--bazel-generate-for / --bazel-framework-path), including the types reached
+    /// through the interfaces and unions they use. Overrides `testMocks.scope`.
+    #[arg(long, value_name = "all|referenced", help_heading = "Bazel test mocks")]
+    pub bazel_mocks_scope: Option<String>,
+
+    /// Test mocks: always generate the mock for this object type (repeatable). The
+    /// type must be referenced by some operation. Overrides `testMocks.includeTypes`.
+    #[arg(long, value_name = "TYPE", action = clap::ArgAction::Append, help_heading = "Bazel test mocks")]
+    pub bazel_mocks_for: Vec<String>,
+
+    /// Test mocks: never generate the mock for this object type (repeatable), e.g.
+    /// because a base module provides it. Unknown names are ignored. Overrides
+    /// `testMocks.excludeTypes`.
+    #[arg(long, value_name = "TYPE", action = clap::ArgAction::Append, help_heading = "Bazel test mocks")]
+    pub bazel_mocks_exclude: Vec<String>,
+
+    /// Test mocks: the Swift module holding the shared mocks and the `MockObject`
+    /// typealiases. Every generated mock file gets `import <MODULE>` and the
+    /// `MockObject+Interfaces` / `MockObject+Unions` files are not generated (unless
+    /// --bazel-mocks-typealiases). Overrides `testMocks.baseModule`.
+    #[arg(long, value_name = "MODULE", help_heading = "Bazel test mocks")]
+    pub bazel_mocks_base_module: Option<String>,
+
+    /// Test mocks: generate the `MockObject+Interfaces` / `MockObject+Unions`
+    /// typealias files even with --bazel-mocks-base-module (`true`), or never
+    /// (`false`). They list every interface/union of the schema that any operation
+    /// references, so exactly one module of a partition must carry them.
+    #[arg(long, value_name = "true|false", help_heading = "Bazel test mocks")]
+    pub bazel_mocks_typealiases: Option<bool>,
 }
 
 impl Generate {
@@ -91,7 +128,8 @@ impl Generate {
             });
         }
 
-        let configuration = self.inputs.get_codegen_configuration()?;
+        let mut configuration = self.inputs.get_codegen_configuration()?;
+        self.apply_bazel_mock_overrides(&mut configuration)?;
         let items_to_generate = Self::items_to_generate(&configuration);
         let root_url = input_options::root_output_url(&self.inputs);
 
@@ -125,6 +163,66 @@ impl Generate {
             }
         }
         items_to_generate
+    }
+
+    /// Whether any `--bazel-mocks-*` flag was given.
+    fn has_bazel_mock_flags(&self) -> bool {
+        self.bazel_mocks_scope.is_some()
+            || !self.bazel_mocks_for.is_empty()
+            || !self.bazel_mocks_exclude.is_empty()
+            || self.bazel_mocks_base_module.is_some()
+            || self.bazel_mocks_typealiases.is_some()
+    }
+
+    /// Applies the `--bazel-mocks-*` flags on top of the config's `output.testMocks`
+    /// scoping (each flag replaces the corresponding config key). `--bazel-mode
+    /// test_mocks` and the flags require a configured (`absolute` or `swiftPackage`)
+    /// test mock output.
+    pub fn apply_bazel_mock_overrides(
+        &self,
+        configuration: &mut ApolloCodegenConfiguration,
+    ) -> Result<(), CliError> {
+        let wants_mocks = self.has_bazel_mock_flags() || self.bazel_mode == "test_mocks";
+        if !wants_mocks {
+            return Ok(());
+        }
+        if self.bazel_output_dir.is_none() {
+            return Err(CliError::Generic {
+                description: "--bazel-mode test_mocks and the --bazel-mocks-* flags require --bazel-output-dir".to_string(),
+            });
+        }
+        let Some(scoping) = configuration.output.test_mocks.scoping_mut() else {
+            return Err(CliError::Generic {
+                description: "--bazel-mode test_mocks and the --bazel-mocks-* flags require 'output.testMocks' to be 'absolute' or 'swiftPackage' (it is 'none')".to_string(),
+            });
+        };
+        if let Some(ref scope) = self.bazel_mocks_scope {
+            scoping.scope = match scope.as_str() {
+                "all" => TestMockScope::All,
+                "referenced" | "referencedByOperations" => TestMockScope::ReferencedByOperations,
+                other => {
+                    return Err(CliError::Generic {
+                        description: format!(
+                            "Unknown --bazel-mocks-scope: {} (expected 'all' or 'referenced')",
+                            other
+                        ),
+                    })
+                }
+            };
+        }
+        if !self.bazel_mocks_for.is_empty() {
+            scoping.include_types = self.bazel_mocks_for.clone();
+        }
+        if !self.bazel_mocks_exclude.is_empty() {
+            scoping.exclude_types = self.bazel_mocks_exclude.clone();
+        }
+        if let Some(ref module) = self.bazel_mocks_base_module {
+            scoping.base_module = Some(module.clone());
+        }
+        if let Some(typealiases) = self.bazel_mocks_typealiases {
+            scoping.include_typealiases = Some(typealiases);
+        }
+        Ok(())
     }
 
     /// Whether `--bazel-mode operations` was requested.
@@ -171,6 +269,11 @@ impl Generate {
                 compile_result,
                 config,
                 items_to_generate,
+            )?,
+            "test_mocks" => ApolloCodegen::generate_from_ir_test_mocks_only(
+                compile_result,
+                config,
+                self.generation_filter().as_ref(),
             )?,
             other => {
                 return Err(CliError::Generic {
@@ -388,6 +491,11 @@ mod tests {
             bazel_strip_import: None,
             bazel_optimize_schema_metadata: false,
             bazel_keep_schema_configuration: false,
+            bazel_mocks_scope: None,
+            bazel_mocks_for: vec![],
+            bazel_mocks_exclude: vec![],
+            bazel_mocks_base_module: None,
+            bazel_mocks_typealiases: None,
         }
     }
 
@@ -453,6 +561,74 @@ mod tests {
             cli.cmd.bazel_generate_for,
             vec!["Features/Account/A.graphql", "Features/Account/B.graphql"]
         );
+    }
+
+    #[test]
+    fn test_bazel_mock_flags_parsing_and_overrides() {
+        let cli = TestCli::try_parse_from([
+            "test",
+            "--bazel-output-dir", "/tmp/out",
+            "--bazel-mode", "test_mocks",
+            "--bazel-mocks-scope", "referenced",
+            "--bazel-mocks-for", "Dog",
+            "--bazel-mocks-for", "Cat",
+            "--bazel-mocks-exclude", "Query",
+            "--bazel-mocks-base-module", "BaseMocks",
+            "--bazel-mocks-typealiases", "true",
+        ])
+        .unwrap();
+        assert_eq!(cli.cmd.bazel_mode, "test_mocks");
+        assert_eq!(cli.cmd.bazel_mocks_scope.as_deref(), Some("referenced"));
+        assert_eq!(cli.cmd.bazel_mocks_for, vec!["Dog", "Cat"]);
+        assert_eq!(cli.cmd.bazel_mocks_exclude, vec!["Query"]);
+        assert_eq!(cli.cmd.bazel_mocks_base_module.as_deref(), Some("BaseMocks"));
+        assert_eq!(cli.cmd.bazel_mocks_typealiases, Some(true));
+
+        let mut configuration: ApolloCodegenConfiguration = serde_json::from_str(
+            r#"{"schemaNamespace":"S","input":{},"output":{"schemaTypes":{"path":".","moduleType":{"other":{}}},
+                "testMocks":{"absolute":{"path":"Mocks","excludeTypes":["User"]}}}}"#,
+        )
+        .unwrap();
+        cli.cmd.apply_bazel_mock_overrides(&mut configuration).unwrap();
+        let scoping = configuration.output.test_mocks.scoping().unwrap();
+        assert_eq!(scoping.scope, TestMockScope::ReferencedByOperations);
+        assert_eq!(scoping.include_types, vec!["Dog", "Cat"]);
+        assert_eq!(scoping.exclude_types, vec!["Query"], "flags replace the config key");
+        assert_eq!(scoping.base_module.as_deref(), Some("BaseMocks"));
+        assert_eq!(scoping.include_typealiases, Some(true));
+        assert!(scoping.generates_typealiases());
+    }
+
+    #[test]
+    fn test_bazel_mock_flags_require_configured_mocks_and_output_dir() {
+        let mut none: ApolloCodegenConfiguration = serde_json::from_str(
+            r#"{"schemaNamespace":"S","input":{},"output":{"schemaTypes":{"path":".","moduleType":{"other":{}}}}}"#,
+        )
+        .unwrap();
+        let mut cmd = generate("test_mocks");
+        cmd.bazel_output_dir = Some("/tmp/out".to_string());
+        let err = cmd.apply_bazel_mock_overrides(&mut none).unwrap_err().to_string();
+        assert!(err.contains("'output.testMocks'"), "{err}");
+
+        let mut mocks: ApolloCodegenConfiguration = serde_json::from_str(
+            r#"{"schemaNamespace":"S","input":{},"output":{"schemaTypes":{"path":".","moduleType":{"other":{}}},
+                "testMocks":{"absolute":{"path":"Mocks"}}}}"#,
+        )
+        .unwrap();
+        let mut cmd = generate("schema_types");
+        cmd.bazel_mocks_scope = Some("referenced".to_string());
+        let err = cmd.apply_bazel_mock_overrides(&mut mocks).unwrap_err().to_string();
+        assert!(err.contains("--bazel-output-dir"), "{err}");
+
+        cmd.bazel_output_dir = Some("/tmp/out".to_string());
+        cmd.bazel_mocks_scope = Some("bogus".to_string());
+        let err = cmd.apply_bazel_mock_overrides(&mut mocks).unwrap_err().to_string();
+        assert!(err.contains("Unknown --bazel-mocks-scope: bogus"), "{err}");
+
+        // No flags, no test_mocks mode: the configuration is left alone.
+        let before = mocks.clone();
+        generate("schema_types").apply_bazel_mock_overrides(&mut mocks).unwrap();
+        assert_eq!(mocks, before);
     }
 
     #[test]
