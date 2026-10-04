@@ -364,7 +364,12 @@ impl ApolloCodegen {
                 std::collections::BTreeSet::new()
             };
 
-            let errors = generate_schema_files(&compile_result.ir, config, &file_manager)?;
+            let errors = generate_schema_files(
+                &compile_result.compilation_result,
+                &compile_result.ir,
+                config,
+                &file_manager,
+            )?;
             non_fatal_errors.merge(errors);
 
             if config.config.options.prune_generated_files {
@@ -384,6 +389,37 @@ impl ApolloCodegen {
             return Err(CodegenError::NonFatalErrors(non_fatal_errors));
         }
 
+        Ok(())
+    }
+
+    /// Generates only the test mock files (fork extension, Bazel `test_mocks` mode).
+    ///
+    /// Writes the `<Object>+Mock` files selected by `output.testMocks`'s scoping and,
+    /// unless a `baseModule` provides them, the `MockObject+Interfaces` /
+    /// `MockObject+Unions` typealias files, into the test mock output path (under
+    /// `TestMocks/` in a Bazel tree artifact). `filter` is the Bazel operations
+    /// selection the `referencedByOperations` scope is evaluated against.
+    pub fn generate_from_ir_test_mocks_only(
+        compile_result: &CompileResult,
+        config: &ConfigurationContext,
+        filter: Option<&GenerationFilter>,
+    ) -> Result<(), CodegenError> {
+        let file_manager = ApolloFileManager::new();
+        process_schema_customizations(&compile_result.ir, config);
+
+        let generators = test_mock_file_generators(
+            &compile_result.compilation_result,
+            &compile_result.ir,
+            config,
+            filter,
+        )?;
+        let errors = generate_files_concurrently(&generators, config, &file_manager)?;
+
+        let mut non_fatal_errors = NonFatalErrors::new();
+        collect_non_fatal_errors(&generators, &errors, &mut non_fatal_errors);
+        if !non_fatal_errors.is_empty() {
+            return Err(CodegenError::NonFatalErrors(non_fatal_errors));
+        }
         Ok(())
     }
 
@@ -1230,7 +1266,7 @@ fn generate_all_files(
     non_fatal_errors.merge(definition_errors);
 
     // Generate schema type files
-    let schema_errors = generate_schema_files(ir, config, file_manager)?;
+    let schema_errors = generate_schema_files(compilation_result, ir, config, file_manager)?;
     non_fatal_errors.merge(schema_errors);
 
     Ok(non_fatal_errors)
@@ -1346,10 +1382,69 @@ fn generate_graph_ql_definition_files(
     Ok(non_fatal_errors)
 }
 
+/// The test mock file generators for `config`'s `output.testMocks`: one
+/// `<Object>+Mock` file per selected object type (see
+/// [`crate::test_mock_scope::select_mock_object_types`]) plus the
+/// `MockObject+Interfaces` / `MockObject+Unions` typealias files unless a `baseModule`
+/// provides them.
+///
+/// `filter` is the Bazel operations selection used by the `referencedByOperations`
+/// scope; `None` selects every compiled definition. The typealias files always cover
+/// every interface and union the configuration references, so a partition's base
+/// module carries exactly Apollo's unscoped typealias files.
+///
+/// Mirrors the test mock part of Swift's `generateSchemaFiles()`; with the default
+/// scoping the generators are the same as Apollo's.
+fn test_mock_file_generators(
+    compilation_result: &CompilationResult,
+    ir: &IRBuilder,
+    config: &ConfigurationContext,
+    filter: Option<&GenerationFilter>,
+) -> Result<Vec<Box<dyn FileGenerator + Send + Sync>>, CodegenError> {
+    let Some(scoping) = config.config.output.test_mocks.scoping() else {
+        return Err(CodegenError::TestMocksNotConfigured);
+    };
+    let selected =
+        crate::test_mock_scope::select_mock_object_types(compilation_result, scoping, filter)?;
+
+    let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
+    for graphql_object in &ir.schema.referenced_types.objects {
+        if !selected.contains(graphql_object.name.schema_name.as_str()) {
+            continue;
+        }
+        let obj_type = GraphQLCompositeType::Object(Arc::clone(graphql_object));
+        let fields = ir.field_collector.collected_fields_for(&obj_type);
+        generators.push(Box::new(MockObjectFileGenerator {
+            graphql_object: Arc::clone(graphql_object),
+            fields,
+            config: config.clone(),
+        }));
+    }
+
+    if scoping.generates_typealiases() {
+        if !ir.schema.referenced_types.unions.is_empty() {
+            generators.push(Box::new(MockUnionsFileGenerator {
+                graphql_unions: ir.schema.referenced_types.unions.clone(),
+                config: config.clone(),
+            }));
+        }
+
+        if !ir.schema.referenced_types.interfaces.is_empty() {
+            generators.push(Box::new(MockInterfacesFileGenerator {
+                graphql_interfaces: ir.schema.referenced_types.interfaces.clone(),
+                config: config.clone(),
+            }));
+        }
+    }
+
+    Ok(generators)
+}
+
 /// Generates schema type files (objects, enums, interfaces, unions, etc.).
 ///
 /// Mirrors Swift's `generateSchemaFiles()`.
 fn generate_schema_files(
+    compilation_result: &CompilationResult,
     ir: &IRBuilder,
     config: &ConfigurationContext,
     file_manager: &ApolloFileManager,
@@ -1357,22 +1452,17 @@ fn generate_schema_files(
     let t_start = std::time::Instant::now();
     let mut generators: Vec<Box<dyn FileGenerator + Send + Sync>> = Vec::new();
 
-    // Object types + mock objects
+    // Object types
     for graphql_object in &ir.schema.referenced_types.objects {
         generators.push(Box::new(ObjectFileGenerator {
             graphql_object: Arc::clone(graphql_object),
             config: config.clone(),
         }));
+    }
 
-        if config.config.output.test_mocks != TestMockFileOutput::None {
-            let obj_type = GraphQLCompositeType::Object(Arc::clone(graphql_object));
-            let fields = ir.field_collector.collected_fields_for(&obj_type);
-            generators.push(Box::new(MockObjectFileGenerator {
-                graphql_object: Arc::clone(graphql_object),
-                fields,
-                config: config.clone(),
-            }));
-        }
+    // Mock objects (scoped by `output.testMocks`; everything by default)
+    if config.config.output.test_mocks != TestMockFileOutput::None {
+        generators.extend(test_mock_file_generators(compilation_result, ir, config, None)?);
     }
 
     // Enum types
@@ -1413,23 +1503,6 @@ fn generate_schema_files(
             graphql_scalar: Arc::clone(graphql_scalar),
             config: config.clone(),
         }));
-    }
-
-    // Test mock union and interface files
-    if config.config.output.test_mocks != TestMockFileOutput::None {
-        if !ir.schema.referenced_types.unions.is_empty() {
-            generators.push(Box::new(MockUnionsFileGenerator {
-                graphql_unions: ir.schema.referenced_types.unions.clone(),
-                config: config.clone(),
-            }));
-        }
-
-        if !ir.schema.referenced_types.interfaces.is_empty() {
-            generators.push(Box::new(MockInterfacesFileGenerator {
-                graphql_interfaces: ir.schema.referenced_types.interfaces.clone(),
-                config: config.clone(),
-            }));
-        }
     }
 
     // Schema metadata, configuration, and module files
@@ -1544,6 +1617,12 @@ pub enum CodegenError {
     /// The schema could not be parsed or is invalid (Swift: `GraphQLSchemaValidationError`).
     SchemaValidationFailure { messages: Vec<String> },
     TestMocksInvalidSwiftPackageConfiguration,
+    /// `output.testMocks.includeTypes` (or `--bazel-mocks-for`) names a type that no
+    /// operation references, so there is nothing to mock.
+    TestMocksUnknownIncludeType { name: String },
+    /// Test mocks were requested (`--bazel-mode test_mocks`, `--bazel-mocks-*`) but
+    /// `output.testMocks` is `none`.
+    TestMocksNotConfigured,
     InputSearchPathInvalid { path: String },
     SchemaNameConflict { name: String },
     CannotLoadSchema,
@@ -1580,6 +1659,19 @@ impl fmt::Display for CodegenError {
                 write!(
                     f,
                     "Schema Types must be generated with module type 'swiftPackageManager' to generate a swift package for test mocks."
+                )
+            }
+            CodegenError::TestMocksUnknownIncludeType { name } => {
+                write!(
+                    f,
+                    "Test mocks: includeTypes names '{}', which is not an object type referenced by any operation of this configuration.",
+                    name
+                )
+            }
+            CodegenError::TestMocksNotConfigured => {
+                write!(
+                    f,
+                    "Test mocks were requested but 'output.testMocks' is 'none'. Configure an 'absolute' or 'swiftPackage' test mock output."
                 )
             }
             CodegenError::InputSearchPathInvalid { path } => {
