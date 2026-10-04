@@ -286,7 +286,8 @@ fn strip_import_from_dir_recursive(dir: &Path, module: &str) -> Result<(), CliEr
 /// The switch cases are `case "Name": return <Namespace>.Objects.Name` when the
 /// schema types live in their own module and `case "Name": return Objects.Name`
 /// when they are embedded, so both spellings are matched for the configured
-/// `schema_namespace`.
+/// `schema_namespace`. The function signature may carry attributes
+/// (`@_spi(Execution)` from Apollo iOS 2.0) which are preserved.
 fn optimize_schema_metadata(path: &Path, schema_namespace: &str) -> Result<(), CliError> {
     let content = std::fs::read_to_string(path).map_err(|e| CliError::Generic {
         description: format!("read {}: {}", path.display(), e),
@@ -294,7 +295,7 @@ fn optimize_schema_metadata(path: &Path, schema_namespace: &str) -> Result<(), C
 
     // Match the objectType switch statement
     let func_re = Regex::new(
-        r"(?s)( {2}public static func objectType\(forTypename typename: String\) -> ApolloAPI\.Object\? \{\n)(    switch typename \{\n(.*?)    default: return nil\n    \}\n  \})"
+        r"(?s)( {2}(?:@\w+(?:\([^)]*\))? )*public static func objectType\(forTypename typename: String\) -> ApolloAPI\.Object\? \{\n)(    switch typename \{\n(.*?)    default: return nil\n    \}\n  \})"
     ).unwrap();
 
     let caps = match func_re.captures(&content) {
@@ -331,6 +332,7 @@ fn optimize_schema_metadata(path: &Path, schema_namespace: &str) -> Result<(), C
         .join(",\n");
 
     let original_switch = &caps[2];
+    let signature = caps[1].trim_end_matches('\n');
 
     let replacement = [
         "  public static var fastObjectTypeLookup = false",
@@ -339,7 +341,7 @@ fn optimize_schema_metadata(path: &Path, schema_namespace: &str) -> Result<(), C
         &format!("{},", dict_entries),
         "  ]",
         "",
-        "  public static func objectType(forTypename typename: String) -> ApolloAPI.Object? {",
+        signature,
         "    if fastObjectTypeLookup {",
         "      return objectTypeMap[typename]",
         "    }",
@@ -552,6 +554,24 @@ public enum SchemaMetadata: ApolloAPI.SchemaMetadata {
         // Original switch should still be present (gated behind !fastObjectTypeLookup)
         assert!(result.contains("switch typename"));
         assert!(result.contains("default: return nil"));
+    }
+
+    #[test]
+    fn test_optimize_schema_metadata_keeps_signature_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("SchemaMetadata.graphql.swift");
+        std::fs::write(
+            &file,
+            METADATA.replace("  public static func objectType", "  @_spi(Execution) public static func objectType"),
+        )
+        .unwrap();
+
+        optimize_schema_metadata(&file, "MySchemaAPI").unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        assert!(result.contains("  @_spi(Execution) public static func objectType(forTypename typename: String) -> ApolloAPI.Object? {\n    if fastObjectTypeLookup {"), "{}", result);
+        assert!(result.contains(r#"    "Cat": MySchemaAPI.Objects.Cat"#), "{}", result);
+        assert_eq!(result.matches("func objectType").count(), 1, "{}", result);
     }
 
     #[test]
