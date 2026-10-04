@@ -574,7 +574,7 @@ mod tests {
     fn test_unsupported_command_is_an_error_response() {
         let cache = Mutex::new(WorkerCache::default());
         let response = process_request(
-            &request(0, &["init", "--module-type", "swiftPackageManager"]),
+            &request(0, &["init", "--module-type", "other"]),
             &cache,
         );
         assert_eq!(response.exit_code, 1);
