@@ -24,6 +24,32 @@ use crate::schema::{
     GraphQLObjectType, GraphQLScalarType, GraphQLUnionType,
 };
 
+// MARK: - AdapterError
+
+/// Error raised while converting an executable document into the compilation result.
+///
+/// The codegen pipeline validates documents before conversion (see `validation.rs`), so these
+/// errors only surface for documents that bypassed validation; they are reported as regular
+/// validation failures instead of panicking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterError {
+    pub message: String,
+}
+
+impl AdapterError {
+    fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into() }
+    }
+}
+
+impl std::fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AdapterError {}
+
 // MARK: - TypeRegistry
 
 /// Registry of all named types in a GraphQL schema, providing Arc-based
@@ -525,27 +551,52 @@ pub fn extract_specified_by_url(directives: &schema::DirectiveList) -> Option<St
 
 /// Converts an apollo-compiler `ast::Type` (4 variants) to our `GraphQLType`
 /// (6 variants). Per RESEARCH.md Pitfall 3.
+///
+/// Only for types taken from a validated schema (every named type exists there); use
+/// [`try_convert_type`] for types written in operation documents.
 pub fn convert_type(ac_type: &ast::Type, registry: &TypeRegistry) -> GraphQLType {
-    match ac_type {
+    try_convert_type(ac_type, registry)
+        .unwrap_or_else(|e| panic!("{} (schema types are validated before conversion)", e))
+}
+
+/// Fallible [`convert_type`]: unknown named types become an [`AdapterError`].
+pub fn try_convert_type(
+    ac_type: &ast::Type,
+    registry: &TypeRegistry,
+) -> Result<GraphQLType, AdapterError> {
+    Ok(match ac_type {
         ast::Type::NonNullNamed(name) => {
-            GraphQLType::NonNull(Box::new(resolve_named_type(name.as_str(), registry)))
+            GraphQLType::NonNull(Box::new(try_resolve_named_type(name.as_str(), registry)?))
         }
-        ast::Type::Named(name) => resolve_named_type(name.as_str(), registry),
+        ast::Type::Named(name) => try_resolve_named_type(name.as_str(), registry)?,
         ast::Type::NonNullList(inner) => GraphQLType::NonNull(Box::new(GraphQLType::List(
-            Box::new(convert_type(inner, registry)),
+            Box::new(try_convert_type(inner, registry)?),
         ))),
         ast::Type::List(inner) => {
-            GraphQLType::List(Box::new(convert_type(inner, registry)))
+            GraphQLType::List(Box::new(try_convert_type(inner, registry)?))
         }
-    }
+    })
 }
 
 /// Resolves a named type string to a categorized `GraphQLType`.
+///
+/// Only for names taken from a validated schema; use [`try_resolve_named_type`] for names
+/// written in operation documents.
 pub fn resolve_named_type(name: &str, registry: &TypeRegistry) -> GraphQLType {
+    try_resolve_named_type(name, registry)
+        .unwrap_or_else(|e| panic!("{} (schema types are validated before conversion)", e))
+}
+
+/// Fallible [`resolve_named_type`]: an unknown name becomes an [`AdapterError`] with
+/// graphql-js' `Unknown type "X".` wording.
+pub fn try_resolve_named_type(
+    name: &str,
+    registry: &TypeRegistry,
+) -> Result<GraphQLType, AdapterError> {
     let named = registry
         .get(name)
-        .unwrap_or_else(|| panic!("Unknown type: {}", name));
-    match named {
+        .ok_or_else(|| AdapterError::new(format!("Unknown type \"{}\".", name)))?;
+    Ok(match named {
         GraphQLNamedType::Object(t) => {
             GraphQLType::Entity(GraphQLCompositeType::Object(Arc::clone(t)))
         }
@@ -558,7 +609,7 @@ pub fn resolve_named_type(name: &str, registry: &TypeRegistry) -> GraphQLType {
         GraphQLNamedType::Scalar(t) => GraphQLType::Scalar(Arc::clone(t)),
         GraphQLNamedType::Enum(t) => GraphQLType::Enum(Arc::clone(t)),
         GraphQLNamedType::InputObject(t) => GraphQLType::InputObject(Arc::clone(t)),
-    }
+    })
 }
 
 // MARK: - Value Conversion
@@ -568,19 +619,20 @@ pub fn convert_value(value: &ast::Value) -> GraphQLValue {
     match value {
         ast::Value::Variable(name) => GraphQLValue::Variable(name.to_string()),
         ast::Value::Int(int_val) => {
-            // apollo-compiler stores integers as string internally;
-            // parse to i64 for our representation.
-            let val: i64 = int_val
-                .as_str()
-                .parse()
-                .unwrap_or_else(|e| panic!("Integer value parse error: {} ({})", int_val, e));
-            GraphQLValue::Int(val)
+            // apollo-compiler stores integers as string internally; parse to i64 for our
+            // representation. Validation rejects out-of-range `Int` literals; a literal that
+            // is only syntactically an integer (e.g. a custom scalar default beyond i64)
+            // degrades to a float like graphql-js' Number does instead of panicking.
+            match int_val.as_str().parse::<i64>() {
+                Ok(val) => GraphQLValue::Int(val),
+                Err(_) => GraphQLValue::Float(
+                    int_val.as_str().parse::<f64>().unwrap_or(f64::INFINITY),
+                ),
+            }
         }
         ast::Value::Float(float_val) => {
-            let val = float_val
-                .try_to_f64()
-                .unwrap_or_else(|e| panic!("Float value parse error: {} ({})", float_val, e));
-            GraphQLValue::Float(val)
+            // Overflowing literals become infinity, as in JavaScript.
+            GraphQLValue::Float(float_val.try_to_f64().unwrap_or(f64::INFINITY))
         }
         ast::Value::String(s) => GraphQLValue::String(s.clone()),
         ast::Value::Boolean(b) => GraphQLValue::Boolean(*b),
@@ -652,21 +704,38 @@ pub fn convert_input_value_definition(
 /// GAP-01: Filters out explicit `__typename` field selections. graphql-js strips
 /// user-written `__typename` and injects it implicitly; apollo-rs preserves them.
 /// The IR builder must not see explicit `__typename` selections to match Swift behavior.
+///
+/// Panics on documents that did not pass validation (unknown fragments or types, a
+/// `@defer` without a static `label`); the codegen pipeline uses
+/// [`try_convert_selection_set`], which reports those as errors instead.
 pub fn convert_selection_set(
     selections: &[executable::Selection],
     parent_type: &GraphQLCompositeType,
     registry: &TypeRegistry,
     fragment_defs: &IndexMap<String, Arc<compilation_result::FragmentDefinition>>,
 ) -> compilation_result::SelectionSet {
-    let converted: Vec<compilation_result::Selection> = selections
-        .iter()
-        .filter_map(|sel| convert_selection(sel, parent_type, registry, fragment_defs))
-        .collect();
+    try_convert_selection_set(selections, parent_type, registry, fragment_defs)
+        .unwrap_or_else(|e| panic!("{}", e))
+}
 
-    compilation_result::SelectionSet {
+/// Fallible [`convert_selection_set`].
+pub fn try_convert_selection_set(
+    selections: &[executable::Selection],
+    parent_type: &GraphQLCompositeType,
+    registry: &TypeRegistry,
+    fragment_defs: &IndexMap<String, Arc<compilation_result::FragmentDefinition>>,
+) -> Result<compilation_result::SelectionSet, AdapterError> {
+    let mut converted: Vec<compilation_result::Selection> = Vec::with_capacity(selections.len());
+    for sel in selections {
+        if let Some(converted_sel) = convert_selection(sel, parent_type, registry, fragment_defs)? {
+            converted.push(converted_sel);
+        }
+    }
+
+    Ok(compilation_result::SelectionSet {
         parent_type: parent_type.clone(),
         selections: converted,
-    }
+    })
 }
 
 /// Converts a single apollo-compiler executable selection to our `Selection`.
@@ -676,14 +745,14 @@ fn convert_selection(
     parent_type: &GraphQLCompositeType,
     registry: &TypeRegistry,
     fragment_defs: &IndexMap<String, Arc<compilation_result::FragmentDefinition>>,
-) -> Option<compilation_result::Selection> {
+) -> Result<Option<compilation_result::Selection>, AdapterError> {
     match selection {
         executable::Selection::Field(field) => {
             let field_name = field.name.as_str();
 
             // GAP-01: filter __typename -- graphql-js strips explicit __typename
             if field_name == "__typename" {
-                return None;
+                return Ok(None);
             }
 
             let alias = field.alias.as_ref().map(|a| a.as_str().to_string());
@@ -740,21 +809,24 @@ fn convert_selection(
             let sub_selection_set = if field.selection_set.selections.is_empty() {
                 None
             } else {
-                let sub_parent = field_type
-                    .as_composite_type()
-                    .expect("Field with selections must have composite type");
-                Some(convert_selection_set(
+                let sub_parent = field_type.as_composite_type().ok_or_else(|| {
+                    AdapterError::new(format!(
+                        "Field \"{}\" must not have a selection since type \"{}\" has no subfields.",
+                        field_name, field.definition.ty
+                    ))
+                })?;
+                Some(try_convert_selection_set(
                     &field.selection_set.selections,
                     sub_parent,
                     registry,
                     fragment_defs,
-                ))
+                )?)
             };
 
             let deprecation_reason = extract_deprecation_reason(&field.definition.directives);
             let documentation = field.definition.description.as_ref().map(|d| d.to_string());
 
-            Some(compilation_result::Selection::Field(
+            Ok(Some(compilation_result::Selection::Field(
                 compilation_result::Field {
                     name: field_name.to_string(),
                     alias,
@@ -766,7 +838,7 @@ fn convert_selection(
                     deprecation_reason,
                     documentation,
                 },
-            ))
+            )))
         }
         executable::Selection::InlineFragment(inline) => {
             let type_condition_name = inline
@@ -775,8 +847,9 @@ fn convert_selection(
                 .map(|tc| tc.as_str().to_string());
 
             let inline_parent = if let Some(ref tc_name) = type_condition_name {
-                resolve_composite_type(tc_name, registry)
-                    .expect("Inline fragment type condition must resolve to composite type")
+                resolve_composite_type(tc_name, registry).ok_or_else(|| {
+                    AdapterError::new(format!("Unknown type \"{}\".", tc_name))
+                })?
             } else {
                 // No type condition -- inherits parent type from enclosing selection set
                 parent_type.clone()
@@ -784,45 +857,45 @@ fn convert_selection(
 
             let directives = convert_directives(&inline.directives);
             let inclusion_conditions = extract_inclusion_conditions(&inline.directives);
-            let defer_condition =
-                compilation_result::get_defer_condition(&directives);
+            let defer_condition = compilation_result::try_get_defer_condition(&directives)
+                .map_err(AdapterError::new)?;
 
-            let selection_set = convert_selection_set(
+            let selection_set = try_convert_selection_set(
                 &inline.selection_set.selections,
                 &inline_parent,
                 registry,
                 fragment_defs,
-            );
+            )?;
 
-            Some(compilation_result::Selection::InlineFragment(
+            Ok(Some(compilation_result::Selection::InlineFragment(
                 compilation_result::InlineFragment {
                     selection_set,
                     inclusion_conditions,
                     directives,
                     defer_condition,
                 },
-            ))
+            )))
         }
         executable::Selection::FragmentSpread(spread) => {
             let fragment_name = spread.fragment_name.as_str();
 
-            let fragment = fragment_defs
-                .get(fragment_name)
-                .unwrap_or_else(|| panic!("Unknown fragment: {}", fragment_name));
+            let fragment = fragment_defs.get(fragment_name).ok_or_else(|| {
+                AdapterError::new(format!("Unknown fragment \"{}\".", fragment_name))
+            })?;
 
             let directives = convert_directives(&spread.directives);
             let inclusion_conditions = extract_inclusion_conditions(&spread.directives);
-            let defer_condition =
-                compilation_result::get_defer_condition(&directives);
+            let defer_condition = compilation_result::try_get_defer_condition(&directives)
+                .map_err(AdapterError::new)?;
 
-            Some(compilation_result::Selection::FragmentSpread(
+            Ok(Some(compilation_result::Selection::FragmentSpread(
                 compilation_result::FragmentSpread {
                     fragment: Arc::clone(fragment),
                     inclusion_conditions,
                     directives,
                     defer_condition,
                 },
-            ))
+            )))
         }
     }
 }
