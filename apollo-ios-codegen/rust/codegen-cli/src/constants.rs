@@ -7,8 +7,11 @@
 /// Every parity branch is a drop-in replacement for one Apollo iOS release, so the CLI
 /// version is the same constant that the generated `Package.swift` pins the SDK to
 /// (`CODEGEN_VERSION`); `--version` therefore identifies the release a binary was built for.
-pub const CLI_VERSION: &str =
-    apollo_codegen_lib::templates::swift_package_manager_module_template::CODEGEN_VERSION;
+///
+/// 1.15.3 is one of the two releases (with 1.15.2) whose upstream `CodegenVersion` stayed at
+/// 1.15.1, so the generated `Package.swift` pins the SDK to 1.15.1 (`CODEGEN_VERSION`)
+/// while the CLI reports its own version, like Swift's `Constants.CLIVersion` does.
+pub const CLI_VERSION: &str = "1.15.3";
 
 /// Default config file path matching Swift's `Constants.defaultFilePath`.
 pub const DEFAULT_FILE_PATH: &str = "./apollo-codegen-config.json";
