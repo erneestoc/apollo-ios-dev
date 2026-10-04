@@ -12,6 +12,7 @@ pub mod graphql_source;
 pub mod graphql_type;
 pub mod graphql_value;
 pub mod schema;
+pub mod validation;
 pub mod validation_options;
 
 // Re-export primary types for convenient downstream imports.
@@ -31,4 +32,5 @@ pub use schema::{
     GraphQLFieldArgument, GraphQLInputField, GraphQLInputObjectType, GraphQLInterfaceType,
     GraphQLNamedType, GraphQLObjectType, GraphQLScalarType, GraphQLSchema, GraphQLUnionType,
 };
+pub use validation::{validate_operations, OperationSource, ValidationError};
 pub use validation_options::{DisallowedFieldNames, ValidationOptions};
