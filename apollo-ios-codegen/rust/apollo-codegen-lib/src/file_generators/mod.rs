@@ -289,7 +289,7 @@ impl FileTarget {
         if let Some(output_root) = config.output_root() {
             match &config.output().test_mocks {
                 TestMockFileOutput::None => PathBuf::new(),
-                TestMockFileOutput::SwiftPackage { target_name } => {
+                TestMockFileOutput::SwiftPackage { target_name, .. } => {
                     let name = target_name.as_deref().unwrap_or("TestMocks");
                     output_root.join(name)
                 }
@@ -298,7 +298,7 @@ impl FileTarget {
         } else {
             match &config.output().test_mocks {
                 TestMockFileOutput::None => PathBuf::new(),
-                TestMockFileOutput::SwiftPackage { target_name } => {
+                TestMockFileOutput::SwiftPackage { target_name, .. } => {
                     let name = target_name
                         .as_deref()
                         .unwrap_or("TestMocks");
