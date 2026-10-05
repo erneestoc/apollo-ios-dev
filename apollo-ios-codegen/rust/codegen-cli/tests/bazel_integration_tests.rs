@@ -969,3 +969,198 @@ fn test_mocks_mode_errors_are_clear() {
         .failure()
         .stderr(predicate::str::contains("Unknown --bazel-mocks-scope"));
 }
+
+// ---------------------------------------------------------------------------
+// Mock fields in Bazel mode (AnimalKingdom fixture)
+//
+// A mock's `MockFields` are collected from the IR of every compiled operation.
+// The Bazel modes that render no operations (`schema_types`, `test_mocks`) must
+// build that IR anyway, so their mock files are byte-identical to plain `generate`.
+// ---------------------------------------------------------------------------
+
+/// Copies the repo's AnimalKingdom fixture (`Sources/AnimalKingdomAPI/animalkingdom-graphql`,
+/// inputs only) into `root/graphql` and writes `root/config.json`: schema module `Schema`
+/// (`other`), operations in the schema module, public mocks under `Mocks`.
+fn write_animal_kingdom(root: &Path) -> String {
+    let mut src = workspace_root();
+    src.pop(); // apollo-ios-codegen
+    src.pop(); // repo root
+    let src = src.join("Sources/AnimalKingdomAPI/animalkingdom-graphql");
+    assert!(src.is_dir(), "AnimalKingdom fixture not found at {}", src.display());
+    let dst = root.join("graphql");
+    fs::create_dir_all(&dst).unwrap();
+    let mut copied = 0;
+    for entry in fs::read_dir(&src).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".graphql") || name.ends_with(".graphqls") {
+            fs::copy(entry.path(), dst.join(&name)).unwrap();
+            copied += 1;
+        }
+    }
+    assert!(copied >= 10, "only {copied} fixture files copied from {}", src.display());
+    let config = serde_json::json!({
+        "schemaNamespace": "AnimalKingdomAPI",
+        "input": {
+            "schemaSearchPaths": ["graphql/AnimalSchema.graphqls"],
+            "operationSearchPaths": ["graphql/**/*.graphql"]
+        },
+        "output": {
+            "schemaTypes": {"path": "Schema", "moduleType": {"other": {}}},
+            "operations": {"inSchemaModule": {}},
+            "testMocks": {"absolute": {"path": "Mocks", "accessModifier": "public"}}
+        }
+    })
+    .to_string();
+    fs::write(root.join("config.json"), &config).unwrap();
+    config
+}
+
+/// Every `.swift` file of `dir` by name.
+fn swift_files(dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut files = std::collections::BTreeMap::new();
+    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".swift") {
+            files.insert(name, fs::read_to_string(entry.path()).unwrap());
+        }
+    }
+    files
+}
+
+/// Plain `generate` in `root`: the reference mocks (`root/Mocks`).
+fn plain_mocks(root: &Path) -> std::collections::BTreeMap<String, String> {
+    cli_bin().args(["generate", "--path", "config.json"]).current_dir(root).assert().success();
+    let mocks = swift_files(&root.join("Mocks"));
+    let dog = &mocks["Dog+Mock.graphql.swift"];
+    assert_eq!(dog.matches("@Field<").count(), 12, "{dog}");
+    assert!(dog.contains("public extension Mock where O == Dog {\n  convenience init("), "{dog}");
+    assert!(dog.contains("@Field<Human>(\"owner\") public var owner"), "{dog}");
+    mocks
+}
+
+/// Asserts every mock file under `out/TestMocks` is byte-identical to the plain one
+/// (after dropping an optional `import <base>` line) and, with `all`, that the set of
+/// files is the plain set. Returns the file names.
+fn assert_mocks_match_plain(
+    out: &Path,
+    plain: &std::collections::BTreeMap<String, String>,
+    all: bool,
+    base_import: Option<&str>,
+) -> Vec<String> {
+    let bazel = swift_files(&out.join("TestMocks"));
+    assert!(!bazel.is_empty(), "no mocks under {}", out.display());
+    for (name, content) in &bazel {
+        let content = match base_import {
+            Some(module) => content.replace(&format!("import {module}\n"), ""),
+            None => content.clone(),
+        };
+        let expected = plain.get(name).unwrap_or_else(|| panic!("{}: {name} is not a plain mock", out.display()));
+        assert_eq!(&content, expected, "{}/TestMocks/{name} differs from plain generate", out.display());
+    }
+    if all {
+        assert_eq!(bazel.keys().collect::<Vec<_>>(), plain.keys().collect::<Vec<_>>(), "{}", out.display());
+    }
+    bazel.into_keys().collect()
+}
+
+#[test]
+fn bazel_mode_mocks_carry_their_fields_and_equal_plain_generate() {
+    let tmp = TempDir::new().unwrap();
+    let config = write_animal_kingdom(tmp.path());
+    let plain = plain_mocks(tmp.path());
+    let schema_files_before = list_files(&tmp.path().join("Schema"));
+    assert!(schema_files_before.iter().any(|f| f.ends_with("Dog.graphql.swift")), "{schema_files_before:?}");
+
+    // (out dir, mode, extra flags, every mock expected)
+    let cases: &[(&str, &str, &[&str], bool)] = &[
+        ("tm", "test_mocks", &[], true),
+        ("st", "schema_types", &[], true),
+        ("tm-for", "test_mocks", &["--bazel-generate-for", "graphql/DogQuery.graphql"], true),
+        ("tm-prefix", "test_mocks", &["--bazel-framework-path", "graphql"], true),
+        ("st-for", "schema_types", &["--bazel-generate-for", "graphql/DogQuery.graphql", "--bazel-keep-schema-configuration"], true),
+        ("tm-ref", "test_mocks", &["--bazel-mocks-scope", "referenced", "--bazel-generate-for", "graphql/PetAdoptionMutation.graphql"], false),
+        ("tm-ref-prefix", "test_mocks", &["--bazel-mocks-scope", "referenced", "--bazel-framework-path", "graphql"], true),
+    ];
+    for (out, mode, extra, all) in cases {
+        cli_bin()
+            .args(generate_args(&config, out, mode))
+            .args(*extra)
+            .current_dir(tmp.path())
+            .assert()
+            .success();
+        let files = assert_mocks_match_plain(&tmp.path().join(out), &plain, *all, None);
+        assert!(files.contains(&"Dog+Mock.graphql.swift".to_string()), "{out}: {files:?}");
+    }
+    // the referenced scope of the mutation alone is a strict subset (no Query)
+    let referenced = swift_files(&tmp.path().join("tm-ref/TestMocks"));
+    assert!(referenced.contains_key("Mutation+Mock.graphql.swift") && !referenced.contains_key("Query+Mock.graphql.swift"), "{:?}", referenced.keys());
+    assert!(referenced.len() < plain.len());
+
+    // a feature module importing a base: identical but for the import line
+    cli_bin()
+        .args(generate_args(&config, "tm-base", "test_mocks"))
+        .args(["--bazel-mocks-base-module", "AnimalBaseMocks", "--bazel-mocks-exclude", "Query", "--bazel-mocks-exclude", "Mutation"])
+        .current_dir(tmp.path())
+        .assert()
+        .success();
+    let files = assert_mocks_match_plain(&tmp.path().join("tm-base"), &plain, false, Some("AnimalBaseMocks"));
+    assert!(!files.iter().any(|f| f.starts_with("MockObject")) && !files.contains(&"Query+Mock.graphql.swift".to_string()), "{files:?}");
+    assert!(fs::read_to_string(tmp.path().join("tm-base/TestMocks/Dog+Mock.graphql.swift")).unwrap().contains("import AnimalBaseMocks\n"));
+
+    // Bazel mode writes only into its tree artifact: the plain output next to it is untouched
+    // (pruning used to walk the configured paths and delete every generated file there).
+    assert_eq!(swift_files(&tmp.path().join("Mocks")), plain);
+    assert_eq!(list_files(&tmp.path().join("Schema")), schema_files_before);
+}
+
+#[test]
+fn worker_bazel_mode_mocks_equal_plain_generate() {
+    let tmp = TempDir::new().unwrap();
+    let config = write_animal_kingdom(tmp.path());
+    let plain = plain_mocks(tmp.path());
+
+    let mut graphql: Vec<String> = fs::read_dir(tmp.path().join("graphql")).unwrap().flatten()
+        .map(|e| format!("graphql/{}", e.file_name().to_string_lossy()))
+        .collect();
+    graphql.sort();
+    let digests: Vec<Vec<u8>> = (0..graphql.len()).map(|i| vec![i as u8 + 1]).collect();
+    let inputs: Vec<(&str, &[u8])> = graphql.iter().zip(&digests).map(|(p, d)| (p.as_str(), d.as_slice())).collect();
+    let args = |out: &str, mode: &str, extra: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = generate_args(&config, out, mode).into_iter().map(String::from).collect();
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    };
+
+    let mut worker = Worker::spawn(tmp.path());
+    // 1. an operations request first: the later mock requests are served from the
+    //    compilation cache with a fresh IR, which is where the fields were missing
+    worker.send(1, &args("ops", "operations", &["--bazel-generate-for", "graphql/DogQuery.graphql"]), &inputs);
+    let response = worker.receive();
+    assert_eq!(response.exit_code, 0, "{}", response.output);
+    assert!(list_files(&tmp.path().join("ops")).iter().any(|f| f.ends_with("DogQuery.graphql.swift")));
+
+    let cases: &[(i32, &str, &str, &[&str], bool)] = &[
+        (2, "w-tm", "test_mocks", &[], true),
+        (3, "w-st", "schema_types", &[], true),
+        (4, "w-tm-ref", "test_mocks", &["--bazel-mocks-scope", "referenced", "--bazel-generate-for", "graphql/PetAdoptionMutation.graphql"], false),
+        (5, "w-tm-for", "test_mocks", &["--bazel-generate-for", "graphql/DogQuery.graphql"], true),
+        (6, "w-st-prefix", "schema_types", &["--bazel-framework-path", "graphql"], true),
+    ];
+    for (id, out, mode, extra, _) in cases {
+        worker.send(*id, &args(out, mode, extra), &inputs);
+    }
+    let mut responses: Vec<Response> = cases.iter().map(|_| worker.receive()).collect();
+    responses.sort_by_key(|r| r.request_id);
+    for (response, (id, out, _, _, all)) in responses.iter().zip(cases) {
+        assert_eq!(response.request_id, *id);
+        assert_eq!(response.exit_code, 0, "{out}: {}", response.output);
+        let files = assert_mocks_match_plain(&tmp.path().join(out), &plain, *all, None);
+        assert!(files.contains(&"Dog+Mock.graphql.swift".to_string()), "{out}: {files:?}");
+    }
+
+    let (code, stderr) = worker.finish();
+    assert_eq!(code, 0, "{}", stderr);
+    assert!(!stderr.contains("panicked"), "{}", stderr);
+    assert_eq!(stderr.matches("Compilation cache miss").count(), 1, "{}", stderr);
+    assert_eq!(swift_files(&tmp.path().join("Mocks")), plain);
+}
