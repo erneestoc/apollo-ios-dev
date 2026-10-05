@@ -364,6 +364,17 @@ impl ApolloCodegen {
                 std::collections::BTreeSet::new()
             };
 
+            // The test mocks' fields come from the operation IR (see
+            // `build_definition_ir_for_mock_fields`); plain generation has built it by
+            // the time the schema files are generated, this mode has not.
+            if config.config.output.test_mocks != TestMockFileOutput::None {
+                build_definition_ir_for_mock_fields(
+                    &compile_result.compilation_result,
+                    &compile_result.ir,
+                    "schema_only",
+                );
+            }
+
             let errors = generate_schema_files(
                 &compile_result.compilation_result,
                 &compile_result.ir,
@@ -406,6 +417,11 @@ impl ApolloCodegen {
     ) -> Result<(), CodegenError> {
         let file_manager = ApolloFileManager::new();
         process_schema_customizations(&compile_result.ir, config);
+        build_definition_ir_for_mock_fields(
+            &compile_result.compilation_result,
+            &compile_result.ir,
+            "test_mocks",
+        );
 
         let generators = test_mock_file_generators(
             &compile_result.compilation_result,
@@ -1375,6 +1391,40 @@ fn generate_graph_ql_definition_files(
     collect_non_fatal_errors(&generators, &errors, &mut non_fatal_errors);
 
     Ok(non_fatal_errors)
+}
+
+/// Builds the IR of every compiled fragment and operation without rendering anything.
+///
+/// A test mock's `MockFields` are the fields selected on that type by *every*
+/// operation the CLI compiled: Swift collects them app-wide in `IR.FieldCollector` as
+/// a side effect of building each definition's IR, and `generateGraphQLDefinitionFiles`
+/// always runs before `generateSchemaFiles`, so plain `generate` has the complete
+/// collection when the mocks are rendered. The Bazel modes that do not render
+/// operations (`schema_types`, `test_mocks`) call this first so that their mock files
+/// are byte-identical to plain generation. The Bazel operations selection is
+/// deliberately not applied: the fields must be the union over all operations, the
+/// selection only decides which mock *files* a scoped module gets. Same order as plain
+/// generation (fragments, then operations, in compilation order), so that a response
+/// key seen with two types keeps the same first-seen type.
+fn build_definition_ir_for_mock_fields(
+    compilation_result: &CompilationResult,
+    ir: &IRBuilder,
+    mode: &str,
+) {
+    let t_ir = std::time::Instant::now();
+    for fragment in &compilation_result.fragments {
+        let _ = ir.build_fragment(&Arc::new(fragment.clone()));
+    }
+    for operation in &compilation_result.operations {
+        let _ = ir.build_operation(&Arc::new(operation.clone()));
+    }
+    eprintln!(
+        "  [perf:{}:mock_fields] ops={} frags={} ir_build={:.1}ms",
+        mode,
+        compilation_result.operations.len(),
+        compilation_result.fragments.len(),
+        t_ir.elapsed().as_secs_f64() * 1000.0
+    );
 }
 
 /// The test mock file generators for `config`'s `output.testMocks`: one
