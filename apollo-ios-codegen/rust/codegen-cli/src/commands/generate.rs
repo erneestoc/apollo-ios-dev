@@ -135,7 +135,12 @@ impl Generate {
 
         if let Some(ref output_dir) = self.bazel_output_dir {
             // Direct-write mode: set output_root so generation writes
-            // directly to the tree artifact directory.
+            // directly to the tree artifact directory. The tree artifact starts
+            // empty, so there is nothing to prune; pruning would walk the
+            // *configured* output paths (relative to the cwd, i.e. the execroot)
+            // and delete every `*.graphql.swift` there that this run did not
+            // write. The worker switches it off the same way.
+            configuration.options.prune_generated_files = false;
             let mut config = ConfigurationContext::new(configuration, root_url);
             let output_root = std::path::PathBuf::from(output_dir);
             std::fs::create_dir_all(&output_root).map_err(|e| CliError::Generic {
