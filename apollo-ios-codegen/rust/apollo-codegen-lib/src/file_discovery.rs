@@ -140,11 +140,6 @@ fn is_excluded_directory(entry: &walkdir::DirEntry) -> bool {
     }
 }
 
-/// Makes a path absolute without resolving symlinks.
-///
-/// Uses the current working directory for relative paths, matching Swift's
-/// behavior of not resolving symlinks (which would cause `/tmp` -> `/private/tmp`
-/// mismatches on macOS).
 /// The string a walked entry is matched against: entries under a `.` base come back as
 /// `./x` and must still match a bare relative pattern.
 fn candidate_path(path: &str, strip_dot_slash: bool) -> &str {
@@ -155,13 +150,42 @@ fn candidate_path(path: &str, strip_dot_slash: bool) -> &str {
     }
 }
 
+/// Makes a path absolute and lexically normalized, without resolving symlinks.
+///
+/// Relative paths are joined to the current working directory. `.` components are dropped
+/// and `..` pops the previous component, so that one file reached by two search paths
+/// (`Ops/**/*.graphql` walks `Ops/Probe.graphql`, `**/*.graphql` walks `./Ops/Probe.graphql`)
+/// yields one string and is deduplicated by the ordered result set. Swift gets the same
+/// effect from `URL.resolvingSymlinksInPath()` before building its `OrderedSet`; symlinks are
+/// deliberately not resolved here (Bazel sandboxes present inputs as symlinks, and
+/// `/tmp` -> `/private/tmp` would change the reported paths).
 fn make_absolute(path: &Path) -> String {
-    if path.is_absolute() {
-        path.to_string_lossy().to_string()
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
     } else {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        cwd.join(path).to_string_lossy().to_string()
+        cwd.join(path)
+    };
+    normalize_lexically(&absolute).to_string_lossy().to_string()
+}
+
+/// Drops `.` components and resolves `..` against the preceding component, lexically.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // `..` above the root stays at the root; a relative path keeps leading `..`s.
+                if !normalized.pop() && !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
     }
+    normalized
 }
 
 /// Whether the pattern contains glob metacharacters (`*`, `?` or `[`).
@@ -427,5 +451,42 @@ mod tests {
         // Relative literal resolved against `relative_to`.
         let relative = match_search_paths(&["schema.graphqls".to_string()], Some(dir.path())).unwrap();
         assert_eq!(relative.len(), 1, "{:?}", relative);
+    }
+
+    /// Overlapping search paths that reach the same file through differently spelled paths
+    /// (`<d>/Ops/**`, `<d>/./**`, `<d>/Ops/../**`) yield the file once, in first-match order,
+    /// like Swift's `OrderedSet` of resolved paths. Previously the `./` spelling survived
+    /// `make_absolute`, the file was read twice and validation reported a duplicate operation.
+    #[test]
+    fn test_overlapping_search_paths_are_deduplicated() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let d = dir.path().display().to_string();
+        std::fs::create_dir_all(dir.path().join("Ops")).unwrap();
+        std::fs::write(dir.path().join("Ops/Probe.graphql"), "query Probe { a }").unwrap();
+        std::fs::write(dir.path().join("Root.graphql"), "query Root { a }").unwrap();
+
+        let found = match_search_paths(
+            &[
+                format!("{d}/Ops/**/*.graphql"),
+                format!("{d}/./**/*.graphql"),
+                format!("{d}/Ops/../**/*.graphql"),
+            ],
+            None,
+        )
+        .unwrap();
+        let found: Vec<&String> = found.iter().collect();
+        assert_eq!(found.len(), 2, "{:?}", found);
+        assert_eq!(found[0], &format!("{d}/Ops/Probe.graphql"));
+        assert_eq!(found[1], &format!("{d}/Root.graphql"));
+        assert!(found.iter().all(|p| !p.contains("/./") && !p.contains("/../")), "{:?}", found);
+    }
+
+    #[test]
+    fn test_normalize_lexically() {
+        assert_eq!(normalize_lexically(Path::new("/a/./b/../c/./d.graphql")), PathBuf::from("/a/c/d.graphql"));
+        assert_eq!(normalize_lexically(Path::new("/a/b")), PathBuf::from("/a/b"));
+        assert_eq!(normalize_lexically(Path::new("/..")), PathBuf::from("/"));
     }
 }
