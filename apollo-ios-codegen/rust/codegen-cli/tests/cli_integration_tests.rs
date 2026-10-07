@@ -481,3 +481,49 @@ mod generate_operation_manifest_tests {
             .stderr(predicates::str::contains("Error"));
     }
 }
+
+// ============================================================================
+// Fork parity: overlapping operation search paths (external parity handoff, 2026-10)
+// ============================================================================
+
+/// `operationSearchPaths: ["Ops/**/*.graphql", "**/*.graphql"]` reaches `Ops/Probe.graphql`
+/// through both patterns. Swift deduplicates discovered files (an `OrderedSet` of resolved
+/// paths) and generates normally; the Rust CLI used to keep both spellings
+/// (`<cwd>/Ops/Probe.graphql` and `<cwd>/./Ops/Probe.graphql`) and failed validation with
+/// `There can be only one operation named "Probe"`.
+#[test]
+fn test_generate_with_overlapping_operation_search_paths_deduplicates_files() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("Ops")).unwrap();
+    fs::write(
+        tmp.path().join("schema.graphqls"),
+        "type Query { zebra: Zebra, apple: Apple }\ntype Zebra { id: ID! }\ntype Apple { id: ID! }\n",
+    )
+    .unwrap();
+    fs::write(tmp.path().join("Ops/Probe.graphql"), "query Probe { zebra { id } apple { id } }\n").unwrap();
+    let config = serde_json::json!({
+        "schemaNamespace": "Synthetic",
+        "input": {
+            "schemaSearchPaths": ["schema.graphqls"],
+            "operationSearchPaths": ["Ops/**/*.graphql", "**/*.graphql"]
+        },
+        "output": {
+            "schemaTypes": {"path": "Out", "moduleType": {"other": {}}},
+            "operations": {"inSchemaModule": {}},
+            "testMocks": {"none": {}}
+        }
+    });
+    fs::write(tmp.path().join("apollo-codegen-config.json"), config.to_string()).unwrap();
+
+    cli_bin()
+        .arg("generate")
+        .current_dir(tmp.path())
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("only one operation").not());
+
+    let probe = tmp.path().join("Out/Operations/Queries/ProbeQuery.graphql.swift");
+    assert!(probe.is_file(), "missing {}", probe.display());
+    let source = fs::read_to_string(probe).unwrap();
+    assert_eq!(source.matches("ProbeQuery: GraphQLQuery").count(), 1, "{}", source);
+}
