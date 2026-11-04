@@ -5,7 +5,7 @@
 //! `graphql_type.rs`, `graphql_value.rs`, etc. No apollo-compiler types are
 //! exposed past this module's boundary (per D-19).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use apollo_compiler::ast;
@@ -201,9 +201,12 @@ impl TypeRegistry {
         for (name, ext_type) in &schema.types {
             let name_str = name.as_str().to_string();
             if let ExtendedType::Object(obj) = ext_type {
-                // Rebuild the full_registry snapshot to include rebuilt interfaces
+                // Resolve against the registry as it is now (rebuilt interfaces
+                // and the objects rebuilt so far). The map is moved in and out
+                // rather than copied: a copy per object is quadratic in the
+                // schema size.
                 let updated_registry = TypeRegistry {
-                    types: types.clone(),
+                    types: std::mem::take(&mut types),
                     type_policy_names: HashSet::new(),
                 };
                 let mut fields = IndexMap::new();
@@ -211,6 +214,7 @@ impl TypeRegistry {
                     let field = convert_field_definition(field_def, &updated_registry);
                     fields.insert(field_name.as_str().to_string(), field);
                 }
+                types = updated_registry.types;
                 let interfaces: Vec<Arc<GraphQLInterfaceType>> = obj
                     .implements_interfaces
                     .iter()
@@ -254,8 +258,9 @@ impl TypeRegistry {
         for (name, ext_type) in &schema.types {
             let name_str = name.as_str().to_string();
             if let ExtendedType::InputObject(io) = ext_type {
+                // Moved in and out rather than copied (see 3b).
                 let current_registry = TypeRegistry {
-                    types: types.clone(),
+                    types: std::mem::take(&mut types),
                     type_policy_names: HashSet::new(),
                 };
                 let mut fields = IndexMap::new();
@@ -263,6 +268,7 @@ impl TypeRegistry {
                     let field = convert_input_value_definition(field_def, &current_registry);
                     fields.insert(field_name.as_str().to_string(), field);
                 }
+                types = current_registry.types;
                 // Fill the stub in place so every reference to this input object
                 // (including other input objects' field types captured earlier)
                 // shares one instance, like Swift's reference-typed
@@ -322,11 +328,16 @@ impl TypeRegistry {
             if let ExtendedType::Interface(iface) = ext_type {
                 if !iface.implements_interfaces.is_empty() {
                     let mut fields = IndexMap::new();
-                    let updated_registry = TypeRegistry { types: types.clone(), type_policy_names: HashSet::new() };
+                    // Moved in and out rather than copied (see 3b).
+                    let updated_registry = TypeRegistry {
+                        types: std::mem::take(&mut types),
+                        type_policy_names: HashSet::new(),
+                    };
                     for (field_name, field_def) in &iface.fields {
                         let field = convert_field_definition(field_def, &updated_registry);
                         fields.insert(field_name.as_str().to_string(), field);
                     }
+                    types = updated_registry.types;
                     let interfaces: Vec<Arc<GraphQLInterfaceType>> = iface
                         .implements_interfaces
                         .iter()
@@ -549,22 +560,31 @@ impl TypeRegistry {
         // in-place mutations such as schema customization names are visible
         // through them. Order mirrors graphql-js `getImplementations`: schema
         // definition order.
-        let interface_names: Vec<String> = types
-            .iter()
-            .filter_map(|(n, t)| matches!(t, GraphQLNamedType::Interface(_)).then(|| n.clone()))
-            .collect();
-        for iface_name in interface_names {
-            let implementors: Vec<Arc<GraphQLObjectType>> = types
-                .values()
-                .filter_map(|t| match t {
-                    GraphQLNamedType::Object(obj)
-                        if obj.interfaces.iter().any(|i| i.name.schema_name == iface_name) =>
-                    {
-                        Some(Arc::clone(obj))
+        // One pass over the objects (a scan per interface is quadratic in the
+        // schema size); an object listing an interface twice is added once.
+        let mut implementors_by_interface: HashMap<&str, Vec<Arc<GraphQLObjectType>>> =
+            HashMap::new();
+        for t in types.values() {
+            if let GraphQLNamedType::Object(obj) = t {
+                let mut seen: HashSet<&str> = HashSet::new();
+                for i in &obj.interfaces {
+                    if seen.insert(i.name.schema_name.as_str()) {
+                        implementors_by_interface
+                            .entry(i.name.schema_name.as_str())
+                            .or_default()
+                            .push(Arc::clone(obj));
                     }
-                    _ => None,
-                })
-                .collect();
+                }
+            }
+        }
+        let interface_implementors: Vec<(String, Vec<Arc<GraphQLObjectType>>)> = types
+            .iter()
+            .filter(|(_, t)| matches!(t, GraphQLNamedType::Interface(_)))
+            .map(|(n, _)| {
+                (n.clone(), implementors_by_interface.remove(n.as_str()).unwrap_or_default())
+            })
+            .collect();
+        for (iface_name, implementors) in interface_implementors {
             if let Some(GraphQLNamedType::Interface(iface)) = types.get(&iface_name) {
                 // SAFETY: single-threaded construction; no outstanding readers.
                 unsafe {
