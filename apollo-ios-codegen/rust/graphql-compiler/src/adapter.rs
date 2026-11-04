@@ -198,14 +198,17 @@ impl TypeRegistry {
             let name_str = name.as_str().to_string();
             if let ExtendedType::Object(obj) = ext_type {
                 // Rebuild the full_registry snapshot to include rebuilt interfaces
+                // Moved in and out rather than copied: a copy per type is quadratic in
+                // the schema size.
                 let updated_registry = TypeRegistry {
-                    types: types.clone(),
+                    types: std::mem::take(&mut types),
                 };
                 let mut fields = IndexMap::new();
                 for (field_name, field_def) in &obj.fields {
                     let field = convert_field_definition(field_def, &updated_registry);
                     fields.insert(field_name.as_str().to_string(), field);
                 }
+                types = updated_registry.types;
                 let interfaces: Vec<Arc<GraphQLInterfaceType>> = obj
                     .implements_interfaces
                     .iter()
@@ -249,14 +252,17 @@ impl TypeRegistry {
         for (name, ext_type) in &schema.types {
             let name_str = name.as_str().to_string();
             if let ExtendedType::InputObject(io) = ext_type {
+                // Moved in and out rather than copied: a copy per type is quadratic in
+                // the schema size.
                 let current_registry = TypeRegistry {
-                    types: types.clone(),
+                    types: std::mem::take(&mut types),
                 };
                 let mut fields = IndexMap::new();
                 for (field_name, field_def) in &io.fields {
                     let field = convert_input_value_definition(field_def, &current_registry);
                     fields.insert(field_name.as_str().to_string(), field);
                 }
+                types = current_registry.types;
                 // Fill the stub in place so every reference to this input object
                 // (including other input objects' field types captured earlier)
                 // shares one instance, like Swift's reference-typed
@@ -315,11 +321,14 @@ impl TypeRegistry {
             if let ExtendedType::Interface(iface) = ext_type {
                 if !iface.implements_interfaces.is_empty() {
                     let mut fields = IndexMap::new();
-                    let updated_registry = TypeRegistry { types: types.clone() };
+                    // Moved in and out rather than copied: a copy per type is quadratic in
+                    // the schema size.
+                    let updated_registry = TypeRegistry { types: std::mem::take(&mut types) };
                     for (field_name, field_def) in &iface.fields {
                         let field = convert_field_definition(field_def, &updated_registry);
                         fields.insert(field_name.as_str().to_string(), field);
                     }
+                    types = updated_registry.types;
                     let interfaces: Vec<Arc<GraphQLInterfaceType>> = iface
                         .implements_interfaces
                         .iter()
